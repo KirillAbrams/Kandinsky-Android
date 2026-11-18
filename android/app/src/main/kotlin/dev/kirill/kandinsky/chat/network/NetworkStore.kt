@@ -36,7 +36,17 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         db: SQLiteDatabase,
         json: JSONObject,
         studioRecent: Boolean = false,
-    ): List<MessageDelta> = mergeChatList(db, json, studioRecent)
+        preserveDirectoryMetadata: Boolean = false,
+    ): List<MessageDelta> = mergeChatList(db, json, studioRecent, preserveDirectoryMetadata)
+
+    fun mergeStudioDirectorySnapshot(
+        db: SQLiteDatabase, recent: JSONObject, states: List<JSONObject> = emptyList(),
+        startedAtCursor: Long,
+    ): List<MessageDelta> {
+        val preserve = cursor(db) != startedAtCursor
+        val changes = mergeChats(db, recent, studioRecent = true, preserveDirectoryMetadata = preserve)
+        return changes + states.flatMap { mergeChats(db, it, preserveDirectoryMetadata = preserve) }
+    }
 
     fun studioRecent(db: SQLiteDatabase): StudioRecentPage = loadRecentChats(db)
 
@@ -49,6 +59,30 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         containsUnknownChat(db, json)
 
     fun events(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> = applyEventBatch(db, json)
+
+    fun directoryEvents(db: SQLiteDatabase, json: JSONObject): Pair<List<MessageDelta>, Boolean> {
+        val catalog = json.optJSONArray("chats")
+        require(catalog == null || catalog.length() <= 128)
+        val keys =
+            if (catalog == null) emptyList()
+            else List(catalog.length()) {
+                "studioDirectory:${catalog.getJSONObject(it).getLong("id")}"
+            }
+        val before = directoryState(db, keys)
+        val changes = events(db, json)
+        return changes to (before != directoryState(db, keys))
+    }
+
+    private fun directoryState(db: SQLiteDatabase, keys: List<String>): List<String> {
+        if (keys.isEmpty()) return emptyList()
+        val placeholders = keys.joinToString(",") { "?" }
+        return db.rawQuery(
+            "SELECT key,value FROM net_state WHERE key IN ($placeholders) ORDER BY key",
+            keys.toTypedArray(),
+        ).use { rows ->
+            buildList { while (rows.moveToNext()) add(rows.getString(0) + ":" + rows.getString(1)) }
+        }
+    }
 
     fun history(db: SQLiteDatabase, chat: Long, json: JSONObject): List<MessageDelta> =
         applyHistoryPage(db, chat, json)

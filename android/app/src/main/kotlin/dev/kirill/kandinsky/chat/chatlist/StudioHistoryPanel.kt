@@ -74,7 +74,7 @@ class StudioHistoryPanel(
     private var pendingDialog: AlertDialog? = null
 
     private val search = EditText(context)
-    private val archiveTile = label(16f)
+    private val archiveTile = label(15f)
     private val history = ListView(context)
     private val adapter =
         object : BaseAdapter() {
@@ -100,12 +100,15 @@ class StudioHistoryPanel(
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
                 when (val item = items[position]) {
                     is Item.Thread ->
-                        ((convertView as? ThreadCell) ?: ThreadCell()).apply { bind(item.value) }
+                        ((convertView as? StudioThreadCell) ?: StudioThreadCell(context)).apply {
+                            bind(item.value, item.value.id == selected,
+                                { select(item.value) }, { menu(it, item.value) }, ::identity)
+                        }
                     is Item.Heading ->
-                        ((convertView as? TextView) ?: label(15f)).apply {
+                        ((convertView as? TextView) ?: label(12f)).apply {
                             text = item.title
                             setTextColor(KandinskyPalette.studioMuted)
-                            setPadding(dp(24), dp(8), dp(16), dp(6))
+                            setPadding(dp(16), dp(8), dp(16), dp(6))
                             layoutParams = AbsListView.LayoutParams(-1, dp(36))
                         }
                     is Item.Footer ->
@@ -134,28 +137,42 @@ class StudioHistoryPanel(
                     val density = resources.displayMetrics.density
                     KandinskyPalette.studioBrand(
                         canvas,
-                        24 * density,
-                        26.5f * density,
+                        16 * density,
+                        20f * density,
                         density,
                         centered = false,
                     )
                 }
             }
         brand.contentDescription = "Kandinsky Studio"
-        addView(brand, LayoutParams(-1, dp(77)))
+        val header = FrameLayout(context)
+        header.addView(brand, FrameLayout.LayoutParams(-1, -1))
+        if (closeCurrent != null) {
+            header.addView(label(24f).apply {
+                text = "×"
+                gravity = Gravity.CENTER
+                contentDescription = "Закрыть историю"
+                identity(this, "chats.header.close")
+                setOnClickListener { closeCurrent.invoke() }
+            }, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(10)
+                marginEnd = dp(12)
+            })
+        }
+        addView(header, LayoutParams(-1, dp(72)))
 
         val create =
             LinearLayout(context).apply {
                 gravity = Gravity.CENTER
-                background = rounded(KandinskyPalette.studioInk, 14)
+                background = rounded(KandinskyPalette.studioInk, 11)
                 addView(
                     android.widget.ImageView(context).apply {
-                        setImageDrawable(icon(R.drawable.kandinsky_drawer_add, 24, Color.WHITE))
+                        setImageDrawable(icon(R.drawable.kandinsky_drawer_add, 18, Color.WHITE))
                     },
-                    LayoutParams(dp(24), dp(24)),
+                    LayoutParams(dp(18), dp(18)),
                 )
                 addView(
-                    label(14f).apply {
+                    label(15f).apply {
                         text = "Новый чат"
                         setTextColor(Color.WHITE)
                         typeface = Typeface.create(Typeface.DEFAULT, 500, false)
@@ -170,24 +187,24 @@ class StudioHistoryPanel(
                     compose()
                 }
             }
-        addView(create, LayoutParams(-1, dp(52)).apply { setMargins(dp(16), 0, dp(16), 0) })
+        addView(create, LayoutParams(-1, dp(44)).apply { setMargins(dp(16), 0, dp(16), 0) })
 
         search.hint = "Поиск по чатам"
-        search.textSize = 16f
+        search.textSize = 15f
         search.setTextColor(KandinskyPalette.studioInk)
         search.setHintTextColor(KandinskyPalette.studioMuted)
         search.setSingleLine()
         search.filters = arrayOf(InputFilter.LengthFilter(100))
         search.imeOptions = EditorInfo.IME_ACTION_SEARCH
-        search.background = rounded(KandinskyPalette.studioSurface, 14)
+        search.background = rounded(KandinskyPalette.studioSurface, 10)
         search.setPadding(dp(16), 0, dp(16), 0)
         search.setCompoundDrawablesRelative(
-            icon(R.drawable.kandinsky_drawer_search, 24),
+            icon(R.drawable.kandinsky_drawer_search, 18),
             null,
             null,
             null,
         )
-        search.compoundDrawablePadding = dp(14)
+        search.compoundDrawablePadding = dp(10)
         identity(search, "chats.search.field")
         search.setOnEditorActionListener { _, id, _ ->
             if (id == EditorInfo.IME_ACTION_SEARCH) {
@@ -216,7 +233,7 @@ class StudioHistoryPanel(
         )
         addView(
             search,
-            LayoutParams(-1, dp(56)).apply { setMargins(dp(16), dp(16), dp(16), dp(4)) },
+            LayoutParams(-1, dp(40)).apply { setMargins(dp(16), dp(12), dp(16), dp(12)) },
         )
 
         archiveTile.setPadding(dp(16), 0, dp(16), 0)
@@ -227,7 +244,8 @@ class StudioHistoryPanel(
             reload()
         }
         updateArchive()
-        addView(archiveTile, LayoutParams(-1, dp(48)))
+        addView(archiveTile, LayoutParams(-1, dp(44)))
+        addView(View(context), LayoutParams(-1, dp(8)))
 
         history.adapter = adapter
         history.divider = null
@@ -243,23 +261,30 @@ class StudioHistoryPanel(
         addView(history, LayoutParams(-1, 0, 1f))
         addView(
             View(context).apply { setBackgroundColor(KandinskyPalette.studioBorder) },
-            LayoutParams(-1, dp(1)),
+            LayoutParams(-1, dp(1)).apply { setMargins(dp(16), 0, dp(16), 0) },
         )
         val accountRow = FrameLayout(context)
         accountRow.addView(
-            label(12f).apply {
-                text = network.profile.name
-                setTextColor(KandinskyPalette.studioMuted)
-                setPadding(dp(24), 0, dp(24), 0)
+            label(15f).apply {
+                text = "Аккаунт"
+                contentDescription = "Аккаунт, ${network.profile.name}"
+                setPadding(dp(60), 0, dp(16), 0)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             },
             FrameLayout.LayoutParams(-1, -1).apply { marginEnd = dp(40) },
         )
+        accountRow.addView(label(15f).apply {
+            text = "К"
+            gravity = Gravity.CENTER
+            background = rounded(Color.rgb(177, 237, 215), 16)
+        }, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER_VERTICAL).apply {
+            marginStart = dp(16)
+        })
         accountRow.addView(
-            label(18f).apply {
-                text = "⋯"
-                gravity = Gravity.CENTER
+            android.widget.ImageView(context).apply {
+                setImageDrawable(icon(R.drawable.kandinsky_drawer_more, 18, KandinskyPalette.studioMuted))
+                scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
                 contentDescription = "Управление аккаунтом"
                 identity(this, "chats.manageAccount")
                 setOnClickListener {
@@ -273,20 +298,20 @@ class StudioHistoryPanel(
                     }
                 }
             },
-            FrameLayout.LayoutParams(dp(44), -1, Gravity.END).apply { marginEnd = dp(12) },
+            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER_VERTICAL or Gravity.END).apply { marginEnd = dp(12) },
         )
-        addView(accountRow, LayoutParams(-1, dp(32)))
+        addView(accountRow, LayoutParams(-1, dp(52)))
         val exit =
-            label(16f).apply {
+            label(15f).apply {
                 text = "Выйти"
                 contentDescription = "Выйти"
                 setCompoundDrawablesRelative(
-                    icon(R.drawable.kandinsky_drawer_logout, 20),
+                    icon(R.drawable.kandinsky_drawer_logout, 18),
                     null,
                     null,
                     null,
                 )
-                compoundDrawablePadding = dp(20)
+                compoundDrawablePadding = dp(12)
                 setPadding(dp(16), 0, dp(16), 0)
                 identity(this, "chats.account")
                 setOnClickListener {
@@ -294,7 +319,7 @@ class StudioHistoryPanel(
                     logout()
                 }
             }
-        addView(exit, LayoutParams(-1, dp(56)))
+        addView(exit, LayoutParams(-1, dp(44)))
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
@@ -374,13 +399,13 @@ class StudioHistoryPanel(
             icon(
                 if (archive) R.drawable.kandinsky_drawer_back
                 else R.drawable.kandinsky_drawer_archive,
-                24,
+                18,
             ),
             null,
             null,
             null,
         )
-        archiveTile.compoundDrawablePadding = dp(16)
+        archiveTile.compoundDrawablePadding = dp(12)
         archiveTile.contentDescription = if (archive) "Все чаты" else "Архив"
     }
 
@@ -475,15 +500,9 @@ class StudioHistoryPanel(
         val next = buildList {
             if (archive) add(Item.Heading("Архив"))
             if (!archive && query().isEmpty()) {
-                val pinned = threads.filter { it.pinned }
-                val recent = threads.filterNot { it.pinned }
-                if (pinned.isNotEmpty()) {
-                    add(Item.Heading("Закреплённые"))
-                    addAll(pinned.map { Item.Thread(it) })
-                }
-                if (recent.isNotEmpty()) {
-                    add(Item.Heading("Недавние"))
-                    addAll(recent.map { Item.Thread(it) })
+                for (section in StudioHistorySections.make(threads)) {
+                    add(Item.Heading(section.title))
+                    addAll(section.threads.map { Item.Thread(it) })
                 }
             } else addAll(threads.map { Item.Thread(it) })
             when {
@@ -604,48 +623,4 @@ class StudioHistoryPanel(
             .show()
     }
 
-    private inner class ThreadCell : LinearLayout(context) {
-        private val mark = label(19f)
-        private val title = label(16f)
-        private val actions = android.widget.ImageView(context)
-
-        init {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = AbsListView.LayoutParams(-1, dp(56))
-            setPadding(dp(16), 0, dp(12), 0)
-            mark.gravity = Gravity.CENTER_VERTICAL
-            addView(mark, LayoutParams(dp(40), -1))
-            title.maxLines = 2
-            title.ellipsize = android.text.TextUtils.TruncateAt.END
-            addView(title, LayoutParams(0, -1, 1f))
-            actions.setImageDrawable(icon(R.drawable.kandinsky_drawer_menu, 24))
-            actions.scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
-            actions.contentDescription = "Действия с чатом"
-            addView(actions, LayoutParams(dp(44), -1))
-        }
-
-        // Привязывает доступные действия к этим данным, чтобы повторное использование строки не
-        // обращалось
-        // к прежнему чату.
-        fun bind(row: StudioThread) {
-            val marker =
-                when {
-                    row.archived -> icon(R.drawable.kandinsky_drawer_archive, 19)
-                    row.pinned -> icon(R.drawable.kandinsky_drawer_pin, 19)
-                    else -> null
-                }
-            mark.setCompoundDrawablesRelative(marker, null, null, null)
-            mark.visibility = if (row.archived || row.pinned) View.VISIBLE else View.GONE
-            title.text = row.title
-            title.isSelected = row.id == selected
-            identity(title, "chat.row.${row.id}")
-            identity(actions, "chats.actions.${row.id}")
-            setBackgroundColor(
-                if (row.id == selected) Color.argb(20, 56, 227, 178) else Color.WHITE
-            )
-            title.setOnClickListener { select(row) }
-            actions.setOnClickListener { menu(actions, row) }
-        }
-    }
 }

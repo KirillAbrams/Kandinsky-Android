@@ -37,9 +37,11 @@ internal fun NetworkStore.applyEventBatch(db: SQLiteDatabase, json: JSONObject):
         val touched = linkedMapOf<Long, MutableSet<Long>>()
         val removed = linkedMapOf<Long, MutableList<Long>>()
         json.optJSONArray("chats")?.let { catalog ->
+            require(catalog.length() <= 128)
             val missing = JSONArray()
             for (i in 0 until catalog.length()) {
                 val entry = catalog.getJSONObject(i)
+                if (json.getLong("cursor") > current) rememberStudioDirectory(db, entry)
                 val exists =
                     db.rawQuery(
                             "SELECT id FROM chats WHERE id=?",

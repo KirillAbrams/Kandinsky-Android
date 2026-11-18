@@ -45,6 +45,7 @@ internal fun NetworkStore.mergeChatRows(
     json: JSONObject,
     touched: MutableMap<Long, MutableSet<Long>>,
     limit: Int = 128,
+    preserveDirectoryMetadata: Boolean = false,
 ): Map<Long, List<Long>> {
     val removed = linkedMapOf<Long, List<Long>>()
     val chats = json.getJSONArray("chats")
@@ -105,6 +106,7 @@ internal fun NetworkStore.mergeChatRows(
         touched[id] = linkedSetOf()
         removed[id] = ChatServerState.applyState(db, id, chat.optJSONObject("chatState"))
         if (chat.has("archived")) studioArchive(db, id, chat.getBoolean("archived"))
+        rememberStudioDirectory(db, chat, preserveKnown = preserveDirectoryMetadata)
         chat.optJSONObject("lastMessage")?.let { wire ->
             merge(db, wire)?.let { touched.getValue(id).add(it) }
         }
@@ -112,10 +114,31 @@ internal fun NetworkStore.mergeChatRows(
     return removed
 }
 
+// Сводка не зависит от загруженной страницы сообщений и переживает закрытие приложения.
+internal fun NetworkStore.rememberStudioDirectory(
+    db: SQLiteDatabase, chat: JSONObject, preserveKnown: Boolean = false,
+) {
+    if (!chat.has("activityAtMs")) return
+    val activity = chat.getLong("activityAtMs")
+    require(activity >= 0)
+    val key = "studioDirectory:${chat.getLong("id")}"
+    if (preserveKnown && db.rawQuery("SELECT 1 FROM net_state WHERE key=?", arrayOf(key))
+        .use { it.moveToFirst() }) return
+    state(
+        db,
+        key,
+        JSONObject()
+            .put("activityAtMs", activity)
+            .put("generating", chat.optBoolean("generating", false))
+            .toString(),
+    )
+}
+
 internal fun NetworkStore.mergeChatList(
     db: SQLiteDatabase,
     json: JSONObject,
     studioRecent: Boolean = false,
+    preserveDirectoryMetadata: Boolean = false,
 ): List<MessageDelta> =
     NetworkStore.transaction(db) {
         val touched = linkedMapOf<Long, MutableSet<Long>>()
@@ -125,6 +148,7 @@ internal fun NetworkStore.mergeChatList(
                 json,
                 touched,
                 if (studioRecent) StudioRecentPage.CATALOG_LIMIT else 128,
+                preserveDirectoryMetadata,
             )
         if (studioRecent) rememberStudioRecent(db, json)
         deltas(db, touched, removed, MessageChangeReason.SYNC)
@@ -151,8 +175,9 @@ internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage 
     val entries =
         db.rawQuery(
                 """
-        SELECT c.id,c.title,c.unreadCount,c.pinned,c.updatedSortKey,n.lastSeq,s.payload
+        SELECT c.id,c.title,c.unreadCount,c.pinned,c.updatedSortKey,n.lastSeq,s.payload,d.value
         FROM chats c JOIN net_chats n ON n.chatID=c.id LEFT JOIN net_chat_states s ON s.chatID=c.id
+        LEFT JOIN net_state d ON d.key='studioDirectory:' || c.id
         """
                     .trimIndent(),
                 null,
@@ -169,7 +194,8 @@ internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage 
                         )
                             continue
                         val id = rows.getLong(0)
-                        val activity = rows.getLong(4)
+                        val directory = if (rows.isNull(7)) null else JSONObject(rows.getString(7))
+                        val activity = directory?.optLong("activityAtMs") ?: rows.getLong(4)
                         val thread =
                             StudioThread(
                                 id,
@@ -178,6 +204,8 @@ internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage 
                                 rows.getLong(2),
                                 rows.getInt(3) != 0,
                                 archived = false,
+                                activityAtMs = activity,
+                                generating = directory?.optBoolean("generating") ?: false,
                             )
                         add(
                             Entry(
@@ -193,8 +221,8 @@ internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage 
         entries
             .sortedWith(
                 compareByDescending<Entry> { it.thread.pinned }
-                    .thenBy { it.rank }
                     .thenByDescending { it.activity }
+                    .thenBy { it.rank }
                     .thenBy { it.thread.id }
             )
             .map { it.thread }

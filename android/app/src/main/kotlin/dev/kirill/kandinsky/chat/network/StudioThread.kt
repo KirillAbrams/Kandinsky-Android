@@ -9,6 +9,8 @@ data class StudioThread(
     val unreadCount: Long,
     val pinned: Boolean,
     val archived: Boolean,
+    val activityAtMs: Long = 0,
+    val generating: Boolean = false,
 ) {
     fun wire() =
         JSONObject()
@@ -18,6 +20,8 @@ data class StudioThread(
             .put("unreadCount", unreadCount)
             .put("pinned", pinned)
             .put("archived", archived)
+            .put("activityAtMs", activityAtMs)
+            .put("generating", generating)
 
     companion object {
         fun from(value: JSONObject) =
@@ -28,6 +32,8 @@ data class StudioThread(
                 value.getLong("unreadCount"),
                 value.getBoolean("pinned"),
                 value.getBoolean("archived"),
+                value.optLong("activityAtMs", 0),
+                value.optBoolean("generating", false),
             )
     }
 }

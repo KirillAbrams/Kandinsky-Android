@@ -20,13 +20,13 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
             refreshing = false
             if (refreshPending) refreshStudioDirectory()
         }
-        sync.database({ sync.cache.studioChatIDs(it) }) { known ->
+        sync.database({ sync.cache.studioChatIDs(it) to sync.cache.cursor(it) }) { known ->
             if (sync.closed || connection != sync.connectionEpoch) {
                 complete()
                 return@database
             }
             known.fold(
-                { ids -> loadDirectory(ids, connection, ::complete) },
+                { (ids, cursor) -> loadDirectory(ids, connection, cursor, ::complete) },
                 {
                     complete()
                     sync.reconnectAfterFailure(connection)
@@ -35,7 +35,9 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
-    private fun loadDirectory(known: List<Long>, connection: Int, complete: () -> Unit) {
+    private fun loadDirectory(
+        known: List<Long>, connection: Int, startedAtCursor: Long, complete: () -> Unit,
+    ) {
         sync.http({
             val recent = sync.api.json("/v1/chats")
             // Архивированный чат отсутствует в недавних. Сверяем его флаги по сохранённому номеру.
@@ -55,8 +57,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
                         complete()
                     } else {
                         sync.database({ db ->
-                            val changes = sync.cache.mergeChats(db, recent, studioRecent = true)
-                            changes + states.flatMap { sync.cache.mergeChats(db, it) }
+                            sync.cache.mergeStudioDirectorySnapshot(
+                                db, recent, states, startedAtCursor)
                         }) { applied ->
                             if (!sync.closed && connection == sync.connectionEpoch) {
                                 applied.fold(
@@ -152,7 +154,10 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
 
     private fun mergeStudioThread(thread: StudioThread, completion: (Result<Unit>) -> Unit) {
         sync.database({
-            sync.cache.mergeChats(it, JSONObject().put("chats", JSONArray().put(thread.wire())))
+            sync.cache.mergeChats(
+                it, JSONObject().put("chats", JSONArray().put(thread.wire())),
+                preserveDirectoryMetadata = true,
+            )
         }) { result ->
             result.onSuccess { sync.emit(it) }
             sync.main.post { completion(result.map { Unit }) }

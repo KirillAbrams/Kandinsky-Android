@@ -77,6 +77,20 @@ class VisualContractTest {
     }
 
     @Test
+    fun drawerPaperclipAndItsLicenseAreBundled() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        for (id in listOf(R.drawable.heroicons_paper_clip, R.drawable.kandinsky_drawer_more)) {
+            val drawable = checkNotNull(context.getDrawable(id))
+            assertTrue(drawable.intrinsicWidth > 0)
+            assertTrue(drawable.intrinsicHeight > 0)
+        }
+        val license = context.resources.openRawResource(R.raw.heroicons_license)
+            .bufferedReader().use { it.readText() }
+        assertTrue(license.contains("MIT License"))
+        assertTrue(license.contains("Tailwind Labs"))
+    }
+
+    @Test
     fun generationArtworkRemainsInApplication() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val images =
@@ -87,8 +101,6 @@ class VisualContractTest {
                 R.drawable.kandinsky_drawer_archive,
                 R.drawable.kandinsky_drawer_back,
                 R.drawable.kandinsky_drawer_logout,
-                R.drawable.kandinsky_drawer_menu,
-                R.drawable.kandinsky_drawer_pin,
                 R.drawable.kandinsky_drawer_search,
                 R.drawable.kandinsky_evolution,
                 R.drawable.kandinsky_generation_refresh,

@@ -46,12 +46,15 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
         applyingEvents = true
         val value = eventQueue.first
         val connectionID = sync.connectionEpoch
+        var fetchedUnknownChats = false
         fun apply() {
-            sync.database({ db -> sync.cache.events(db, value) }) { result ->
+            sync.database({ db -> sync.cache.directoryEvents(db, value) }) { result ->
                 if (connectionID == sync.connectionEpoch)
                     result.fold(
-                        { changes ->
+                        { (changes, directoryChanged) ->
                             sync.emit(changes)
+                            if (directoryChanged || fetchedUnknownChats)
+                                sync.onStudioRecentChanged?.invoke()
                             sync.attachments.drainRemovedStudioMedia()
                             eventQueue.removeFirst()
                             applyingEvents = false
@@ -66,6 +69,7 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
             if (connectionID == sync.connectionEpoch)
                 unknown.fold(
                     { missing ->
+                        fetchedUnknownChats = missing
                         if (!missing) apply()
                         else
                             sync.http({ sync.api.json("/v1/chats") }) { rows ->
