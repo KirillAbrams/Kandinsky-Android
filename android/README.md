@@ -10,6 +10,6 @@
 
 В app/src/main/kotlin/dev/kirill/kandinsky/chat открой account для формы входа, conversation для разговора, chatlist для списка чатов, network для обмена с сервером и storage для сохранённых данных. Проверки без устройства находятся в app/src/test. Проверки на устройстве находятся в app/src/androidTest.
 
-Для добавления исходного файла открой [раздел вложений](app/src/main/kotlin/dev/kirill/kandinsky/chat/attachments). Полноэкранный просмотр и переход к соседнему файлу находятся в [разделе результатов](app/src/main/kotlin/dev/kirill/kandinsky/chat/results).
+Выбор файла, загрузка на сервер и повторный выбор из недавних собраны в [ChatAttachmentCoordinator.kt](app/src/main/kotlin/dev/kirill/kandinsky/chat/attachments/ChatAttachmentCoordinator.kt). Полноэкранный просмотр и переход к соседнему файлу находятся в [разделе результатов](app/src/main/kotlin/dev/kirill/kandinsky/chat/results).
 
 Для проверки восстановления открой «Длинную историю», набери черновик и поверни телефон. Затем останови приложение через его настройки и открой снова. В обоих случаях проверь выбранный чат, текст и место чтения. Удали черновик после проверки. При открытии готового видео данные приходят из Алматы, просмотренные части сохраняются на телефоне.

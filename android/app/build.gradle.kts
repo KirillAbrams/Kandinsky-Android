@@ -23,8 +23,8 @@ android {
         buildConfigField("String", "KANDINSKY_BRIDGE_ORIGIN", "\"$bridgeOrigin\"")
 
         minSdk = 29; targetSdk = 36
-        versionCode = providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(2).get()
-        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.1").get()
+        versionCode = providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(3).get()
+        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.2").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     val standFixtures = rootProject.layout.projectDirectory.dir("../fixtures")

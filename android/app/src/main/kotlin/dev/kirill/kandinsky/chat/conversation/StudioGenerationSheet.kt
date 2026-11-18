@@ -1,6 +1,7 @@
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Dialog
+import dev.kirill.kandinsky.chat.attachments.AttachmentSource
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -140,21 +141,11 @@ internal class StudioGenerationSheet(
         show()
     }
 
-    /**
-     * Заполняет панель вариантами выбора фотографии, съёмки и загрузки видео
-     * Каждому варианту назначает номер для последующего открытия подходящего системного выбора
-     * Сам файл здесь ещё не читается и не отправляется на генерацию
-     */
-    fun showAttachments(onSelect: (Int) -> Unit) {
+    fun showAttachments(onSelect: (AttachmentSource) -> Unit) {
         (root.background as GradientDrawable).setColor(KandinskyPalette.studioSheet)
-        val choices = listOf(
-            Triple("Оживить фото из галереи", "Видео из фотографии", R.drawable.kandinsky_attachment_photo),
-            Triple("Снять фото", "", R.drawable.kandinsky_attachment_camera),
-            Triple("Загрузить и посмотреть видео", "MP4 до 20 МБ и 60 секунд", R.drawable.kandinsky_model_video)
-        )
-        choices.forEachIndexed { index, (title, subtitle, resource) ->
-            addTile(title, subtitle, resource) { onSelect(index) }
-        }
+        addTile("Оживить фото из галереи", "Видео из фотографии", R.drawable.kandinsky_attachment_photo) { onSelect(AttachmentSource.PHOTO) }
+        addTile("Снять фото", "", R.drawable.kandinsky_attachment_camera) { onSelect(AttachmentSource.CAMERA) }
+        addTile("Загрузить и посмотреть видео", "MP4 до 20 МБ и 60 секунд", R.drawable.kandinsky_model_video) { onSelect(AttachmentSource.VIDEO) }
         show()
     }
 
