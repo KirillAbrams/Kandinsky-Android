@@ -810,8 +810,6 @@ class ConversationChrome(
         postDelayed(clearStudioFeedback, 4000)
     }
 
-    // Системное окно уже учитывает открытую клавиатуру. Второй отступ поднял бы уведомление слишком
-    // высоко.
     private fun feedbackInsets(): Pair<Int, Int> {
         val insets = rootWindowInsets
         val safe =

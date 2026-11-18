@@ -158,8 +158,6 @@ internal class ChatAttachmentCoordinator(
             } else runtime.media.stageStudioPhoto(open, complete)
     }
 
-    // Недавний файл уже есть на сервере. Загружаем местную копию и привязываем её к прежнему
-    // номеру.
     private fun selectRecent(upload: StudioUpload) {
         val network = runtime.network ?: return
         if (!canPick || !isActive()) return

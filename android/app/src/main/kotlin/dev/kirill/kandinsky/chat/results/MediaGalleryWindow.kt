@@ -23,11 +23,6 @@ data class MediaGalleryEntry(
     val isVideo
         get() = attachment.mime.startsWith("video/")
 
-    /**
-     * Сравнивает путь, вид, размер, исходные размеры и ориентацию двух вложений Не включает подпись
-     * и время сообщения в признаки самого медиа По результату можно сохранить готовое
-     * представление, если изменились только сопутствующие сведения
-     */
     fun hasSameMedia(other: MediaGalleryEntry) =
         attachment.relativePath == other.attachment.relativePath &&
             attachment.mime == other.attachment.mime &&
@@ -37,10 +32,6 @@ data class MediaGalleryEntry(
             attachment.orientation == other.attachment.orientation
 
     companion object {
-        /**
-         * Отбрасывает сообщения и файлы с неподходящим видом содержимого В каждой записи сохраняет
-         * сообщение, порядок, подпись, время и номер вложения
-         */
         fun entries(row: Message): List<MediaGalleryEntry> {
             if (row.kind !in listOf(MessageKind.PHOTO, MessageKind.VIDEO, MessageKind.GIF))
                 return emptyList()
@@ -63,10 +54,6 @@ data class MediaGalleryEntry(
     }
 }
 
-/**
- * Ограниченное окно описаний файлов, а готовые изображения и системные поверхности принадлежат
- * страницам просмотра
- */
 class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
     companion object {
         const val MAXIMUM_ENTRIES = 96
@@ -106,11 +93,6 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         trim()
     }
 
-    /**
-     * Переводит выбор на одну соседнюю запись в указанном направлении Принимает только шаг вперёд
-     * или назад и проверяет границы сохранённого окна Если соседа ещё нет, оставляет выбранный файл
-     * без изменения
-     */
     fun step(delta: Int): Boolean {
         if (delta != -1 && delta != 1) return false
         val index = selectedIndex ?: return false
@@ -119,23 +101,13 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         return true
     }
 
-    /**
-     * Выбирает запись галереи по её постоянному обозначению Принимает только запись, уже
-     * присутствующую в текущем окне Возвращает признак успешного выбора без самостоятельной
-     * загрузки новых страниц
-     */
     fun select(id: String): Boolean {
         if (entries.none { it.id == id }) return false
         selectedID = id
         return true
     }
 
-    /**
-     * Объединяет страницу того же чата с текущими сведениями об окне просмотра Заменяет совпадающие
-     * записи пришедшими данными, сохраняет общий порядок и признаки продолжения истории После
-     * объединения ограничивает объём сведений вокруг выбранного файла Страницу другого чата
-     * отклоняет, чтобы просмотр не смешал разные истории
-     */
+    // Страницу другого чата отклоняет, чтобы просмотр не смешал разные истории.
     fun merge(page: HistoryPage): Boolean {
         if (page.rows.any { it.chatID != chatID }) return false
         val incoming = page.rows.flatMap { MediaGalleryEntry.entries(it) }.sortedWith(order)
@@ -155,12 +127,6 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         return true
     }
 
-    /**
-     * Согласует окно просмотра со вставками, обновлениями и удалениями текущего чата Удаляет
-     * прежние записи изменившихся сообщений и собирает их вложения заново Если выбранный файл
-     * исчез, выбирает ближайшую следующую запись либо последнюю из оставшихся После изменений снова
-     * ограничивает объём сохранённых сведений
-     */
     fun apply(delta: MessageDelta) {
         if (delta.chat.id != chatID) return
         val previous = selected
@@ -176,11 +142,6 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         trim()
     }
 
-    /**
-     * Ограничивает окно девяноста шестью записями вокруг выбранного вложения Если обрезаны соседние
-     * записи, сохраняет признаки возможного продолжения в соответствующую сторону Сами
-     * декодированные изображения здесь не удерживаются, меняется только набор описаний файлов
-     */
     private fun trim() {
         if (entries.size <= MAXIMUM_ENTRIES) return
         val lower =

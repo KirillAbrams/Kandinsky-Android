@@ -1,17 +1,26 @@
 package dev.kirill.kandinsky.chat.rendering
+
 import dev.kirill.kandinsky.chat.domain.*
+
 object ReadingAnchorResolver {
- /**
-  * Меняет опору только если пользователь не следует концу и её текущее сообщение действительно входит в удаляемый набор
-  * Сначала выбирает ближайшую оставшуюся строку после удалённой, при её отсутствии ищет предыдущую
-  * Для новой строки сбрасывает внутренние смещения, сохраняя версию разметки и отсутствие следования концу
-  */
- fun afterRemoving(anchor:ReadingAnchor,rows:List<IndexedRow>,removed:Set<MessageID>):ReadingAnchor{
-  val id=anchor.messageID
-  if(anchor.followsBottom || id==null || id !in removed)return anchor
-  val i=rows.indexOfFirst{it.messageID==id};if(i<0)return anchor
-  val next=rows.asSequence().drop(i+1).firstOrNull{it.messageID !in removed}
-  val previous=rows.subList(0,i).asReversed().firstOrNull{it.messageID !in removed}
-  return ReadingAnchor(messageID=(next ?: previous)?.messageID,followsBottom=false,layoutVersion=anchor.layoutVersion)
- }
+    fun afterRemoving(
+        anchor: ReadingAnchor,
+        rows: List<IndexedRow>,
+        removed: Set<MessageID>,
+    ): ReadingAnchor {
+        val anchorMessageID = anchor.messageID
+        if (anchor.followsBottom || anchorMessageID == null || anchorMessageID !in removed)
+            return anchor
+        val removedRowIndex = rows.indexOfFirst { it.messageID == anchorMessageID }
+        if (removedRowIndex < 0) return anchor
+        val nextVisibleRow =
+            rows.asSequence().drop(removedRowIndex + 1).firstOrNull { it.messageID !in removed }
+        val previousVisibleRow =
+            rows.subList(0, removedRowIndex).asReversed().firstOrNull { it.messageID !in removed }
+        return ReadingAnchor(
+            messageID = (nextVisibleRow ?: previousVisibleRow)?.messageID,
+            followsBottom = false,
+            layoutVersion = anchor.layoutVersion,
+        )
+    }
 }

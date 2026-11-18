@@ -6,11 +6,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppFlowTest {
-    @Test fun conversationExposesGenerationControls() {
+    @Test
+    fun conversationExposesGenerationControls() {
         val ui = AppFlowDriver()
         ui.launch()
         ui.openChat("Длинная история")
-        for (id in listOf("composer.plus", "composer.model", "composer.settings", "composer.input", "composer.send")) {
+        for (id in
+            listOf(
+                "composer.plus",
+                "composer.model",
+                "composer.settings",
+                "composer.input",
+                "composer.send",
+            )) {
             assertTrue(ui.find(By.res(id)).visibleBounds.width() > 0)
         }
     }

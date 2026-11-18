@@ -10,12 +10,14 @@ import org.junit.Assume.assumeNotNull
 import org.junit.Test
 
 class AccountLiveFlowTest {
-    @Test fun existingAccountCanOpenBothOriginalHistories() {
+    @Test
+    fun existingAccountCanOpenBothOriginalHistories() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         assumeNotNull(NetworkCredentials(context).load())
         val device = UiDevice.getInstance(instrumentation)
-        val launch = requireNotNull(context.packageManager.getLaunchIntentForPackage(context.packageName))
+        val launch =
+            requireNotNull(context.packageManager.getLaunchIntentForPackage(context.packageName))
         context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         for (title in listOf("Плотная медиалента", "Длинная история")) {
             val menu = device.wait(Until.findObject(By.desc("История запросов")), 15000)

@@ -8,9 +8,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
 import android.text.InputFilter
 import android.text.TextWatcher
-import android.text.Editable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -27,12 +27,12 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import dev.kirill.kandinsky.chat.R
+import dev.kirill.kandinsky.chat.domain.Cancellation
 import dev.kirill.kandinsky.chat.network.NetworkSync
 import dev.kirill.kandinsky.chat.network.StudioRecentPage
 import dev.kirill.kandinsky.chat.network.StudioThread
 import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.rendering.KandinskyPalette
-import dev.kirill.kandinsky.chat.domain.Cancellation
 import org.json.JSONObject
 
 class StudioHistoryPanel(
@@ -48,9 +48,12 @@ class StudioHistoryPanel(
 ) : LinearLayout(context), KandinskyInsetHost {
     private sealed interface Item {
         data class Heading(val title: String) : Item
+
         data class Thread(val value: StudioThread) : Item
+
         data class Footer(val title: String, val canLoad: Boolean) : Item
     }
+
     private val main = Handler(Looper.getMainLooper())
     private val requestSearch = Runnable { loadPage() }
     private val threads = mutableListOf<StudioThread>()
@@ -73,102 +76,100 @@ class StudioHistoryPanel(
     private val search = EditText(context)
     private val archiveTile = label(16f)
     private val history = ListView(context)
-    private val adapter = object : BaseAdapter() {
-        /**
-         * Учитывает строки чатов, заголовки разделов и нижнее состояние списка
-         * Система использует это число для ограничения запрашиваемых позиций
-         */
-        override fun getCount() = items.size
-        /**
-         * Элемент может быть чатом, заголовком или нижней строкой состояния
-         * Повторное чтение данных здесь не выполняется
-         */
-        override fun getItem(position: Int) = items[position]
-        /**
-         * Для заголовка или нижнего состояния формирует отдельное отрицательное значение по позиции
-         * Это отличает служебные элементы от настоящих чатов
-         */
-        override fun getItemId(position: Int) = (items[position] as? Item.Thread)?.value?.id ?: (-position-1L)
-        /**
-         * Отдельные виды нужны для заголовков, чатов и нижнего состояния списка
-         * Система переиспользует представления только внутри подходящего вида
-         */
-        override fun getViewTypeCount() = 3
-        /**
-         * Определяет вид элемента на запрошенной позиции
-         * Возвращает отдельное значение для заголовка, чата и нижней строки состояния
-         * Это предотвращает передачу неподходящей ячейки при повторном использовании
-         */
-        override fun getItemViewType(position: Int) = when (items[position]) {
-            is Item.Heading -> 0
-            is Item.Thread -> 1
-            is Item.Footer -> 2
+    private val adapter =
+        object : BaseAdapter() {
+            override fun getCount() = items.size
+
+            override fun getItem(position: Int) = items[position]
+
+            override fun getItemId(position: Int) =
+                (items[position] as? Item.Thread)?.value?.id ?: (-position - 1L)
+
+            override fun getViewTypeCount() = 3
+
+            override fun getItemViewType(position: Int) =
+                when (items[position]) {
+                    is Item.Heading -> 0
+                    is Item.Thread -> 1
+                    is Item.Footer -> 2
+                }
+
+            override fun isEnabled(position: Int) =
+                items[position] is Item.Thread || (items[position] as? Item.Footer)?.canLoad == true
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                when (val item = items[position]) {
+                    is Item.Thread ->
+                        ((convertView as? ThreadCell) ?: ThreadCell()).apply { bind(item.value) }
+                    is Item.Heading ->
+                        ((convertView as? TextView) ?: label(15f)).apply {
+                            text = item.title
+                            setTextColor(KandinskyPalette.studioMuted)
+                            setPadding(dp(24), dp(8), dp(16), dp(6))
+                            layoutParams = AbsListView.LayoutParams(-1, dp(36))
+                        }
+                    is Item.Footer ->
+                        ((convertView as? TextView) ?: label(15f)).apply {
+                            text = item.title
+                            setTextColor(KandinskyPalette.studioMuted)
+                            setPadding(dp(24), 0, dp(16), 0)
+                            layoutParams = AbsListView.LayoutParams(-1, dp(48))
+                            setOnClickListener(
+                                if (item.canLoad) OnClickListener { loadPage() } else null
+                            )
+                            isClickable = item.canLoad
+                            identity(this, "chats.empty")
+                        }
+                }
         }
-        /**
-         * Разрешает выбор настоящего чата и активной строки продолжения загрузки
-         * Заголовки и неподвижные сообщения о состоянии оставляет без действия
-         * Список использует этот признак при обработке нажатия
-         */
-        override fun isEnabled(position: Int) = items[position] is Item.Thread || (items[position] as? Item.Footer)?.canLoad == true
-        /**
-         * Для чата привязывает данные к строке, для заголовка и состояния задаёт подпись и размеры
-         * У нижней строки назначает получение страницы только при разрешённом продолжении
-         */
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = when (val item = items[position]) {
-            is Item.Thread -> ((convertView as? ThreadCell) ?: ThreadCell()).apply { bind(item.value) }
-            is Item.Heading -> ((convertView as? TextView) ?: label(15f)).apply {
-                text = item.title
-                setTextColor(KandinskyPalette.studioMuted)
-                setPadding(dp(24), dp(8), dp(16), dp(6))
-                layoutParams = AbsListView.LayoutParams(-1, dp(36))
-            }
-            is Item.Footer -> ((convertView as? TextView) ?: label(15f)).apply {
-                text = item.title
-                setTextColor(KandinskyPalette.studioMuted)
-                setPadding(dp(24), 0, dp(16), 0)
-                layoutParams = AbsListView.LayoutParams(-1, dp(48))
-                setOnClickListener(if (item.canLoad) OnClickListener { loadPage() } else null)
-                isClickable = item.canLoad
-                identity(this, "chats.empty")
-            }
-        }
-    }
 
     init {
         orientation = VERTICAL
         setBackgroundColor(Color.WHITE)
         isFocusableInTouchMode = true
         identity(this, "chats.library")
-        val brand = object : View(context) {
-            /**
-             * Учитывает плотность экрана при расположении и масштабе изображения
-             * Использует вариант знака без выравнивания по центру всей ширины
-             */
-            override fun onDraw(canvas: Canvas) {
-                val density = resources.displayMetrics.density
-                KandinskyPalette.studioBrand(canvas, 24 * density, 26.5f * density, density, centered = false)
+        val brand =
+            object : View(context) {
+                override fun onDraw(canvas: Canvas) {
+                    val density = resources.displayMetrics.density
+                    KandinskyPalette.studioBrand(
+                        canvas,
+                        24 * density,
+                        26.5f * density,
+                        density,
+                        centered = false,
+                    )
+                }
             }
-        }
         brand.contentDescription = "Kandinsky Studio"
         addView(brand, LayoutParams(-1, dp(77)))
 
-        val create = LinearLayout(context).apply {
-            gravity = Gravity.CENTER
-            background = rounded(KandinskyPalette.studioInk, 14)
-            addView(android.widget.ImageView(context).apply {
-                setImageDrawable(icon(R.drawable.kandinsky_drawer_add, 24, Color.WHITE))
-            }, LayoutParams(dp(24), dp(24)))
-            addView(label(14f).apply {
-                text = "Новый чат"
-                setTextColor(Color.WHITE)
-                typeface = Typeface.create(Typeface.DEFAULT, 500, false)
-                setPadding(dp(8), 0, 0, 0)
-                importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-            })
-            contentDescription = "Новый чат"
-            identity(this, "chats.compose")
-            setOnClickListener { hideKeyboard(); compose() }
-        }
+        val create =
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER
+                background = rounded(KandinskyPalette.studioInk, 14)
+                addView(
+                    android.widget.ImageView(context).apply {
+                        setImageDrawable(icon(R.drawable.kandinsky_drawer_add, 24, Color.WHITE))
+                    },
+                    LayoutParams(dp(24), dp(24)),
+                )
+                addView(
+                    label(14f).apply {
+                        text = "Новый чат"
+                        setTextColor(Color.WHITE)
+                        typeface = Typeface.create(Typeface.DEFAULT, 500, false)
+                        setPadding(dp(8), 0, 0, 0)
+                        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }
+                )
+                contentDescription = "Новый чат"
+                identity(this, "chats.compose")
+                setOnClickListener {
+                    hideKeyboard()
+                    compose()
+                }
+            }
         addView(create, LayoutParams(-1, dp(52)).apply { setMargins(dp(16), 0, dp(16), 0) })
 
         search.hint = "Поиск по чатам"
@@ -180,34 +181,51 @@ class StudioHistoryPanel(
         search.imeOptions = EditorInfo.IME_ACTION_SEARCH
         search.background = rounded(KandinskyPalette.studioSurface, 14)
         search.setPadding(dp(16), 0, dp(16), 0)
-        search.setCompoundDrawablesRelative(icon(R.drawable.kandinsky_drawer_search,24), null, null, null)
+        search.setCompoundDrawablesRelative(
+            icon(R.drawable.kandinsky_drawer_search, 24),
+            null,
+            null,
+            null,
+        )
         search.compoundDrawablePadding = dp(14)
         identity(search, "chats.search.field")
-        search.setOnEditorActionListener { _, id, _ -> if (id == EditorInfo.IME_ACTION_SEARCH) { hideKeyboard(); true } else false }
-        search.addTextChangedListener(object : TextWatcher {
-            /**
-             * Принимает обязательное уведомление перед изменением поискового текста
-             * Подготовка нового запроса на этом этапе не требуется
-             * Само обновление запускается после получения новой строки
-             */
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            /**
-             * Запускает перечитывание истории после изменения строки поиска
-             * Включает короткую задержку, чтобы серия набираемых букв не создавала отдельный запрос на каждую
-             * Сброс прежней выборки и отмену её результатов выполняет общий метод перечитывания
-             */
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { reload(true) }
-            /**
-             * Дополнительный запрос не создаёт, поскольку он уже назначен при изменении текста
-             * Это исключает повторное одинаковое чтение на одно действие пользователя
-             */
-            override fun afterTextChanged(s: Editable?) = Unit
-        })
-        addView(search, LayoutParams(-1, dp(56)).apply { setMargins(dp(16), dp(16), dp(16), dp(4)) })
+        search.setOnEditorActionListener { _, id, _ ->
+            if (id == EditorInfo.IME_ACTION_SEARCH) {
+                hideKeyboard()
+                true
+            } else false
+        }
+        search.addTextChangedListener(
+            object : TextWatcher {
+                override fun beforeTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    count: Int,
+                    after: Int,
+                ) = Unit
+
+                // Ждём короткую паузу в наборе, чтобы не отправлять отдельный поиск на каждую
+                // букву.
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    reload(true)
+                }
+
+                // Дополнительный запрос не создаёт, поскольку он уже назначен при изменении текста.
+                override fun afterTextChanged(s: Editable?) = Unit
+            }
+        )
+        addView(
+            search,
+            LayoutParams(-1, dp(56)).apply { setMargins(dp(16), dp(16), dp(16), dp(4)) },
+        )
 
         archiveTile.setPadding(dp(16), 0, dp(16), 0)
         identity(archiveTile, "chats.archive")
-        archiveTile.setOnClickListener { archive = !archive; updateArchive(); reload() }
+        archiveTile.setOnClickListener {
+            archive = !archive
+            updateArchive()
+            reload()
+        }
         updateArchive()
         addView(archiveTile, LayoutParams(-1, dp(48)))
 
@@ -223,97 +241,97 @@ class StudioHistoryPanel(
         }
         identity(history, "chats.rows")
         addView(history, LayoutParams(-1, 0, 1f))
-        addView(View(context).apply { setBackgroundColor(KandinskyPalette.studioBorder) }, LayoutParams(-1, dp(1)))
+        addView(
+            View(context).apply { setBackgroundColor(KandinskyPalette.studioBorder) },
+            LayoutParams(-1, dp(1)),
+        )
         val accountRow = FrameLayout(context)
-        accountRow.addView(label(12f).apply {
-            text = network.profile.name
-            setTextColor(KandinskyPalette.studioMuted)
-            setPadding(dp(24), 0, dp(24), 0)
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, FrameLayout.LayoutParams(-1, -1).apply { marginEnd = dp(40) })
-        accountRow.addView(label(18f).apply {
-            text = "⋯"
-            gravity = Gravity.CENTER
-            contentDescription = "Управление аккаунтом"
-            identity(this, "chats.manageAccount")
-            setOnClickListener {
-                hideKeyboard()
-                PopupMenu(context, this).apply {
-                    menu.add("Удалить аккаунт").setOnMenuItemClickListener {
-                        eraseAccount()
-                        true
+        accountRow.addView(
+            label(12f).apply {
+                text = network.profile.name
+                setTextColor(KandinskyPalette.studioMuted)
+                setPadding(dp(24), 0, dp(24), 0)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+            FrameLayout.LayoutParams(-1, -1).apply { marginEnd = dp(40) },
+        )
+        accountRow.addView(
+            label(18f).apply {
+                text = "⋯"
+                gravity = Gravity.CENTER
+                contentDescription = "Управление аккаунтом"
+                identity(this, "chats.manageAccount")
+                setOnClickListener {
+                    hideKeyboard()
+                    PopupMenu(context, this).apply {
+                        menu.add("Удалить аккаунт").setOnMenuItemClickListener {
+                            eraseAccount()
+                            true
+                        }
+                        show()
                     }
-                    show()
+                }
+            },
+            FrameLayout.LayoutParams(dp(44), -1, Gravity.END).apply { marginEnd = dp(12) },
+        )
+        addView(accountRow, LayoutParams(-1, dp(32)))
+        val exit =
+            label(16f).apply {
+                text = "Выйти"
+                contentDescription = "Выйти"
+                setCompoundDrawablesRelative(
+                    icon(R.drawable.kandinsky_drawer_logout, 20),
+                    null,
+                    null,
+                    null,
+                )
+                compoundDrawablePadding = dp(20)
+                setPadding(dp(16), 0, dp(16), 0)
+                identity(this, "chats.account")
+                setOnClickListener {
+                    hideKeyboard()
+                    logout()
                 }
             }
-        }, FrameLayout.LayoutParams(dp(44), -1, Gravity.END).apply { marginEnd = dp(12) })
-        addView(accountRow, LayoutParams(-1, dp(32)))
-        val exit = label(16f).apply {
-            text = "Выйти"
-            contentDescription = "Выйти"
-            setCompoundDrawablesRelative(icon(R.drawable.kandinsky_drawer_logout,20),null,null,null)
-            compoundDrawablePadding=dp(20)
-            setPadding(dp(16), 0, dp(16), 0)
-            identity(this, "chats.account")
-            setOnClickListener { hideKeyboard(); logout() }
-        }
         addView(exit, LayoutParams(-1, dp(56)))
     }
 
-    /**
-     * Переводит размеры оформления в целые пиксели текущего экрана
-     * Учитывает плотность и добавляет половину единицы перед округлением вниз
-     * Единый расчёт используется для отступов, высоты строк и значков панели
-     */
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
-    /**
-     * Назначает основной цвет и вертикальное выравнивание по центру
-     * Конкретный текст и дополнительные ограничения задаются при использовании элемента
-     */
-    private fun label(size: Float) = TextView(context).apply {
-        textSize = size
-        setTextColor(KandinskyPalette.studioInk)
-        gravity = Gravity.CENTER_VERTICAL
-    }
-    /**
-     * Создаёт одноцветную подложку с заданным радиусом углов
-     * Переводит радиус в пиксели по плотности экрана
-     * Используется для кнопки нового чата и поля поиска
-     */
-    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
-    /**
-     * Получает самостоятельный изменяемый экземпляр значка из ресурсов
-     * Задаёт его размер в пикселях и нужный цвет
-     * Если ресурса нет, возвращает отсутствие изображения без создания замены
-     */
-    private fun icon(resource:Int,size:Int,color:Int=KandinskyPalette.studioInk)=context.getDrawable(resource)?.mutate()?.apply {
-        setBounds(0,0,dp(size),dp(size))
-        setTint(color)
-    }
-    /**
-     * Назначает элементу постоянное обозначение для системного чтения и проверок экрана
-     * Подключает обработчик, который дополняет стандартное описание элемента
-     * Нажимаемые элементы дополнительно представляет системе как кнопки
-     */
-    private fun identity(view: View, id: String) {
-        view.accessibilityDelegate = object : AccessibilityDelegate() {
-            /**
-             * Добавляет назначенное обозначение в стандартное системное описание элемента
-             * Для нажимаемого содержимого указывает роль кнопки
-             * Это связывает нарисованное оформление с понятным действием при системной навигации
-             */
-            override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
-                super.onInitializeAccessibilityNodeInfo(host, info)
-                info.viewIdResourceName = id
-                if (host.isClickable) info.className = "android.widget.Button"
-            }
+
+    private fun label(size: Float) =
+        TextView(context).apply {
+            textSize = size
+            setTextColor(KandinskyPalette.studioInk)
+            gravity = Gravity.CENTER_VERTICAL
         }
+
+    private fun rounded(color: Int, radius: Int) =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+        }
+
+    private fun icon(resource: Int, size: Int, color: Int = KandinskyPalette.studioInk) =
+        context.getDrawable(resource)?.mutate()?.apply {
+            setBounds(0, 0, dp(size), dp(size))
+            setTint(color)
+        }
+
+    private fun identity(view: View, id: String) {
+        view.accessibilityDelegate =
+            object : AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(
+                    host: View,
+                    info: AccessibilityNodeInfo,
+                ) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.viewIdResourceName = id
+                    if (host.isClickable) info.className = "android.widget.Button"
+                }
+            }
     }
-    /**
-     * Передаёт их внутренним отступам всей панели истории
-     * При прежних значениях повторное изменение расположения не запрашивает
-     */
+
     override fun updateInsets(top: Int, bottom: Int) {
         if (top != this.top || bottom != this.bottom) {
             this.top = top
@@ -321,23 +339,20 @@ class StudioHistoryPanel(
             setPadding(0, top, 0, bottom)
         }
     }
-    /**
-     * Подключает обновление панели к изменениям сохранённого каталога недавних чатов
-     * Реагирует только для обычной истории и подходящего состояния текущего чтения
-     * После появления в окне запускает первое чтение выбранного раздела
-     */
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         network.onStudioRecentChanged = {
-            if (showingRecent() && pageOffset <= StudioRecentPage.CATALOG_LIMIT && (!loading || readingRecent)) loadRecent()
+            if (
+                showingRecent() &&
+                    pageOffset <= StudioRecentPage.CATALOG_LIMIT &&
+                    (!loading || readingRecent)
+            )
+                loadRecent()
         }
         reload()
     }
-    /**
-     * Делает ожидающие ответы недействительными и снимает наблюдение за недавними чатами
-     * Отменяет чтение сохранённого каталога и отложенный поиск
-     * Закрывает окно подтверждения и затем передаёт событие родительскому представлению
-     */
+
     override fun onDetachedFromWindow() {
         revision++
         network.onStudioRecentChanged = null
@@ -348,42 +363,34 @@ class StudioHistoryPanel(
         pendingDialog = null
         super.onDetachedFromWindow()
     }
-    /**
-     * Снимает фокус со строки поиска перед действием или переходом
-     * Просит систему убрать клавиатуру текущего окна
-     * Сам поисковый текст при этом не очищает
-     */
+
     fun hideKeyboard() {
         search.clearFocus()
-        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(windowToken, 0)
+        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+            .hideSoftInputFromWindow(windowToken, 0)
     }
-    /**
-     * Обновляет подпись и значок переключения между архивом и обычной историей
-     * Выбирает оформление по текущему режиму панели
-     * Само получение списка запускается отдельно после переключения
-     */
+
     private fun updateArchive() {
         archiveTile.text = if (archive) "Все чаты" else "Архив"
-        archiveTile.setCompoundDrawablesRelative(icon(if(archive)R.drawable.kandinsky_drawer_back else R.drawable.kandinsky_drawer_archive,24),null,null,null)
-        archiveTile.compoundDrawablePadding=dp(16)
+        archiveTile.setCompoundDrawablesRelative(
+            icon(
+                if (archive) R.drawable.kandinsky_drawer_back
+                else R.drawable.kandinsky_drawer_archive,
+                24,
+            ),
+            null,
+            null,
+            null,
+        )
+        archiveTile.compoundDrawablePadding = dp(16)
         archiveTile.contentDescription = if (archive) "Все чаты" else "Архив"
     }
-    /**
-     * Нормализованная строка используется для выбора раздела и получения страниц
-     * Содержимое самого поля ввода при чтении не меняет
-     */
+
     private fun query() = search.text.toString().trim()
-    /**
-     * Возвращает ложь для архива и любого непустого поиска
-     * По этому признаку выбирается сохранённый каталог недавних чатов
-     */
+
     private fun showingRecent() = !archive && query().isEmpty()
-    /**
-     * Отменяет прежнее чтение и сбрасывает состояние страниц для нового раздела или поиска
-     * Для обычной истории без строки поиска выбирает чтение сохранённого каталога недавних чатов
-     * Для архива и поиска начинает отдельную выборку, при вводе текста может отложить её на короткое время
-     * Увеличивает поколение, чтобы поздние ответы прежней выборки больше не применялись
-     */
+
+    // При смене поиска отменяем прежнюю загрузку, чтобы старые результаты не заменили новые.
     private fun reload(debounce: Boolean = false) {
         main.removeCallbacks(requestSearch)
         recentRead?.cancel()
@@ -397,15 +404,17 @@ class StudioHistoryPanel(
         readingRecent = false
         failed = false
         history.setSelection(0)
-        if (showingRecent()) { loadRecent(); return }
+        if (showingRecent()) {
+            loadRecent()
+            return
+        }
         refreshRows()
         if (debounce) main.postDelayed(requestSearch, 240) else loadPage()
     }
-    /**
-     * Читает сохранённый каталог недавних чатов вместо повторного запроса первых страниц при открытии панели
-     * Запоминает обозначения уже известных чатов и положение следующей страницы
-     * Принимает результат только для текущего поколения чтения, затем обновляет разделы или состояние ошибки
-     */
+
+    // Читает сохранённый каталог недавних чатов вместо повторного запроса первых страниц при
+    // открытии
+    // панели.
     private fun loadRecent() {
         recentRead?.cancel()
         val ticket = ++revision
@@ -413,67 +422,85 @@ class StudioHistoryPanel(
         loading = true
         failed = false
         refreshRows()
-        recentRead = network.cachedStudioRecent { result ->
-            if (ticket != revision || !isAttachedToWindow) return@cachedStudioRecent
-            recentRead = null
-            readingRecent = false
-            loading = false
-            result.onSuccess { page ->
-                threads.clear()
-                threads.addAll(page.threads)
-                localRecentIDs = page.threads.mapTo(mutableSetOf()) { it.id }
-                pageOffset = page.nextOffset ?: 0
-                more = page.nextOffset != null
-            }.onFailure { failed = true }
-            refreshRows()
-        }
+        recentRead =
+            network.cachedStudioRecent { result ->
+                if (ticket != revision || !isAttachedToWindow) return@cachedStudioRecent
+                recentRead = null
+                readingRecent = false
+                loading = false
+                result
+                    .onSuccess { page ->
+                        threads.clear()
+                        threads.addAll(page.threads)
+                        localRecentIDs = page.threads.mapTo(mutableSetOf()) { it.id }
+                        pageOffset = page.nextOffset ?: 0
+                        more = page.nextOffset != null
+                    }
+                    .onFailure { failed = true }
+                refreshRows()
+            }
     }
-    /**
-     * Запрашивает следующую страницу текущего раздела или поиска, если другое чтение ещё не выполняется
-     * Перед добавлением исключает чаты, которые уже присутствуют в списке
-     * Сдвигает положение страницы по числу полученных записей и определяет возможность продолжения
-     * Поздние ответы прежней выборки не применяет, а при ошибке оставляет возможность повтора
-     */
+
     private fun loadPage() {
         if (loading || !more && !failed || !isAttachedToWindow) return
-        if (showingRecent() && pageOffset == 0) { loadRecent(); return }
+        if (showingRecent() && pageOffset == 0) {
+            loadRecent()
+            return
+        }
         loading = true
         failed = false
         refreshRows()
         val ticket = revision
         val query = query()
-        network.studioThreads(if (archive) "archive" else if (query.isEmpty()) "recent" else "all", query, pageOffset, pageSize) { result ->
+        network.studioThreads(
+            if (archive) "archive" else if (query.isEmpty()) "recent" else "all",
+            query,
+            pageOffset,
+            pageSize,
+        ) { result ->
             if (ticket == revision && isAttachedToWindow) {
                 loading = false
-                result.onSuccess { page ->
-                    val ids = threads.mapTo(mutableSetOf()) { it.id }
-                    threads += page.filter { ids.add(it.id) }
-                    pageOffset += page.size
-                    more = page.size == pageSize
-                }.onFailure { failed = true }
+                result
+                    .onSuccess { page ->
+                        val ids = threads.mapTo(mutableSetOf()) { it.id }
+                        threads += page.filter { ids.add(it.id) }
+                        pageOffset += page.size
+                        more = page.size == pageSize
+                    }
+                    .onFailure { failed = true }
                 refreshRows()
             }
         }
     }
-    /**
-     * Отделяет закреплённые от недавних, добавляет нужный заголовок архива или нижнее действие
-     * Обновляет стандартный список только при отличии нового набора элементов от прежнего
-     */
+
     private fun refreshRows() {
         val next = buildList {
             if (archive) add(Item.Heading("Архив"))
             if (!archive && query().isEmpty()) {
                 val pinned = threads.filter { it.pinned }
                 val recent = threads.filterNot { it.pinned }
-                if (pinned.isNotEmpty()) { add(Item.Heading("Закреплённые")); addAll(pinned.map { Item.Thread(it) }) }
-                if (recent.isNotEmpty()) { add(Item.Heading("Недавние")); addAll(recent.map { Item.Thread(it) }) }
+                if (pinned.isNotEmpty()) {
+                    add(Item.Heading("Закреплённые"))
+                    addAll(pinned.map { Item.Thread(it) })
+                }
+                if (recent.isNotEmpty()) {
+                    add(Item.Heading("Недавние"))
+                    addAll(recent.map { Item.Thread(it) })
+                }
             } else addAll(threads.map { Item.Thread(it) })
             when {
                 readingRecent -> Unit
                 loading -> add(Item.Footer("Загрузка…", false))
                 failed -> add(Item.Footer("Повторить загрузку", true))
                 more -> add(Item.Footer("Показать ещё", true))
-                threads.isEmpty() -> add(Item.Footer(if (query().isNotEmpty()) "Чаты не найдены" else if (archive) "Архив пуст" else "Чатов пока нет", false))
+                threads.isEmpty() ->
+                    add(
+                        Item.Footer(
+                            if (query().isNotEmpty()) "Чаты не найдены"
+                            else if (archive) "Архив пуст" else "Чатов пока нет",
+                            false,
+                        )
+                    )
             }
         }
         if (items != next) {
@@ -481,28 +508,26 @@ class StudioHistoryPanel(
             adapter.notifyDataSetChanged()
         }
     }
-    /**
-     * Обрабатывает выбор чата и убирает клавиатуру поиска
-     * Текущий чат может просто закрыть панель, а уже известный недавний чат открывается сразу
-     * Перед открытием другого результата добавляет его сведения в локальную историю и обрабатывает ошибку
-     */
+
     private fun select(row: StudioThread) {
         if (mutating) return
         hideKeyboard()
-        if (row.id == selected && closeCurrent != null) { closeCurrent.invoke(); return }
-        if (row.id in localRecentIDs) { open(row.id); return }
+        if (row.id == selected && closeCurrent != null) {
+            closeCurrent.invoke()
+            return
+        }
+        if (row.id in localRecentIDs) {
+            open(row.id)
+            return
+        }
         mutating = true
         network.admitStudioThread(row) { result ->
             mutating = false
             if (!isAttachedToWindow) return@admitStudioThread
-            result.onSuccess { open(row.id) }
-                .onFailure { showError() }
+            result.onSuccess { open(row.id) }.onFailure { showError() }
         }
     }
-    /**
-     * Разрешает переименование, смену закрепления, архивирование или возврат и подтверждённое удаление
-     * Для архивного чата не добавляет отдельное действие закрепления
-     */
+
     private fun menu(anchor: View, row: StudioThread) {
         PopupMenu(context, anchor).apply {
             menu.add(0, 1, 0, "Переименовать")
@@ -521,23 +546,28 @@ class StudioHistoryPanel(
             show()
         }
     }
-    /**
-     * После подтверждения убирает пробелы по краям и отклоняет пустое название
-     * Ограничивает длину ста знаками и передаёт новое название общей операции изменения
-     */
+
     private fun rename(row: StudioThread) {
-        val edit = EditText(context).apply { setText(row.title); selectAll(); setSingleLine(); filters = arrayOf(InputFilter.LengthFilter(100)); identity(this, "chats.rename.input") }
-        pendingDialog = AlertDialog.Builder(context).setTitle("Переименовать чат").setView(edit)
-            .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
-                val title = edit.text.toString().trim()
-                if (title.isNotEmpty()) change(row, JSONObject().put("title", title))
-            }.show()
+        val edit =
+            EditText(context).apply {
+                setText(row.title)
+                selectAll()
+                setSingleLine()
+                filters = arrayOf(InputFilter.LengthFilter(100))
+                identity(this, "chats.rename.input")
+            }
+        pendingDialog =
+            AlertDialog.Builder(context)
+                .setTitle("Переименовать чат")
+                .setView(edit)
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Сохранить") { _, _ ->
+                    val title = edit.text.toString().trim()
+                    if (title.isNotEmpty()) change(row, JSONObject().put("title", title))
+                }
+                .show()
     }
-    /**
-     * Передаёт изменение свойств чата сетевому слою и на время выполнения запрещает вторую такую операцию
-     * После успеха перечитывает список под текущими условиями
-     * При неудаче снимает блокировку и показывает понятное сообщение о соединении
-     */
+
     private fun change(row: StudioThread, change: JSONObject) {
         if (mutating) return
         mutating = true
@@ -546,36 +576,41 @@ class StudioHistoryPanel(
             if (isAttachedToWindow) result.onSuccess { reload() }.onFailure { showError() }
         }
     }
-    /**
-     * Показывает подтверждение удаления чата вместе с его запросами и результатами
-     * Отмена оставляет данные без изменений
-     * Подтверждение передаёт управление удалению выбранного чата
-     */
+
     private fun confirmDelete(row: StudioThread) {
-        pendingDialog = AlertDialog.Builder(context).setTitle("Удалить чат?")
-            .setMessage("Запросы и результаты этого чата будут удалены.")
-            .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ ->
-                if (mutating) return@setPositiveButton
-                mutating = true
-                network.deleteStudioThread(row.id) { result ->
-                    mutating = false
-                    if (isAttachedToWindow) result.onSuccess {
-                        if (row.id == selected) deleted(row.id) else reload()
-                    }.onFailure { showError() }
+        pendingDialog =
+            AlertDialog.Builder(context)
+                .setTitle("Удалить чат?")
+                .setMessage("Запросы и результаты этого чата будут удалены.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Удалить") { _, _ ->
+                    if (mutating) return@setPositiveButton
+                    mutating = true
+                    network.deleteStudioThread(row.id) { result ->
+                        mutating = false
+                        if (isAttachedToWindow)
+                            result
+                                .onSuccess { if (row.id == selected) deleted(row.id) else reload() }
+                                .onFailure { showError() }
+                    }
                 }
-            }.show()
+                .show()
     }
-    /**
-     * Показывает общее сообщение о неудавшемся действии над чатом
-     * Предлагает проверить соединение и повторить действие
-     * Не меняет список самостоятельно и не считает операцию выполненной
-     */
-    private fun showError() { Toast.makeText(context, "Не удалось выполнить действие. Проверьте соединение.", Toast.LENGTH_LONG).show() }
+
+    private fun showError() {
+        Toast.makeText(
+                context,
+                "Не удалось выполнить действие. Проверьте соединение.",
+                Toast.LENGTH_LONG,
+            )
+            .show()
+    }
 
     private inner class ThreadCell : LinearLayout(context) {
         private val mark = label(19f)
         private val title = label(16f)
         private val actions = android.widget.ImageView(context)
+
         init {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -586,29 +621,31 @@ class StudioHistoryPanel(
             title.maxLines = 2
             title.ellipsize = android.text.TextUtils.TruncateAt.END
             addView(title, LayoutParams(0, -1, 1f))
-            actions.setImageDrawable(icon(R.drawable.kandinsky_drawer_menu,24))
+            actions.setImageDrawable(icon(R.drawable.kandinsky_drawer_menu, 24))
             actions.scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
             actions.contentDescription = "Действия с чатом"
             addView(actions, LayoutParams(dp(44), -1))
         }
-        /**
-         * Заполняет строку истории названием чата и признаками архива или закрепления
-         * Выделяет текущий чат и назначает постоянные обозначения строки и её меню
-         * Привязывает доступные действия к этим данным, чтобы повторное использование строки не обращалось к прежнему чату
-         */
+
+        // Привязывает доступные действия к этим данным, чтобы повторное использование строки не
+        // обращалось
+        // к прежнему чату.
         fun bind(row: StudioThread) {
-            val marker=when {
-                row.archived->icon(R.drawable.kandinsky_drawer_archive,19)
-                row.pinned->icon(R.drawable.kandinsky_drawer_pin,19)
-                else->null
-            }
-            mark.setCompoundDrawablesRelative(marker,null,null,null)
+            val marker =
+                when {
+                    row.archived -> icon(R.drawable.kandinsky_drawer_archive, 19)
+                    row.pinned -> icon(R.drawable.kandinsky_drawer_pin, 19)
+                    else -> null
+                }
+            mark.setCompoundDrawablesRelative(marker, null, null, null)
             mark.visibility = if (row.archived || row.pinned) View.VISIBLE else View.GONE
             title.text = row.title
             title.isSelected = row.id == selected
             identity(title, "chat.row.${row.id}")
             identity(actions, "chats.actions.${row.id}")
-            setBackgroundColor(if (row.id == selected) Color.argb(20, 56, 227, 178) else Color.WHITE)
+            setBackgroundColor(
+                if (row.id == selected) Color.argb(20, 56, 227, 178) else Color.WHITE
+            )
             title.setOnClickListener { select(row) }
             actions.setOnClickListener { menu(actions, row) }
         }

@@ -9,7 +9,8 @@ import java.util.UUID
 class ConversationState(private val repository: ChatRepository) {
     private val pendingRetrySlots = mutableSetOf<String>()
 
-    // Номер зависит от задания и предыдущей попытки. Его можно восстановить после потери ответа.
+    // Номер повтора зависит от задания и предыдущей попытки. После потери ответа телефон сможет
+    // восстановить тот же номер.
     fun beginSlotRetry(slot: StudioGeneration.Slot): UUID? {
         if (!slot.canRetry) return null
         val id = slot.id
@@ -135,12 +136,10 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
-    // Сохраняем номер отправки до обращения к сети. При потере ответа ту же команду можно отправить
-    // снова.
     fun send(callback: (Result<Unit>) -> Unit = {}) = send(null, callback)
 
-    // Сохраняем номер отправки до обращения к сети. При потере ответа ту же команду можно отправить
-    // снова.
+    // Сохраняем номер отправки до обращения к сети. При потере ответа ту же команду можно
+    // отправить.
     fun send(generationOptions: KandinskyOptions?, callback: (Result<Unit>) -> Unit = {}) {
         if (draft.pendingMediaBatch != null) return sendMediaBatch(callback = callback)
         val id = chatID

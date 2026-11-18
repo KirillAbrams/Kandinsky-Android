@@ -9,13 +9,15 @@ import org.json.JSONObject
 
 class NetworkJournal(private val userID: Long) : LocalChangeJournal {
     companion object {
-        // Старые команды мессенджера могут остаться после обновления. Они не должны задерживать
-        // запросы генерации.
+        // Старые команды мессенджера могут остаться после обновления. Они не должны задерживать.
         fun readyOperations(database: SQLiteDatabase): List<Pair<String, String>> {
             val commands = ArrayList<Pair<String, String>>()
             database
                 .rawQuery(
-                    "SELECT action,payload FROM net_outbox WHERE errorCode IS NULL AND action IN ('send','delete') ORDER BY rowid LIMIT 10",
+                    "SELECT action,payload " +
+                        "FROM net_outbox " +
+                        "WHERE errorCode IS NULL AND action IN ('send','delete') " +
+                        "ORDER BY rowid LIMIT 10",
                     null,
                 )
                 .use { rows ->
@@ -37,8 +39,8 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         }
     }
 
-    // Записываем сообщение и номер операции до отправки. При потере ответа телефон сможет повторить
-    // ту же команду.
+    // Записываем сообщение и номер операции до отправки. При потере ответа телефон сможет
+    // повторить.
     override fun appended(database: SQLiteDatabase, command: SendCommand, localID: Long) {
         val id =
             try {
@@ -113,8 +115,6 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         )
     }
 
-    // Для чата достаточно последней границы чтения. Новое значение заменяет предыдущую команду в
-    // очереди.
     override fun read(database: SQLiteDatabase, chatID: Long) {
         val through =
             database
@@ -137,7 +137,9 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
     private fun reserve(database: SQLiteDatabase, bytes: Int, mediaBytes: Long) {
         database
             .rawQuery(
-                "SELECT count(*),COALESCE(sum(payloadBytes),0),COALESCE(sum(mediaBytes),0) FROM net_outbox WHERE action IN ('send','delete')",
+                "SELECT count(*),COALESCE(sum(payloadBytes),0),COALESCE(sum(mediaBytes),0) " +
+                    "FROM net_outbox " +
+                    "WHERE action IN ('send','delete')",
                 null,
             )
             .use {

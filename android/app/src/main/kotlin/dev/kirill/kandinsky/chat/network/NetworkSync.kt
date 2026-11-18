@@ -27,10 +27,6 @@ data class StudioThread(
     val pinned: Boolean,
     val archived: Boolean,
 ) {
-    /**
-     * Записывает поля сводки чата в объект обмена, который понимает местное сетевое хранилище
-     * Сохраняет номер, название, порядок, счётчик непрочитанного и признаки закрепления и архива
-     */
     fun wire() =
         JSONObject()
             .put("id", id)
@@ -41,10 +37,6 @@ data class StudioThread(
             .put("archived", archived)
 
     companion object {
-        /**
-         * Отсутствие поля или неверный вид значения оставляет ошибкой разбора вместо подстановки
-         * выдуманных данных
-         */
         fun from(value: JSONObject) =
             StudioThread(
                 value.getLong("id"),
@@ -63,10 +55,6 @@ data class StudioRecentPage(val threads: List<StudioThread>, val nextOffset: Int
     }
 }
 
-/**
- * Владеет одним постоянным соединением открытого приложения и одной ожидающей исходящей порцией
- * Согласует местную базу, ограниченный приём событий и отдельную сетевую очередь
- */
 class NetworkSync(
     val profile: NetworkProfile,
     private val store: SQLiteStore,
@@ -96,12 +84,6 @@ class NetworkSync(
     var onStudioMediaEvicted: (() -> Unit)? = null
     private var removingMedia = false
 
-    /**
-     * Забирает из базы до шестнадцати подтверждённых удалений файлов, не запуская вторую очистку
-     * одновременно В сетевой рабочей очереди убирает местные копии, затем сообщает экрану об
-     * изменении доступного содержимого Удаляет обработанные отметки только при совпадении
-     * сохранённого значения и продолжает следующую порцию после успешной записи
-     */
     private fun drainRemovedStudioMedia() {
         val media = studioMedia ?: return
         if (closed || removingMedia) return
@@ -188,11 +170,6 @@ class NetworkSync(
     private var contentDirty = false
     private var contentAcks = false
 
-    /**
-     * В очереди синхронизации сохраняет просмотр вложения через местную базу После записи передаёт
-     * изменения экрану и планирует доставку отметки просмотра серверу, при ошибке сообщает о
-     * несохранённом просмотре
-     */
     fun consume(messageID: MessageID) {
         worker.post {
             if (closed) return@post
@@ -208,23 +185,11 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Отмечает, что среди местных просмотров может быть новая работа для отправки Пробует запустить
-     * доставку через общий проверяющий вход, который учитывает соединение и уже ожидаемое
-     * подтверждение
-     */
     private fun scheduleContent() {
         contentDirty = true
         startContent()
     }
 
-    /**
-     * Начинает отправку просмотров только при открытом приложении, восстановленном соединении и
-     * поддержке подтверждений сервером Через короткую паузу выбирает одну сохранённую порцию и
-     * связывает её с новым номером запроса Не допускает второй порции до подтверждения первой, а
-     * через пятнадцать секунд без ответа запускает восстановление связи Номер поколения соединения
-     * отсекает запоздалые действия после смены подключения
-     */
     private fun startContent() {
         if (
             !contentDirty ||
@@ -253,9 +218,9 @@ class NetworkSync(
                             return@fold
                         }
                         val request = UUID.randomUUID().toString()
-                        // Одна ожидающая порция ограничивает работу соединения и связывает повтор с
-                        // конкретным запросом
-                        // Следующая порция начнётся после подтверждения этой
+                        // Ждём подтверждения одной порции, чтобы после обрыва связи знать, какие
+                        // отметки
+                        // отправить ещё раз.
                         contentFlight = ContentFlight(request, batch)
                         val packet =
                             JSONObject()
@@ -284,21 +249,23 @@ class NetworkSync(
         worker.postDelayed(task, 100)
     }
 
-    /**
-     * Снимает запланированную проверку срока подтверждения просмотров, если она ещё ожидается
-     * Очищает сведения о текущей порции, освобождая место для следующей отправки
-     */
     private fun clearContentFlight() {
         contentTimeout?.let { worker.removeCallbacks(it) }
         contentTimeout = null
         contentFlight = null
     }
 
-    /**
-     * Переводит изменение видимости приложения в последовательную очередь синхронизации При выходе
-     * на экран включает подключение, при уходе в фон закрывает его, а завершённую службу больше не
-     * запускает
-     */
+    private var nextActivityAtMs = 0L
+
+    fun userInteraction() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now < nextActivityAtMs) return
+        nextActivityAtMs = now + 30_000
+        worker.post {
+            if (!closed) http({ api.json("/v1/kandinsky/activity", JSONObject()) }) {}
+        }
+    }
+
     fun foreground(value: Boolean) {
         worker.post {
             if (closed) return@post
@@ -307,21 +274,12 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Передаёт строку состояния подключения в главный поток приложения Экран получает её через
-     * установленный обработчик без прямого изменения представлений из рабочей очереди
-     */
     private fun status(value: String) {
         main.post { onStatus?.invoke(value) }
     }
 
-    /**
-     * Начинает новое подключение только для активной незакрытой службы без уже открытого соединения
-     * Проверяет готовность местной базы и выбирает начальную загрузку либо сверку списка
-     * существующих чатов Сохраняет полученные данные до открытия постоянного соединения и
-     * отбрасывает ответы прежнего поколения подключения Отказ входа обрабатывает отдельно, а
-     * остальные сбои передаёт восстановлению с задержкой
-     */
+    // У каждого подключения свой номер. По нему отбрасываем поздние ответы от уже закрытого
+    // соединения.
     private fun connect() {
         if (!active || closed || socket != null) return
         generation++
@@ -369,12 +327,9 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Открывает постоянное соединение для текущего поколения и ставит предел ожидания подтверждения
-     * восстановления Подключает обработчики открытия, входящих сообщений, ошибок и закрытия к
-     * очереди синхронизации Ограничивает размер входящего сообщения и число ещё не обработанных
-     * сообщений, чтобы приём не рос без предела
-     */
+    // Ограничивает размер входящего сообщения и число ещё не обработанных сообщений, чтобы приём не
+    // рос без
+    // предела.
     private fun openSocket(ticket: Int) {
         if (ticket != generation || !active) return
         val deadline = Runnable { if (!resumed) retry(ticket) }
@@ -383,11 +338,6 @@ class NetworkSync(
         socket =
             api.socket(
                 object : WebSocketListener() {
-                    /**
-                     * После открытия соединения проверяет, что оно относится к ещё действующему
-                     * поколению Читает сохранённый курсор событий и отправляет его серверу для
-                     * продолжения, а устаревшее соединение сразу отменяет
-                     */
                     override fun onOpen(webSocket: WebSocket, response: Response) {
                         worker.post {
                             if (ticket != generation) {
@@ -409,13 +359,6 @@ class NetworkSync(
                         }
                     }
 
-                    /**
-                     * Отклоняет сообщение больше шестидесяти четырёх килобайт и переполнение
-                     * очереди из шестидесяти четырёх ожидающих сообщений Допустимое содержимое
-                     * разбирает в очереди синхронизации только для текущего поколения соединения
-                     * После обработки обязательно уменьшает счётчик ожидания, а ошибку разбора
-                     * переводит в восстановление связи
-                     */
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         if (text.toByteArray().size > 65536) {
                             webSocket.cancel()
@@ -437,11 +380,9 @@ class NetworkSync(
                         }
                     }
 
-                    /**
-                     * Передаёт отказ постоянного соединения в последовательную очередь
-                     * синхронизации Запрашивает восстановление с номером поколения, чтобы ошибка
-                     * старого соединения не закрыла новое
-                     */
+                    // Запрашивает восстановление с номером поколения, чтобы ошибка старого
+                    // соединения не
+                    // закрыла новое.
                     override fun onFailure(
                         webSocket: WebSocket,
                         t: Throwable,
@@ -450,21 +391,11 @@ class NetworkSync(
                         worker.post { retry(ticket) }
                     }
 
-                    /**
-                     * Отвечает на начатое сервером закрытие обычным кодом завершения соединения
-                     * После этого ставит проверку восстановления в рабочую очередь с привязкой к
-                     * поколению
-                     */
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                         webSocket.close(1000, null)
                         worker.post { retry(ticket) }
                     }
 
-                    /**
-                     * После полного закрытия соединения передаёт запрос восстановления в рабочую
-                     * очередь Общая процедура проверит актуальность поколения и необходимость
-                     * подключения при текущем состоянии приложения
-                     */
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                         worker.post { retry(ticket) }
                     }
@@ -472,14 +403,6 @@ class NetworkSync(
             )
     }
 
-    /**
-     * Разбирает вид сообщения постоянного соединения и направляет его в обработку событий,
-     * подтверждений, присутствия или ошибок После восстановления включает объявленные сервером
-     * возможности и возобновляет доставку накопленных операций Подтверждённые отправки и просмотры
-     * сначала сохраняет в базе, затем освобождает ожидание и запускает следующую работу
-     * Окончательные ошибки связывает с соответствующим запросом, а временный отказ и потерю сессии
-     * обрабатывает отдельными путями
-     */
     private fun handle(value: JSONObject) {
         when (value.getString("type")) {
             "resumed" -> {
@@ -614,22 +537,13 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Применяет по одной порции входящих событий, сохраняя порядок даже при асинхронном обращении к
-     * базе Если события содержат неизвестные чаты, сначала получает и сохраняет их сводки
-     * Продолжение допускается только для действующего поколения соединения, при ошибке запускается
-     * восстановление
-     */
+    // Записываем порции событий по очереди, чтобы следующая порция не попала в базу раньше
+    // предыдущей.
     private fun drainEvents() {
         if (applyingEvents || eventQueue.isEmpty()) return
         applyingEvents = true
         val value = eventQueue.first
         val ticket = generation
-        /**
-         * сообщений Передаёт изменения экрану, запускает удаление отозванных файлов и снимает
-         * порцию с очереди после успешного применения Затем возобновляет исходящую работу и
-         * обработку следующей порции, если соединение всё ещё актуально
-         */
         fun apply() {
             database({ db ->
                 val changes = cache.events(db, value)
@@ -680,12 +594,9 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Создаёт или повторно открывает серверный чат с необязательным постоянным номером перед первой
-     * отправкой Проверяет полученную запись и положительный номер, затем сохраняет чат в местном
-     * списке Завершение возвращает в главный поток после записи, поэтому экран не открывает
-     * неподтверждённую местную запись
-     */
+    // Завершение возвращает в главный поток после записи, поэтому экран не открывает
+    // неподтверждённую
+    // местную запись.
     fun openDirect(username: String, threadID: UUID? = null, completion: (Result<Long>) -> Unit) {
         worker.post {
             if (closed) {
@@ -725,10 +636,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * В отдельной сетевой очереди получает список недавних исходных файлов владельца Преобразует
-     * номер, вид и размер каждого файла в запись выбора и возвращает список в главный поток
-     */
     fun recentStudioUploads(completion: (Result<List<StudioUpload>>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -748,10 +655,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * уменьшенной копией Такая запись позволяет подготовке сообщения повторно использовать
-     * загрузку, результат сохранения возвращается в главный поток
-     */
     fun rememberStudioUpload(
         attachmentID: String,
         blobID: String,
@@ -770,12 +673,8 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Получает постоянный номер загрузки из номера устройства и местного вложения, чтобы повтор
-     * использовал тот же исходник Синхронно передаёт файл как исходник генерации с поддержкой
-     * отмены и обновления хода передачи Для изображения после успешной передачи отдельно загружает
-     * уменьшенную копию, если операция ещё не отменена
-     */
+    // Для повторной загрузки берём тот же номер устройства и вложения. Сервер узнает уже принятый
+    // файл.
     fun uploadStudioSource(
         draft: AttachmentDraft,
         file: File,
@@ -793,12 +692,6 @@ class NetworkSync(
         return blob to preview
     }
 
-    /**
-     * Запрашивает серверный каталог моделей вне главного потока и разбирает их названия, описания и
-     * ограничения Для увеличения разрешения видео оставляет обычные настройки пустыми и отдельно
-     * учитывает настройки режима с исходным файлом Возвращает готовый список или ошибку в главный
-     * поток для обновления выбора модели
-     */
     fun studioModels(completion: (Result<List<StudioModel>>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -822,15 +715,7 @@ class NetworkSync(
         }
     }
 
-    /**
-     * режима Добавляет поддержку исключаемого содержимого и необязательные границы силы следования
-     * запросу Эти данные нужны экрану настроек, сами входящие серверные задания здесь не создаются
-     */
     private fun studioCapabilities(value: JSONObject): StudioCapabilities {
-        /**
-         * варианта сохраняет номер, подпись и доступную таблицу размеров по пропорциям, оставляя её
-         * пустой при отсутствии
-         */
         fun choices(key: String): List<StudioChoice> {
             val array = value.getJSONArray(key)
             return List(array.length()) { index ->
@@ -865,17 +750,9 @@ class NetworkSync(
         )
     }
 
-    /**
-     * Читает сохранённый каталог недавних чатов через очередь местной базы Возвращает местную
-     * порцию без сетевого ожидания для немедленного открытия боковой истории
-     */
     fun cachedStudioRecent(completion: (Result<StudioRecentPage>) -> Unit) =
         store.submit(cache::studioRecent, completion)
 
-    /**
-     * размером порции Кодирует текстовые параметры адреса, разбирает полученные записи в сетевой
-     * очереди и возвращает результат в главный поток
-     */
     fun studioThreads(
         view: String,
         query: String,
@@ -896,10 +773,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Принимает подтверждённую запись открываемого чата в очереди синхронизации Если служба ещё
-     * работает, передаёт запись общей процедуре объединения с местным списком
-     */
     fun admitStudioThread(thread: StudioThread, completion: (Result<Unit>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -907,10 +780,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Объединяет одну серверную сводку чата с местными данными через общую запись каталога После
-     * успешного сохранения передаёт изменения экрану, а итог операции возвращает в главный поток
-     */
     private fun mergeStudioThread(thread: StudioThread, completion: (Result<Unit>) -> Unit) {
         database({
             cache.mergeChats(it, JSONObject().put("chats", JSONArray().put(thread.wire())))
@@ -920,11 +789,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Передаёт серверу выбранные изменения чата и разбирает подтверждённую сводку из ответа При
-     * успехе объединяет её с местной записью, при отказе возвращает ошибку без применения
-     * неподтверждённого изменения
-     */
     fun changeStudioThread(id: Long, change: JSONObject, completion: (Result<Unit>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -938,11 +802,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Сначала запрашивает удаление чата на сервере, затем применяет подтверждённое закрытие в
-     * местной сделке Формирует изменения удалённых сообщений для экрана и возвращает результат
-     * после местного сохранения
-     */
     fun deleteStudioThread(id: Long, completion: (Result<Unit>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -975,20 +834,10 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Ставит пробуждение исходящей работы в последовательную очередь синхронизации Сам вызывающий
-     * поток не читает базу и не отправляет сообщения напрямую
-     */
     fun kick() {
         worker.post { kickInternal() }
     }
 
-    /**
-     * Сверяет счётчики непрочитанного только при активном восстановленном соединении Объединяет
-     * повторные запросы во время уже идущей сверки и через короткую паузу проверяет, нужна ли
-     * загрузка списка чатов Сохраняет серверные сводки в базе и отбрасывает результаты, пришедшие
-     * после смены поколения подключения
-     */
     private fun refreshReadSummaries() {
         if (!active || !resumed || closed) return
         if (readRefreshing) {
@@ -997,11 +846,6 @@ class NetworkSync(
         }
         readRefreshing = true
         val ticket = generation
-        /**
-         * Завершает текущую сверку непрочитанных только для того поколения соединения, которое её
-         * начало Снимает признаки выполнения и запускает ещё одну сверку, если она запрашивалась в
-         * ожидании и предыдущая завершилась успешно
-         */
         fun finish(success: Boolean) {
             if (ticket != generation) return
             val again = readRefreshAgain && success
@@ -1038,10 +882,6 @@ class NetworkSync(
         worker.postDelayed(task, 100)
     }
 
-    /**
-     * При активном восстановленном соединении отмечает наличие работы в исходящей очереди Пробует
-     * доставить подтверждения, обновить границу чтения и отправить следующую сохранённую команду
-     */
     private fun kickInternal() {
         if (!resumed || !active) return
         pumpDirty = true
@@ -1050,13 +890,6 @@ class NetworkSync(
         pump()
     }
 
-    /**
-     * Выбирает из местной очереди ограниченную порцию команд без окончательной ошибки, не допуская
-     * двух одновременных отправок Для удаления подготавливает отдельное обращение, а запросы
-     * объединяет с учётом числа и объёма Перед отправкой сообщений подготавливает файлы и связи
-     * ответов, затем ждёт подтверждение конкретного номера запроса Временные сбои восстанавливают
-     * соединение, а окончательный отказ сохраняет ошибку у соответствующих местных операций
-     */
     private fun pump() {
         if (pumping || sendRequest != null || !resumed) return
         pumping = true
@@ -1164,19 +997,11 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Одним чтением базы получает уже загруженные вложения и серверные номера сообщений, на которые
-     * отвечают исходящие команды В сетевой очереди передаёт недостающие файлы и собирает сообщения,
-     * оставляя ответы на ещё не принятые сообщения ждать следующей попытки Записывает полученные
-     * соответствия файлов в базу перед возвратом подготовленной порции Сетевое ожидание проходит
-     * вне сделки базы, поэтому длительная загрузка не удерживает её занятой
-     */
     private fun prepare(
         commands: List<SendCommand>,
         completion: (Result<List<JSONObject>>) -> Unit,
     ) {
-        // Читаем связи загрузок и ответов за одно обращение к базе, не удерживая сделку во время
-        // сетевого ожидания
+        // Читаем ссылки на файлы до отправки, чтобы не держать транзакцию открытой в ожидании сети.
         database({ db ->
             val uploads = hashMapOf<String, Pair<String, String?>>()
             db.rawQuery("SELECT attachmentID,blobID,previewBlobID FROM net_uploads", null).use {
@@ -1273,17 +1098,19 @@ class NetworkSync(
                                 database({ db ->
                                     NetworkStore.transaction(db) {
                                         for (message in messages) {
-                                            val list = message.getJSONArray("attachments")
-                                            for (i in 0 until list.length()) {
-                                                val a = list.getJSONObject(i)
+                                            val attachments = message.getJSONArray("attachments")
+                                            for (i in 0 until attachments.length()) {
+                                                val attachment = attachments.getJSONObject(i)
                                                 db.execSQL(
-                                                    "INSERT OR REPLACE INTO net_uploads(attachmentID,blobID,previewBlobID) VALUES(?,?,?)",
+                                                    "INSERT OR REPLACE INTO net_uploads(attachmentID,blobID," +
+                                                        "previewBlobID) " +
+                                                        "VALUES(?,?,?)",
                                                     arrayOf(
-                                                        a.getString("id"),
-                                                        a.getString("blobId"),
-                                                        a.optString("previewBlobId").takeUnless {
-                                                            it == "null"
-                                                        },
+                                                        attachment.getString("id"),
+                                                        attachment.getString("blobId"),
+                                                        attachment
+                                                            .optString("previewBlobId")
+                                                            .takeUnless { it == "null" },
                                                     ),
                                                 )
                                             }
@@ -1302,12 +1129,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Читает текущий курсор событий, последний подтверждённый курсор и до ста двадцати восьми
-     * ожидающих номеров сообщений При новых данных отправляет одно подтверждение применения и
-     * сохраняет его состав до ответа сервера Пока прежнее подтверждение ожидается, вторую порцию не
-     * отправляет
-     */
     private fun receipts() {
         if (receipt != null) return
         database({ db ->
@@ -1338,13 +1159,8 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Запоминает видимый чат и следование концу истории, чтобы при необходимости отправить границу
-     * прочитанного По местной базе проверяет, осталось ли меньше тридцати двух сообщений перед
-     * видимой опорой и есть ли более ранняя серверная история При приближении к границе заранее
-     * загружает страницу, объединяет её с местной базой и после сетевой ошибки выдерживает паузу
-     * перед повтором
-     */
+    // Запоминает видимый чат и следование концу истории, чтобы при необходимости отправить границу
+    // прочитанного.
     fun viewport(chat: Long, anchor: ReadingAnchor) {
         worker.post {
             currentChat = chat
@@ -1357,13 +1173,20 @@ class NetworkSync(
             database({ db ->
                 val before =
                     db.rawQuery(
-                            "SELECT MIN(serverSeq) FROM net_messages n JOIN messages m ON m.id=n.localID WHERE m.chatId=? AND serverSeq>0",
+                            "SELECT MIN(serverSeq) " +
+                                "FROM net_messages n " +
+                                "JOIN messages m ON m.id=n.localID " +
+                                "WHERE m.chatId=? AND serverSeq>0",
                             arrayOf(chat.toString()),
                         )
                         .use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else null }
                 val count =
                     db.rawQuery(
-                            "SELECT count(*) FROM messages WHERE chatId=? AND sortKey<(SELECT sortKey FROM messages WHERE id=?)",
+                            "SELECT count(*) " +
+                                "FROM messages " +
+                                "WHERE chatId=? AND sortKey<(SELECT sortKey " +
+                                "FROM messages " +
+                                "WHERE id=?)",
                             arrayOf(chat.toString(), localID.toString()),
                         )
                         .use {
@@ -1406,10 +1229,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * При смене видимого чата сбрасывает ожидаемую границу чтения Запускает сверку сохранённой
-     * истории вновь открытого чата
-     */
     fun visibleChat(chat: Long?) {
         worker.post {
             val changed = currentChat != chat
@@ -1422,12 +1241,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Сверяет последние сообщения открываемого чата, объединяя обращения к одной истории При
-     * восстановленном соединении повторно использует успешную сверку моложе девяноста секунд и
-     * держит до тридцати двух отметок таких чатов Полученную страницу сохраняет в базе и передаёт
-     * изменения экрану, а ошибку показывает только для всё ещё видимого чата
-     */
     private fun refreshVisibleHistory(chat: Long) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (resumed && visibleHistoryRefreshes[chat]?.let { now - it < 90_000 } == true) return
@@ -1454,11 +1267,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Для видимого чата у конца истории читает последний серверный порядок сообщения Повторно
-     * проверяет видимость после чтения базы и отправляет новую положительную границу только один
-     * раз до её изменения
-     */
     private fun readVisible() {
         val chat = currentChat ?: return
         if (!atBottom || !resumed) return
@@ -1478,18 +1286,10 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Ищет последнее входящее сообщение выбранного чата со статусом ожидания или выполнения в
-     * сохранённых дополнительных данных Использует поиск в компактной текстовой записи, доступный и
-     * на устройствах без специальных средств разбора таких данных в базе Возвращает местный номер
-     * найденного сообщения либо отсутствие активного задания в главный поток
-     */
     fun activeGeneration(chat: Long, completion: (Result<MessageID?>) -> Unit) {
         worker.post {
             if (closed) return@post
             database({ db ->
-                // Поиск в компактной записи работает и на устройствах без встроенного разбора таких
-                // данных в базе
                 db.rawQuery(
                         """
                 SELECT m.id FROM messages m JOIN net_message_metadata n ON n.localID=m.id
@@ -1513,19 +1313,14 @@ class NetworkSync(
         chat: Long,
         message: MessageID,
     ): String {
-        val sql = "SELECT n.serverID FROM net_messages n JOIN messages m ON m.id=n.localID WHERE n.localID=? AND m.chatId=?"
+        val sql =
+            "SELECT n.serverID FROM net_messages n JOIN messages m ON m.id=n.localID WHERE n.localID=? AND m.chatId=?"
         return db.rawQuery(sql, arrayOf(message.toString(), chat.toString())).use { row ->
             if (!row.moveToFirst() || row.isNull(0)) throw RepoException(RepoError.NOT_FOUND)
             "/v1/kandinsky/threads/$chat/generations/${row.getLong(0)}"
         }
     }
 
-    /**
-     * Проверяет состояние службы и вид номера выбранного файла перед удалением содержимого
-     * генерации При наличии файла удаляет результат, при отсутствии файла удаляет запрос через
-     * серверный адрес местного сообщения После успешного ответа просит открытое соединение
-     * перечитать чат и передаёт итог в главный поток
-     */
     fun deleteGenerationContent(
         chat: Long,
         message: MessageID,
@@ -1533,10 +1328,6 @@ class NetworkSync(
         completion: (Result<Unit>) -> Unit,
     ) {
         worker.post {
-            /**
-             * Передаёт итог удаления запроса или результата обработчику в главном потоке Успех и
-             * ошибка проходят одинаковым путём, чтобы вызывающий экран завершил своё ожидание
-             */
             fun finish(value: Result<Unit>) {
                 main.post { completion(value) }
             }
@@ -1560,10 +1351,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Находит серверный адрес выбранного результата и передаёт причину жалобы от владельца При
-     * закрытой службе возвращает отмену, а итог сетевого обращения направляет в главный поток
-     */
     fun reportGeneration(
         chat: Long,
         message: MessageID,
@@ -1571,10 +1358,6 @@ class NetworkSync(
         completion: (Result<Unit>) -> Unit,
     ) {
         worker.post {
-            /**
-             * Переносит результат отправки жалобы из очереди синхронизации в главный поток Вызывает
-             * переданное завершение с тем же успехом или ошибкой без изменения данных
-             */
             fun finish(result: Result<Unit>) {
                 main.post { completion(result) }
             }
@@ -1597,12 +1380,8 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Получает серверный адрес генерации и передаёт проверку, отмену или повтор с номером операции
-     * Для отдельной ячейки добавляет её номер и ожидаемую попытку, чтобы запоздалое действие не
-     * повторило уже новое выполнение Ответные сообщения сохраняет в местной базе до уведомления
-     * экрана и завершения действия
-     */
+    // Передаём номер попытки. Запоздалое нажатие не должно перезапустить результат, который уже
+    // повторили.
     fun generationAction(
         chat: Long,
         message: MessageID,
@@ -1612,7 +1391,6 @@ class NetworkSync(
         completion: (Result<Unit>) -> Unit,
     ) {
         worker.post {
-            // обслуживает отказ, ошибку записи и успешное применение полученных сообщений
             fun finish(result: Result<Unit>) {
                 main.post { completion(result) }
             }
@@ -1620,10 +1398,14 @@ class NetworkSync(
                 finish(Result.failure(RepoException(RepoError.CANCELLED)))
                 return@post
             }
-            val retryKey = if (action == StudioGenerationAction.RETRY && slot == null) "generationRetry:$chat:$message" else null
+            val retryKey =
+                if (action == StudioGenerationAction.RETRY && slot == null)
+                    "generationRetry:$chat:$message"
+                else null
             database({ db ->
                 val path = generationPath(db, chat, message)
-                val operationID = retryKey?.let { cache.pendingRetry(db, it, operation) } ?: operation?.toString()
+                val operationID =
+                    retryKey?.let { cache.pendingRetry(db, it, operation) } ?: operation?.toString()
                 path to operationID
             }) { target ->
                 target.fold(
@@ -1645,7 +1427,9 @@ class NetworkSync(
                         }) { reply ->
                             reply.fold(
                                 { json ->
-                                    database({ cache.generationRows(it, chat, json, retryKey, operationID) }) { applied ->
+                                    database({
+                                        cache.generationRows(it, chat, json, retryKey, operationID)
+                                    }) { applied ->
                                         applied.onSuccess(::emit)
                                         finish(applied.map { Unit })
                                     }
@@ -1660,21 +1444,11 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Преобразует команду в текст и проверяет предельный размер перед передачей постоянному
-     * соединению При слишком большом сообщении или отказе отправки запускает восстановление
-     * текущего подключения
-     */
     private fun send(value: JSONObject) {
         val text = value.toString()
         if (text.toByteArray().size > 65536 || socket?.send(text) != true) retry(generation)
     }
 
-    /**
-     * Передаёт серверу подтверждённое удаление аккаунта с введённым паролем Повторный ответ об уже
-     * удалённом аккаунте принимает как достигнутый результат удаления Успех или оставшуюся ошибку
-     * возвращает в главный поток для продолжения местной очистки
-     */
     fun eraseStudioAccount(password: String, completion: (Result<Unit>) -> Unit) {
         worker.post {
             if (closed) return@post
@@ -1695,11 +1469,9 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Останавливает активную синхронизацию и закрывает соединение после отказа ключа входа При
-     * удалённом аккаунте вызывает обработчик местной очистки, иначе сообщает экрану о необходимости
-     * нового подключения
-     */
+    // При удалённом аккаунте вызывает обработчик местной очистки, иначе сообщает экрану о
+    // необходимости
+    // нового подключения.
     private fun sessionRejected(code: String) {
         if (rejectedSession) return
         rejectedSession = true
@@ -1720,12 +1492,6 @@ class NetworkSync(
         worker.postDelayed({ if (next == generation && active) connect() }, delay)
     }
 
-    /**
-     * Снимает таймеры восстановления и просмотров, закрывает постоянное соединение и меняет
-     * поколение для отсечения старых ответов Сбрасывает временные очереди событий, ожидания
-     * отправок, счётчики присутствия и действий, сохраняя постоянные операции в базе Обновляет
-     * сведения для экрана после прекращения подключения
-     */
     private fun disconnect() {
         resumeTimeout?.let { worker.removeCallbacks(it) }
         resumeTimeout = null
@@ -1753,18 +1519,10 @@ class NetworkSync(
         readRefreshAgain = false
     }
 
-    /**
-     * Передаёт изменения сообщений из рабочей очереди в главный поток Там отдаёт их накопителю
-     * экранных обновлений, который объединяет близкие изменения перед уведомлением представления
-     */
     private fun emit(deltas: List<MessageDelta>) {
         main.post { ui.offer(deltas) }
     }
 
-    /**
-     * Выполняет переданное действие через последовательную очередь владельца местной базы Результат
-     * возвращает в очередь синхронизации и вызывает продолжение только пока служба ещё не закрыта
-     */
     private fun <T> database(
         action: (android.database.sqlite.SQLiteDatabase) -> T,
         completion: (Result<T>) -> Unit,
@@ -1772,11 +1530,6 @@ class NetworkSync(
         store.submit(action) { result -> worker.post { if (!closed) completion(result) } }
     }
 
-    /**
-     * Запускает сетевую работу в отдельной ограниченной очереди и собирает успех или исключение в
-     * единый результат Возвращает результат в очередь синхронизации, а отказ принять новую работу
-     * сообщает через то же завершение
-     */
     private fun <T> http(action: () -> T, completion: (Result<T>) -> Unit) {
         try {
             io.execute {
@@ -1796,12 +1549,6 @@ class NetworkSync(
         }
     }
 
-    /**
-     * Снимает обработчики экрана и закрывает накопитель изменений, чтобы завершённая служба больше
-     * не обновляла представления В рабочей очереди отмечает завершение, прекращает соединение,
-     * останавливает сетевые задания и закрывает сетевой клиент Просит поток синхронизации закончить
-     * оставшуюся допустимую работу и выйти
-     */
     fun close() {
         onStudioMediaEvicted = null
         ui.close()

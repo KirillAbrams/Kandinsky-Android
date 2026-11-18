@@ -21,7 +21,13 @@ class ChatAttachmentFlowTest {
             val choice = By.desc(title)
             if (!ui.device.wait(Until.hasObject(choice), 5000)) {
                 val x = ui.device.displayWidth / 2
-                ui.device.swipe(x, ui.device.displayHeight * 4 / 5, x, ui.device.displayHeight / 3, 30)
+                ui.device.swipe(
+                    x,
+                    ui.device.displayHeight * 4 / 5,
+                    x,
+                    ui.device.displayHeight / 3,
+                    30,
+                )
             }
             ui.find(choice).click()
         }

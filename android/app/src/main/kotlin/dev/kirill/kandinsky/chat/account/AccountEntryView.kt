@@ -19,10 +19,6 @@ import dev.kirill.kandinsky.chat.network.NetworkProfile
 import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.rendering.KandinskyPalette
 
-/**
- * Форма входа и выбора аккаунта на системных элементах приложения Владеет одним выполняемым
- * запросом отдельно от отрисовки и местной истории чатов
- */
 class AccountEntryView(
     private val activity: Activity,
     private val api: NetworkAPI,
@@ -311,8 +307,7 @@ class AccountEntryView(
                     true
                 }
             }
-        // Закрытие защищённого соединения может потребовать отправку данных, поэтому выполняем его
-        // вне потока экрана
+        // Закрытие защищённого соединения может потребовать отправку данных, поэтому выполняем его.
         if (first) Thread({ api.close() }, "KandinskyEntryClose").start()
     }
 }

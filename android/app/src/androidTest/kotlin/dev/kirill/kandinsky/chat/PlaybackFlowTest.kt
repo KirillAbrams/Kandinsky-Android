@@ -7,7 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackFlowTest {
-    @Test fun videoOpensInFullscreenAndReturnsToConversation() {
+    @Test
+    fun videoOpensInFullscreenAndReturnsToConversation() {
         val ui = AppFlowDriver()
         ui.launch()
         ui.openChat("Плотная медиалента")

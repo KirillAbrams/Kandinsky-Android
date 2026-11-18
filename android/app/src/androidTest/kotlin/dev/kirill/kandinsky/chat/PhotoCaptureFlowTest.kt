@@ -9,7 +9,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PhotoCaptureFlowTest {
-    @Test fun cancellingCameraReturnsToSameDraft() {
+    @Test
+    fun cancellingCameraReturnsToSameDraft() {
         val ui = AppFlowDriver()
         ui.launch()
         ui.openChat("Длинная история")
@@ -17,7 +18,10 @@ class PhotoCaptureFlowTest {
         val draft = ui.find(editor).text
         ui.find(By.res("composer.plus")).click()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName, Manifest.permission.CAMERA)
+        instrumentation.uiAutomation.grantRuntimePermission(
+            instrumentation.targetContext.packageName,
+            Manifest.permission.CAMERA,
+        )
         ui.find(By.desc("Снять фото")).click()
         ui.find(By.desc("Сделать снимок").enabled(true))
         val cancel = By.desc("Отменить съёмку")

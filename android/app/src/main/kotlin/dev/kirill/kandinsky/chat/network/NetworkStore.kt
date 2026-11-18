@@ -8,10 +8,6 @@ import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Порция сохранённых просмотров одного чата для передачи серверу Содержит постоянные серверные
- * номера без самих сообщений и файлов
- */
 data class ContentBatch(val chatID: Long, val messageIDs: List<Long>)
 
 class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
@@ -20,7 +16,10 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         transaction(db) {
             val row =
                 db.rawQuery(
-                        "SELECT m.chatId,m.kind,n.serverID,n.senderID FROM messages m JOIN net_messages n ON n.localID=m.id WHERE m.id=? AND n.tombstone=0",
+                        "SELECT m.chatId,m.kind,n.serverID,n.senderID " +
+                            "FROM messages m " +
+                            "JOIN net_messages n ON n.localID=m.id " +
+                            "WHERE m.id=? AND n.tombstone=0",
                         arrayOf(localID.toString()),
                     )
                     .use { c ->
@@ -45,7 +44,12 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             )
                 return@transaction emptyList()
             db.execSQL(
-                "INSERT INTO net_pending_content(serverID,chatID) VALUES(?,?) ON CONFLICT(serverID) DO UPDATE SET errorCode=NULL WHERE chatID=excluded.chatID",
+                "INSERT INTO net_pending_content(serverID,chatID) " +
+                    "VALUES(?,?) " +
+                    "ON CONFLICT(serverID) " +
+                    "DO UPDATE " +
+                    "SET errorCode=NULL " +
+                    "WHERE chatID=excluded.chatID",
                 arrayOf(server, chat),
             )
             if (
@@ -68,7 +72,10 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     fun pendingContent(db: SQLiteDatabase): List<ContentBatch> {
         val batches = ArrayList<ContentBatch>(4)
         db.rawQuery(
-                "SELECT serverID,chatID FROM net_pending_content WHERE errorCode IS NULL ORDER BY chatID,serverID LIMIT 128",
+                "SELECT serverID,chatID " +
+                    "FROM net_pending_content " +
+                    "WHERE errorCode IS NULL " +
+                    "ORDER BY chatID,serverID LIMIT 128",
                 null,
             )
             .use { c ->
@@ -87,8 +94,7 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         return batches
     }
 
-    // Удаляем из очереди только номера из отправленной группы. Пока шёл запрос, могли появиться
-    // новые просмотры.
+    // Удаляем из очереди только номера из отправленной группы. Пока шёл запрос, могли появиться.
     fun confirmContent(
         db: SQLiteDatabase,
         json: JSONObject,
@@ -127,8 +133,7 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         (value as? Number)?.toString()?.toLongOrNull()?.also { require(it > 0) }
             ?: error("Invalid content identity")
 
-    // Подтверждение от сервера может прийти раньше сообщения. Сохраняем его, чтобы применить при
-    // загрузке истории.
+    // Подтверждение просмотра может прийти раньше сообщения. Сохраняем его до загрузки истории.
     private fun restoreContent(
         db: SQLiteDatabase,
         server: Long,
@@ -136,7 +141,10 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     ): Pair<Long, Long>? {
         val row =
             db.rawQuery(
-                    "SELECT m.id,m.chatId,m.kind,n.senderID FROM net_messages n JOIN messages m ON m.id=n.localID WHERE n.serverID=?",
+                    "SELECT m.id,m.chatId,m.kind,n.senderID " +
+                        "FROM net_messages n " +
+                        "JOIN messages m ON m.id=n.localID " +
+                        "WHERE n.serverID=?",
                     arrayOf(server.toString()),
                 )
                 .use { c ->
@@ -222,8 +230,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             val receipt = rows.getJSONObject(i)
             val server = contentID(receipt.opt("messageId"))
             val actor = contentID(receipt.opt("userId"))
-            // Скрытым строкам не нужно представление, а подтверждения снимка относятся к
-            // загруженной странице
             val chat =
                 db.rawQuery(
                         "SELECT m.chatId FROM net_messages n JOIN messages m ON m.id=n.localID WHERE n.serverID=?",
@@ -303,7 +309,8 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         if (latest > previous) state(db, "peerRead:$chat", latest.toString())
         val args = arrayOf(chat.toString(), userID.toString(), latest.toString())
         val predicate =
-            "m.chatId=? AND n.senderID=? AND n.serverID IS NOT NULL AND n.serverSeq>0 AND n.serverSeq<=? AND m.deliveryState<>'read'"
+            "m.chatId=? AND n.senderID=? AND n.serverID IS NOT NULL AND n.serverSeq>0 AND " +
+                "n.serverSeq<=? AND m.deliveryState<>'read'"
         db.rawQuery(
                 "SELECT n.localID FROM net_messages n JOIN messages m ON m.id=n.localID WHERE $predicate",
                 args,
@@ -312,7 +319,12 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                 while (it.moveToNext()) touched.getOrPut(chat) { linkedSetOf() }.add(it.getLong(0))
             }
         db.execSQL(
-            "UPDATE messages SET deliveryState='read',revision=revision+1 WHERE id IN (SELECT n.localID FROM net_messages n JOIN messages m ON m.id=n.localID WHERE $predicate)",
+            "UPDATE messages " +
+                "SET deliveryState='read',revision=revision+1 " +
+                "WHERE id IN (SELECT n.localID " +
+                "FROM net_messages n " +
+                "JOIN messages m ON m.id=n.localID " +
+                "WHERE $predicate)",
             args,
         )
     }
@@ -363,8 +375,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         return ChatServerState.applyState(db, chat, flags)
     }
 
-    // Старая сводка может прийти после новых сообщений. При обновлении счётчика учитываем сообщения
-    // за её границей.
     private fun mergeChatRows(
         db: SQLiteDatabase,
         json: JSONObject,
@@ -400,7 +410,11 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                 if (latest > previousRead) state(db, "ownRead:$id", latest.toString())
                 val later =
                     db.rawQuery(
-                            "SELECT count(*) FROM net_messages n JOIN messages m ON m.id=n.localID WHERE m.chatId=? AND n.senderID<>? AND n.serverSeq>? AND n.serverSeq>?",
+                            "SELECT count(*) " +
+                                "FROM net_messages n " +
+                                "JOIN messages m ON m.id=n.localID " +
+                                "WHERE m.chatId=? AND n.senderID<>? AND n.serverSeq>? AND " +
+                                "n.serverSeq>?",
                             arrayOf(
                                 id.toString(),
                                 userID.toString(),
@@ -417,7 +431,12 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                 state(db, "readRefresh:$id", "0")
             } else state(db, "readRefresh:$id", "1")
             db.execSQL(
-                "INSERT INTO net_chats(chatID,lastSeq,hasOlder,peerUserID,title) VALUES(?,?,1,?,?) ON CONFLICT(chatID) DO UPDATE SET lastSeq=MAX(lastSeq,excluded.lastSeq),peerUserID=excluded.peerUserID,title=excluded.title",
+                "INSERT INTO net_chats(chatID,lastSeq,hasOlder,peerUserID,title) " +
+                    "VALUES(?,?,1,?,?) " +
+                    "ON CONFLICT(chatID) " +
+                    "DO UPDATE " +
+                    "SET lastSeq=MAX(lastSeq,excluded.lastSeq),peerUserID=excluded.peerUserID," +
+                    "title=excluded.title",
                 arrayOf<Any?>(id, seq, chat.optLongOrNull("peerUserId"), title),
             )
             val prior =
@@ -541,8 +560,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             }
     }
 
-    // Курсор и сообщения записываются вместе. Если в событиях пропуск, телефон запросит историю от
-    // последнего подтверждённого номера.
     fun events(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
         transaction(db) {
             val events = json.getJSONArray("events")
@@ -667,7 +684,9 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                                         val id = it.getLong(0)
                                         ids.add(id)
                                         db.execSQL(
-                                            "UPDATE messages SET deliveryState='delivered',revision=revision+1 WHERE id=? AND deliveryState IN ('pending','accepted')",
+                                            "UPDATE messages " +
+                                                "SET deliveryState='delivered',revision=revision+1 " +
+                                                "WHERE id=? AND deliveryState IN ('pending','accepted')",
                                             arrayOf(id),
                                         )
                                     }
@@ -688,8 +707,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             deltas(db, touched, removed, MessageChangeReason.SYNC)
         }
 
-    // Страница может пересекаться с уже полученными событиями. Сверяем номера и версии до
-    // обновления экрана.
     fun history(db: SQLiteDatabase, chat: Long, json: JSONObject): List<MessageDelta> =
         transaction(db) {
             val rows = json.getJSONArray("messages")
@@ -743,8 +760,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             deltas(db, mapOf(chat to touched), emptyMap(), MessageChangeReason.SYNC)
         }
 
-    // Ответ связываем с прежним сообщением по номеру операции. После потери связи в чате останется
-    // одна запись.
     fun accepted(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
         transaction(db) {
             val touched = linkedMapOf<Long, MutableSet<Long>>()
@@ -753,7 +768,11 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                 val row = messages.getJSONObject(i)
                 val client = row.getString("clientId").lowercase(Locale.ROOT)
                 db.rawQuery(
-                        "SELECT n.localID,m.chatId FROM net_messages n LEFT JOIN messages m ON m.id=n.localID WHERE n.clientID=? AND n.senderID=?",
+                        "SELECT n.localID,m.chatId " +
+                            "FROM net_messages n " +
+                            "LEFT " +
+                            "JOIN messages m ON m.id=n.localID " +
+                            "WHERE n.clientID=? AND n.senderID=?",
                         arrayOf(client, userID.toString()),
                     )
                     .use {
@@ -764,7 +783,11 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                                 arrayOf(row.getLong("id"), row.getLong("seq"), id),
                             )
                             db.execSQL(
-                                "UPDATE messages SET sortKey=?,savedAt=?,revision=revision+1,deliveryState=CASE WHEN deliveryState IN ('pending','failed') THEN 'accepted' ELSE deliveryState END WHERE id=?",
+                                "UPDATE messages " +
+                                    "SET sortKey=?,savedAt=?,revision=revision+1," +
+                                    "deliveryState=CASE WHEN deliveryState IN ('pending'," +
+                                    "'failed') THEN 'accepted' ELSE deliveryState END " +
+                                    "WHERE id=?",
                                 arrayOf(row.getLong("seq"), row.getLong("savedAtMs"), id),
                             )
                             if (!it.isNull(1))
@@ -790,7 +813,10 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
             val args = ids.toTypedArray()
             val touched = linkedMapOf<Long, MutableSet<Long>>()
             db.rawQuery(
-                    "SELECT m.id,m.chatId FROM messages m JOIN net_outbox o ON o.localID=m.id WHERE o.id IN ($placeholders)",
+                    "SELECT m.id,m.chatId " +
+                        "FROM messages m " +
+                        "JOIN net_outbox o ON o.localID=m.id " +
+                        "WHERE o.id IN ($placeholders)",
                     args,
                 )
                 .use {
@@ -803,18 +829,25 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
                 arrayOf<Any>(code, *args),
             )
             db.execSQL(
-                "UPDATE messages SET deliveryState='failed',revision=revision+1 WHERE id IN (SELECT localID FROM net_outbox WHERE id IN ($placeholders))",
+                "UPDATE messages " +
+                    "SET deliveryState='failed',revision=revision+1 " +
+                    "WHERE id IN (SELECT localID " +
+                    "FROM net_outbox " +
+                    "WHERE id IN ($placeholders))",
                 args,
             )
             db.execSQL(
-                "DELETE FROM net_outbox WHERE action='delete' AND localID IN (SELECT localID FROM net_outbox WHERE id IN ($placeholders))",
+                "DELETE " +
+                    "FROM net_outbox " +
+                    "WHERE action='delete' AND localID IN (SELECT localID " +
+                    "FROM net_outbox " +
+                    "WHERE id IN ($placeholders))",
                 args,
             )
             deltas(db, touched, emptyMap(), MessageChangeReason.SYNC)
         }
 
-    // Местная отправка и полученное событие могут описывать одно сообщение. Сначала ищем
-    // существующую запись.
+    // Местная отправка и полученное событие могут описывать одно сообщение. Сначала ищем.
     private fun merge(db: SQLiteDatabase, wire: JSONObject): Long? {
         val server = wire.getLong("id")
         val chat = wire.getLong("chatId")
@@ -824,7 +857,9 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         val revision = wire.getInt("revision")
         val mapping =
             db.rawQuery(
-                    "SELECT localID,remoteRevision,tombstone FROM net_messages WHERE serverID=? OR (clientID=? AND senderID=?)",
+                    "SELECT localID,remoteRevision,tombstone " +
+                        "FROM net_messages " +
+                        "WHERE serverID=? OR (clientID=? AND senderID=?)",
                     arrayOf(server.toString(), client, sender.toString()),
                 )
                 .use {
@@ -839,7 +874,14 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         val oldAttachments =
             if (mapping != null && own)
                 db.rawQuery(
-                        "SELECT a.relativePath,COALESCE(m.blobID,u.blobID) FROM attachments a LEFT JOIN net_media m ON m.attachmentID=a.id LEFT JOIN net_uploads u ON u.attachmentID=a.id WHERE a.messageId=? ORDER BY a.rowid",
+                        "SELECT a.relativePath,COALESCE(m.blobID,u.blobID) " +
+                            "FROM attachments a " +
+                            "LEFT " +
+                            "JOIN net_media m ON m.attachmentID=a.id " +
+                            "LEFT " +
+                            "JOIN net_uploads u ON u.attachmentID=a.id " +
+                            "WHERE a.messageId=? " +
+                            "ORDER BY a.rowid",
                         arrayOf(mapping.first.toString()),
                     )
                     .use { c ->
@@ -879,12 +921,18 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         if (mapping != null) {
             db.update("messages", values, "id=?", arrayOf(id.toString()))
             db.execSQL(
-                "UPDATE messages SET revision=revision+1,deliveryState=CASE WHEN direction='outgoing' AND deliveryState IN ('pending','failed') THEN 'accepted' ELSE deliveryState END WHERE id=?",
+                "UPDATE messages " +
+                    "SET revision=revision+1,deliveryState=CASE WHEN direction='outgoing' AND " +
+                    "deliveryState IN ('pending','failed') THEN 'accepted' ELSE deliveryState " +
+                    "END " +
+                    "WHERE id=?",
                 arrayOf(id),
             )
         }
         db.execSQL(
-            "INSERT OR REPLACE INTO net_messages(localID,serverID,clientID,senderID,serverSeq,remoteRevision,tombstone) VALUES(?,?,?,?,?,?,0)",
+            "INSERT OR REPLACE INTO net_messages(localID,serverID,clientID,senderID," +
+                "serverSeq,remoteRevision,tombstone) " +
+                "VALUES(?,?,?,?,?,?,0)",
             arrayOf<Any?>(id, server, client, sender, wire.getLong("seq"), revision),
         )
         if (own && wire.getLong("seq") > 0 && wire.getLong("seq") <= peerRead(db, chat)) {
@@ -898,44 +946,49 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         val attachments = wire.getJSONArray("attachments")
         require(attachments.length() <= 10)
         for (i in 0 until attachments.length()) {
-            val a = attachments.getJSONObject(i)
-            val blob = a.getString("blobId")
+            val attachment = attachments.getJSONObject(i)
+            val blob = attachment.getString("blobId")
             require(blob.matches(Regex("[a-f0-9]{32}|[a-f0-9]{64}")))
-            val aid =
-                if (a.has("resultJobId") && !a.isNull("resultJobId")) "net-$server-result-$blob"
+            val attachmentId =
+                if (attachment.has("resultJobId") && !attachment.isNull("resultJobId"))
+                    "net-$server-result-$blob"
                 else "net-$server-$i"
             val path =
                 oldAttachments.getOrNull(i)?.takeIf { it.second == blob }?.first
-                    ?: NetworkMedia.relativePath(blob, a.getString("mime"))
+                    ?: NetworkMedia.relativePath(blob, attachment.getString("mime"))
             db.execSQL(
-                "INSERT INTO attachments(id,messageId,relativePath,mime,byteSize,width,height,durationMs,thumbnailKey,orientation) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO attachments(id,messageId,relativePath,mime,byteSize,width," +
+                    "height,durationMs,thumbnailKey,orientation) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 arrayOf<Any?>(
-                    aid,
+                    attachmentId,
                     id,
                     path,
-                    a.getString("mime"),
-                    a.getLong("byteSize"),
-                    a.getInt("rawWidth"),
-                    a.getInt("rawHeight"),
-                    a.optLongOrNull("durationMs"),
+                    attachment.getString("mime"),
+                    attachment.getLong("byteSize"),
+                    attachment.getInt("rawWidth"),
+                    attachment.getInt("rawHeight"),
+                    attachment.optLongOrNull("durationMs"),
                     blob,
-                    a.getInt("orientation"),
+                    attachment.getInt("orientation"),
                 ),
             )
             MediaPreviewStorage.save(
                 db,
-                aid,
-                a.optString("tinyPreview").takeUnless { it == "null" },
-                MediaPreviewStorage.readWave(a.optJSONArray("waveform")?.toString()),
+                attachmentId,
+                attachment.optString("tinyPreview").takeUnless { it == "null" },
+                MediaPreviewStorage.readWave(attachment.optJSONArray("waveform")?.toString()),
             )
             db.execSQL(
                 "INSERT OR REPLACE INTO net_media(attachmentID,blobID,previewBlobID,mime,byteSize) VALUES(?,?,?,?,?)",
                 arrayOf<Any?>(
-                    aid,
+                    attachmentId,
                     blob,
-                    a.optString("previewBlobId").takeUnless { it.isBlank() || it == "null" },
-                    a.getString("mime"),
-                    a.getLong("byteSize"),
+                    attachment.optString("previewBlobId").takeUnless {
+                        it.isBlank() || it == "null"
+                    },
+                    attachment.getString("mime"),
+                    attachment.getLong("byteSize"),
                 ),
             )
         }
@@ -963,8 +1016,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         metadata: JSONObject,
         existing: Boolean,
     ): JSONObject {
-        // Завершённое состояние не требует сохранения промежуточного процента из прежнего активного
-        // ответа
         fun active(status: String) = status == "running" || status == "queued"
         if (!existing || !active(metadata.optString("kandinskyStatus"))) return metadata
         val previous =
@@ -1029,7 +1080,16 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     ): List<MessageDelta> {
         return touched.map { (chat, ids) ->
             db.execSQL(
-                "UPDATE chats SET lastMessageId=(SELECT id FROM messages WHERE chatId=? ORDER BY sortKey DESC,id DESC LIMIT 1),updatedSortKey=COALESCE((SELECT savedAt FROM messages WHERE chatId=? ORDER BY sortKey DESC,id DESC LIMIT 1),0) WHERE id=?",
+                "UPDATE chats " +
+                    "SET lastMessageId=(SELECT id " +
+                    "FROM messages " +
+                    "WHERE chatId=? " +
+                    "ORDER BY sortKey DESC,id DESC LIMIT 1)," +
+                    "updatedSortKey=COALESCE((SELECT savedAt " +
+                    "FROM messages " +
+                    "WHERE chatId=? " +
+                    "ORDER BY sortKey DESC,id DESC LIMIT 1),0) " +
+                    "WHERE id=?",
                 arrayOf(chat, chat, chat),
             )
             val rows =
@@ -1050,11 +1110,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     }
 
     companion object {
-        /**
-         * Открывает сделку местной базы и выполняет переданный набор связанных изменений
-         * Подтверждает их только после успешного возврата действия и обязательно завершает сделку,
-         * откатывая её при исключении
-         */
         fun <T> transaction(db: SQLiteDatabase, action: () -> T): T {
             db.beginTransaction()
             try {
@@ -1068,7 +1123,5 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     }
 }
 
-// Если поле отсутствует или явно пустое, возвращает отсутствие, иначе использует обычное чтение
-// числа с его проверкой вида
 internal fun JSONObject.optLongOrNull(key: String): Long? =
     if (isNull(key) || !has(key)) null else getLong(key)

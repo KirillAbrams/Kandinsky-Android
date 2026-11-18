@@ -7,7 +7,8 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class PersistenceFlowTest {
-    @Test fun draftStaysInItsOwnConversation() {
+    @Test
+    fun draftStaysInItsOwnConversation() {
         val ui = AppFlowDriver()
         ui.launch()
         ui.openChat("Длинная история")
