@@ -24,3 +24,5 @@ DerivedData/
 *.xcarchive/
 *.ipa
 *.apk
+
+.review/
