@@ -180,12 +180,6 @@ class SQLiteChatRepository(
                         )
                     )
             }
-        val consumed = HashSet<Long>()
-        db.rawQuery(
-                "SELECT messageID FROM message_content WHERE consumed=1 AND messageID IN ($placeholders)",
-                output.map { it.id.toString() }.toTypedArray(),
-            )
-            .use { c -> while (c.moveToNext()) consumed.add(c.getLong(0)) }
         val generationIDs =
             if (journal == null) emptyList()
             else
@@ -262,7 +256,6 @@ class SQLiteChatRepository(
         return output.map {
             it.copy(
                 attachments = grouped[it.id]?.toList() ?: emptyList(),
-                contentRead = it.id in consumed,
                 studioGeneration = generations[it.id],
             )
         }

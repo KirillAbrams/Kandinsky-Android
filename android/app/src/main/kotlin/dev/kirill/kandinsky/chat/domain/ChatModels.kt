@@ -92,7 +92,6 @@ data class Message(
     val revision: Int,
     val attachments: List<Attachment>,
     val delivery: MessageDelivery = MessageDelivery.LOCAL,
-    val contentRead: Boolean = false,
     val studioGeneration: StudioGeneration? = null,
 ) {
     val canReportStudioMedia

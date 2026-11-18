@@ -8,15 +8,14 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
 
     fun receive(value: JSONObject) {
         when (value.getString("type")) {
-            "resumed" -> sync.connectionResumed(value)
+            "resumed" -> sync.connectionResumed()
             "events" -> {
                 check(eventQueue.size < 64)
                 eventQueue.addLast(value)
                 drainEvents()
             }
-            "content_applied" -> sync.readReceipts.confirmContent(value)
             "accepted" -> sync.outbox.accepted(value)
-            "applied" -> sync.readReceipts.confirmDelivery(value)
+            "applied" -> sync.cursorAcknowledgement.confirmSavedCursor(value)
             "deleted" -> sync.outbox.deleted(value)
             "error" -> handleError(value)
         }
@@ -28,8 +27,6 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
         when {
             code == "account_deleted" || code == "invalid_session" -> sync.sessionRejected(code)
             value.optBoolean("retryable", false) -> sync.reconnectAfterFailure(sync.connectionEpoch)
-            sync.readReceipts.matchesRequest(request.lowercase(java.util.Locale.ROOT)) ->
-                sync.readReceipts.rejectContent(code)
             sync.outbox.matchesRequest(request) -> sync.outbox.reject(code)
             else -> sync.reconnectAfterFailure(sync.connectionEpoch)
         }
@@ -48,16 +45,12 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
         val value = eventQueue.first
         val connectionID = sync.connectionEpoch
         fun apply() {
-            sync.database({ db ->
-                val changes = sync.cache.events(db, value)
-                changes to sync.cache.needsReadRefresh(db)
-            }) { result ->
+            sync.database({ db -> sync.cache.events(db, value) }) { result ->
                 if (connectionID == sync.connectionEpoch)
                     result.fold(
-                        { (changes, refresh) ->
+                        { changes ->
                             sync.emit(changes)
                             sync.attachments.drainRemovedStudioMedia()
-                            if (refresh) sync.history.refreshReadSummaries()
                             eventQueue.removeFirst()
                             applyingEvents = false
                             sync.flushPendingWork()

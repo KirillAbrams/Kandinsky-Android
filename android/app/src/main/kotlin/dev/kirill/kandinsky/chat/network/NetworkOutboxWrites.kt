@@ -38,15 +38,9 @@ internal fun NetworkStore.confirmSentMessages(db: SQLiteDatabase, json: JSONObje
                         )
                         if (!it.isNull(1))
                             touched.getOrPut(it.getLong(1)) { linkedSetOf() }.add(id)
-                        restoreContent(db, row.getLong("id"))?.let { (chat, local) ->
-                            touched.getOrPut(chat) { linkedSetOf() }.add(local)
-                        }
                     }
                 }
             db.delete("net_outbox", "id=? AND action='send'", arrayOf(client))
-        }
-        touched.keys.toList().forEach { chat ->
-            applyPeerRead(db, chat, peerRead(db, chat), touched)
         }
         deltas(db, touched, emptyMap(), MessageChangeReason.SYNC)
     }

@@ -54,9 +54,8 @@ class NetworkSync(
 
     internal fun send(value: JSONObject) = connection.send(value)
 
-    internal fun connectionResumed(value: JSONObject) = connection.connectionResumed(value)
+    internal fun connectionResumed() = connection.connectionResumed()
 
-    internal fun sendContentPacket(packet: String) = connection.sendContentPacket(packet)
 
     private val ui = NetworkUIBatch { onDeltas?.invoke(it) }
     var onDeltas: ((List<MessageDelta>) -> Unit)? = null
@@ -67,7 +66,7 @@ class NetworkSync(
     private val sessionErrors = setOf("Войдите в аккаунт", "invalid_session", "account_deleted")
     var onStudioRecentChanged: (() -> Unit)? = null
     internal val outbox = SyncOutbox(this)
-    internal val readReceipts = SyncReadReceipts(this)
+    internal val cursorAcknowledgement = SyncCursorAcknowledgement(this)
     internal val history = SyncHistory(this)
     internal val attachments = SyncAttachments(this)
     private val modelCatalog = SyncModelCatalog(this)
@@ -75,8 +74,6 @@ class NetworkSync(
     private val chatDirectory = SyncChatDirectory(this)
     internal val incomingEvents = SyncIncomingEvents(this)
 
-    val contentBatchesSent
-        get() = readReceipts.contentBatchesSent
 
     fun openDirect(username: String, threadID: UUID? = null, completion: (Result<Long>) -> Unit) =
         chatDirectory.openDirect(username, threadID, completion)
@@ -150,7 +147,6 @@ class NetworkSync(
 
     fun visibleChat(chat: Long?) = history.visibleChat(chat)
 
-    fun consume(messageID: MessageID) = readReceipts.consume(messageID)
 
     private var nextActivityAtMs = 0L
 

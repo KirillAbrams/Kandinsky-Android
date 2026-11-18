@@ -8,11 +8,15 @@
 
 Приложение подключается по HTTPS к службе связи в Алматы. Адрес задаёт свойство сборки `kandinsky.bridgeOrigin`. Для проверки на телефоне войди в существующий аккаунт. Вариант store предназначен для выпуска. Ключ подписи передаётся отдельно.
 
-В app/src/main/kotlin/dev/kirill/kandinsky/chat открой account для формы входа, conversation для разговора, chatlist для списка чатов, network для обмена с сервером и storage для сохранённых данных. Проверки без устройства находятся в app/src/test. Проверки на устройстве находятся в app/src/androidTest.
+Перейди к [форме входа](app/src/main/kotlin/dev/kirill/kandinsky/chat/account), [экрану разговора](app/src/main/kotlin/dev/kirill/kandinsky/chat/conversation) или [списку чатов](app/src/main/kotlin/dev/kirill/kandinsky/chat/chatlist). [Сеть](app/src/main/kotlin/dev/kirill/kandinsky/chat/network) отвечает за обмен с сервером, [хранилище](app/src/main/kotlin/dev/kirill/kandinsky/chat/storage) сохраняет данные на телефоне. В Android Studio доступны [проверки без устройства](app/src/test) и [проверки на телефоне](app/src/androidTest).
 
 Выбор файла, загрузка на сервер и повторный выбор из недавних собраны в [ChatAttachmentCoordinator.kt](app/src/main/kotlin/dev/kirill/kandinsky/chat/attachments/ChatAttachmentCoordinator.kt). Полноэкранный просмотр и переход к соседнему файлу находятся в [разделе результатов](app/src/main/kotlin/dev/kirill/kandinsky/chat/results).
 
 Для проверки восстановления открой «Длинную историю», набери черновик и поверни телефон. Затем останови приложение через его настройки и открой снова. В обоих случаях проверь выбранный чат, текст и место чтения. Удали черновик после проверки. При открытии готового видео данные приходят из Алматы, просмотренные части сохраняются на телефоне.
+
+## Как проверить библиотеки сборки
+
+Из этой папки выполни `./gradlew :app:dependencies --configuration releaseRuntimeClasspath > /tmp/kandinsky-libs.txt`. Затем запусти `python3 ../scripts/check-runtime-deps.py --android-report /tmp/kandinsky-libs.txt`. Проверка найдёт библиотеки сети и передачи файлов, а также покажет, если в приложение попадут библиотеки для тестов.
 
 ## Данные на телефоне
 

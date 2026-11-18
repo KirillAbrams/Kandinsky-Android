@@ -173,8 +173,7 @@ internal class SyncOutbox(private val sync: NetworkSync) {
 
     fun flush() {
         outboxNeedsFlush = true
-        sync.readReceipts.sendDeliveryReceipt()
-        sync.history.sendVisibleReadPosition()
+        sync.cursorAcknowledgement.acknowledgeSavedCursor()
         sendNextBatch()
     }
 

@@ -20,7 +20,6 @@ internal class SyncConnection(private val sync: NetworkSync) {
 
     private var reconnectAttempts = 0
 
-    fun sendContentPacket(packet: String) = socket?.send(packet) == true
 
     // У каждого подключения свой номер. По нему отбрасываем поздние ответы от уже закрытого
     // соединения.
@@ -141,15 +140,12 @@ internal class SyncConnection(private val sync: NetworkSync) {
             )
     }
 
-    fun connectionResumed(value: JSONObject) {
+    fun connectionResumed() {
         sync.attachments.drainRemovedStudioMedia()
         resumeTimeout?.let { sync.worker.removeCallbacks(it) }
         resumeTimeout = null
         resumed = true
         reconnectAttempts = 0
-        sync.readReceipts.resume(
-            value.optJSONObject("features")?.optBoolean("contentReceiptAcks") == true
-        )
         sync.publishStatus("В сети")
         sync.flushPendingWork()
         sync.history.refreshCurrentChat()
@@ -169,14 +165,13 @@ internal class SyncConnection(private val sync: NetworkSync) {
     fun disconnect() {
         resumeTimeout?.let { sync.worker.removeCallbacks(it) }
         resumeTimeout = null
-        sync.readReceipts.reset()
+        sync.cursorAcknowledgement.reset()
         sync.incomingEvents.reset()
         connectionEpoch++
         resumed = false
         socket?.cancel()
         socket = null
         sync.outbox.reset()
-        sync.history.reset()
     }
 
     fun send(value: JSONObject) {

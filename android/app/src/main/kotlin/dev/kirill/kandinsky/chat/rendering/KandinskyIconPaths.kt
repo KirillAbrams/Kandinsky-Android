@@ -3,22 +3,9 @@ package dev.kirill.kandinsky.chat.rendering
 import android.graphics.*
 
 enum class IconID {
-    CHECK,
     PLUS,
-    MICROPHONE,
-    ROUND,
-    GIF,
     SEND,
     STOP,
-    BACK,
-    SEARCH,
-    EDIT,
-    BOOKMARK,
-    PIN,
-    TASKS,
-    SETTINGS,
-    MORE,
-    CHATS,
     MENU,
     COMPOSE,
     TUNE,
@@ -106,21 +93,6 @@ object KandinskyIconPaths {
                         )
                         close()
                     }
-                    IconID.MICROPHONE -> {
-                        addRoundRect(8f, 2f, 16f, 15f, 4f, 4f, Path.Direction.CW)
-                        moveTo(5f, 10f)
-                        cubicTo(5f, 22f, 19f, 22f, 19f, 10f)
-                        line(12f, 19f, 12f, 22f)
-                        line(8f, 22f, 16f, 22f)
-                    }
-                    IconID.ROUND -> {
-                        addCircle(12f, 12f, 10f, Path.Direction.CW)
-                        addRoundRect(6f, 8f, 14f, 16f, 2f, 2f, Path.Direction.CW)
-                        line(14f, 10f, 18f, 8f, 18f, 16f, 14f, 14f)
-                    }
-                    IconID.GIF -> {
-                        addRoundRect(2f, 3f, 22f, 21f, 5f, 5f, Path.Direction.CW)
-                    }
                     IconID.SEND -> {
                         line(
                             4f,
@@ -147,67 +119,6 @@ object KandinskyIconPaths {
                     IconID.STOP -> {
                         addRoundRect(5f, 5f, 19f, 19f, 2f, 2f, Path.Direction.CW)
                     }
-                    IconID.BACK -> {
-                        line(14f, 3f, 6f, 12f, 14f, 21f)
-                        line(6f, 12f, 22f, 12f)
-                    }
-                    IconID.SEARCH -> {
-                        addCircle(10f, 9f, 7f, Path.Direction.CW)
-                        line(15f, 15f, 22f, 22f)
-                    }
-                    IconID.CHECK -> line(4f, 12f, 9f, 17f, 20f, 6f)
-                    IconID.EDIT -> {
-                        line(4f, 16f, 15f, 5f, 19f, 9f, 8f, 20f, 3f, 21f, 4f, 16f)
-                        line(14f, 6f, 17f, 3f, 21f, 7f, 18f, 10f)
-                    }
-                    IconID.BOOKMARK -> line(5f, 3f, 19f, 3f, 19f, 22f, 12f, 17f, 5f, 22f, 5f, 3f)
-                    IconID.PIN -> {
-                        moveTo(14.5f, 1f)
-                        cubicTo(13.5f, 0f, 12f, 2f, 12.5f, 3f)
-                        lineTo(14.5f, 5f)
-                        lineTo(10.2f, 9f)
-                        cubicTo(7f, 7f, 4f, 8f, 1f, 11f)
-                        lineTo(7.8f, 17.3f)
-                        lineTo(.9f, 22.8f)
-                        lineTo(1.6f, 23.4f)
-                        lineTo(8.5f, 18f)
-                        lineTo(13.2f, 23.2f)
-                        cubicTo(16.4f, 20.8f, 15.5f, 17f, 14.7f, 14.5f)
-                        lineTo(19f, 10.1f)
-                        lineTo(20.8f, 12f)
-                        cubicTo(21.8f, 12.8f, 24.5f, 10f, 23f, 9f)
-                        close()
-                    }
-                    IconID.TASKS -> {
-                        line(3f, 6f, 5f, 8f, 8f, 3f)
-                        line(11f, 6f, 22f, 6f)
-                        line(3f, 14f, 5f, 16f, 8f, 11f)
-                        line(11f, 14f, 22f, 14f)
-                        line(3f, 22f, 5f, 23f, 8f, 19f)
-                        line(11f, 22f, 22f, 22f)
-                    }
-                    IconID.SETTINGS -> {
-                        addCircle(12f, 12f, 9f, Path.Direction.CW)
-                        addCircle(12f, 12f, 4f, Path.Direction.CW)
-                        repeat(8) {
-                            val a = it * Math.PI / 4
-                            line(
-                                (12 + kotlin.math.cos(a) * 9).toFloat(),
-                                (12 + kotlin.math.sin(a) * 9).toFloat(),
-                                (12 + kotlin.math.cos(a) * 12).toFloat(),
-                                (12 + kotlin.math.sin(a) * 12).toFloat(),
-                            )
-                        }
-                    }
-                    IconID.CHATS -> {
-                        addRoundRect(1f, 2f, 18f, 18f, 8f, 8f, Path.Direction.CW)
-                        line(4f, 15f, 3f, 22f, 10f, 18f)
-                        addRoundRect(9f, 10f, 24f, 23f, 7f, 7f, Path.Direction.CW)
-                        line(18f, 20f, 23f, 24f, 22f, 18f)
-                    }
-                    IconID.MORE -> {
-                        for (x in listOf(4f, 12f, 20f)) addCircle(x, 12f, 1f, Path.Direction.CW)
-                    }
                 }
             }
         }
@@ -221,8 +132,6 @@ object KandinskyIconPaths {
         paint.strokeWidth = width
         paint.style =
             when (icon) {
-                IconID.CHATS,
-                IconID.PIN,
                 IconID.MENU,
                 IconID.PLUS,
                 IconID.SEND,

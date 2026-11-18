@@ -58,7 +58,7 @@ class PlaybackLifetimeTest {
                     1000,
                     "",
                 )
-            player.play(PlaybackTarget(audio, 4401, 2, MessageKind.VOICE))
+            player.play(PlaybackTarget(audio, 4401, MessageKind.VOICE))
             assertNull(player.currentTarget)
             assertEquals(MediaError.UNAVAILABLE, (player.lastError as? MediaException)?.reason)
             assertEquals(0, player.activePlayerCount)
@@ -68,89 +68,6 @@ class PlaybackLifetimeTest {
             admission.close()
         }
         h.close()
-    }
-
-    @Test
-    fun roundConsumptionNeedsRealProgressAndIgnoresPausedSeekAndLoopRepeats() {
-        val h = RepositoryHarness.open(File(context.cacheDir, "round-consume-" + UUID.randomUUID()))
-        val admission = MediaAdmission()
-        lateinit var media: MediaStore
-        lateinit var c: MediaCoordinator
-        main {
-            media = MediaStore(h.store, h.repo)
-            c = MediaCoordinator(admission, media)
-        }
-        try {
-            val d =
-                awaitResult<AttachmentDraft> { cb ->
-                    main {
-                        media.stage(
-                            { TestFixtures.assets.open("media/video-00.mp4") },
-                            "video/mp4",
-                            cb,
-                        )
-                    }
-                    Cancellation {}
-                }
-            val a =
-                Attachment(
-                    d.id,
-                    d.relativePath,
-                    d.mime,
-                    d.byteSize,
-                    d.rawWidth,
-                    d.rawHeight,
-                    d.orientation,
-                    d.durationMs,
-                    d.thumbnailKey,
-                )
-            val ready = CountDownLatch(1)
-            val consumed = CountDownLatch(1)
-            val paused = java.util.concurrent.atomic.AtomicBoolean()
-            val ids = java.util.concurrent.CopyOnWriteArrayList<Long>()
-            main {
-                c.onChange = {
-                    if (c.isReady && paused.compareAndSet(false, true)) {
-                        c.pause()
-                        ready.countDown()
-                    }
-                }
-                c.onConsumed = { target ->
-                    ids.add(target.messageID)
-                    consumed.countDown()
-                }
-                c.play(PlaybackTarget(a, 8801, 2, MessageKind.ROUND))
-            }
-            assertTrue(ready.await(5, TimeUnit.SECONDS))
-            val sought = CountDownLatch(1)
-            main {
-                c.seek(1600) { done ->
-                    assertTrue(done)
-                    sought.countDown()
-                }
-            }
-            assertTrue(sought.await(3, TimeUnit.SECONDS))
-            android.os.SystemClock.sleep(400)
-            assertTrue("Preparation and a paused seek are not consumption", ids.isEmpty())
-            main { c.resume() }
-            assertTrue(
-                "Real native round progress must consume",
-                consumed.await(3, TimeUnit.SECONDS),
-            )
-            assertEquals(listOf(8801L), ids.toList())
-            android.os.SystemClock.sleep(2400)
-            assertEquals("Loops do not repeat the intention", listOf(8801L), ids.toList())
-            main { c.close() }
-            android.os.SystemClock.sleep(150)
-            main { assertNull(c.onConsumed) }
-        } finally {
-            main {
-                c.close()
-                media.close()
-                admission.close()
-            }
-            h.close()
-        }
     }
 
     private val i = InstrumentationRegistry.getInstrumentation()
@@ -223,7 +140,7 @@ class PlaybackLifetimeTest {
                         last = position
                     }
                 }
-                c.play(PlaybackTarget(a, 991, 2, MessageKind.ROUND))
+                c.play(PlaybackTarget(a, 991, MessageKind.ROUND))
             }
             assertTrue("Беззвучное круглое видео готово", ready.await(5, TimeUnit.SECONDS))
             main { assertTrue("Видео должно оставаться без звука", c.isMuted) }
@@ -329,7 +246,7 @@ class PlaybackLifetimeTest {
                     if (c.isReady) ready.countDown()
                     if (c.isReady && !c.isPlaying && c.positionMs >= 1800) ended.countDown()
                 }
-                c.play(PlaybackTarget(asset, 992, 2, MessageKind.VIDEO))
+                c.play(PlaybackTarget(asset, 992, MessageKind.VIDEO))
             }
             assertTrue(ready.await(5, TimeUnit.SECONDS))
             assertTrue("Видео должно завершиться один раз", ended.await(5, TimeUnit.SECONDS))
@@ -409,7 +326,7 @@ class PlaybackLifetimeTest {
             val ready = CountDownLatch(1)
             main {
                 c.onChange = { if (c.isReady) ready.countDown() }
-                c.play(PlaybackTarget(a, 90, 2, MessageKind.VIDEO))
+                c.play(PlaybackTarget(a, 90, MessageKind.VIDEO))
             }
             assertTrue(ready.await(8, TimeUnit.SECONDS))
             val chat = ChatSummary(2, "source", "", 1, 1, 0, false)

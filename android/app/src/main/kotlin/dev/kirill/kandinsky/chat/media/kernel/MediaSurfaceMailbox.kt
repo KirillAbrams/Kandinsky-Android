@@ -17,9 +17,6 @@ internal class MediaSurfaceMailbox<T : AutoCloseable>(
     private var scheduled = false
     private var render: ((T?) -> Unit)? = render
 
-    fun isCurrent(token: Long): Boolean =
-        synchronized(gate) { active && !closed && binding == token }
-
     fun begin(preservingDisplay: Boolean = false): Long? {
         var old: T?
         val token: Long?

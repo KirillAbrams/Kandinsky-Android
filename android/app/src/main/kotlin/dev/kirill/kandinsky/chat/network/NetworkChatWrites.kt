@@ -32,6 +32,14 @@ internal fun NetworkStore.retireChat(db: SQLiteDatabase, chat: Long): List<Long>
     return ChatServerState.applyState(db, chat, flags)
 }
 
+// Старые базы могут хранить границу уже прочитанной истории.
+private fun legacyReadPosition(db: SQLiteDatabase, chat: Long): Long =
+    db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf("ownRead:$chat")).use {
+        (if (it.moveToFirst()) it.getString(0).toLong() else 0L).also { through ->
+            require(through >= 0)
+        }
+    }
+
 internal fun NetworkStore.mergeChatRows(
     db: SQLiteDatabase,
     json: JSONObject,
@@ -54,47 +62,41 @@ internal fun NetworkStore.mergeChatRows(
                     ChatServerState.state(db, id).optLong("version", -1)
         )
             continue
-        val read = chat.optLongOrNull("readSeq")
-        val previousRead = ownRead(db, id)
-        require(seq >= 0 && unread >= 0 && (read == null || read in 0..seq))
+        require(seq >= 0 && unread >= 0)
         db.execSQL("INSERT OR IGNORE INTO chats(id,title) VALUES(?,?)", arrayOf(id, title))
         db.execSQL(
             "UPDATE chats SET title=?,pinned=? WHERE id=?",
             arrayOf(title, if (chat.getBoolean("pinned")) 1 else 0, id),
         )
-        if (read == null || read >= previousRead) {
-            val latest = maxOf(previousRead, read ?: 0)
-            if (latest > previousRead) state(db, "ownRead:$id", latest.toString())
-            val later =
-                db.rawQuery(
-                        "SELECT count(*) " +
-                            "FROM net_messages n " +
-                            "JOIN messages m ON m.id=n.localID " +
-                            "WHERE m.chatId=? AND n.senderID<>? AND n.serverSeq>? AND " +
-                            "n.serverSeq>?",
-                        arrayOf(
-                            id.toString(),
-                            userID.toString(),
-                            seq.toString(),
-                            latest.toString(),
-                        ),
-                    )
-                    .use {
-                        it.moveToFirst()
-                        it.getLong(0)
-                    }
-            require(unread <= Long.MAX_VALUE - later)
-            db.execSQL("UPDATE chats SET unreadCount=? WHERE id=?", arrayOf(unread + later, id))
-            state(db, "readRefresh:$id", "0")
-        } else state(db, "readRefresh:$id", "1")
+        val previouslyRead = legacyReadPosition(db, id)
+        val later =
+            db.rawQuery(
+                    "SELECT count(*) " +
+                        "FROM net_messages n " +
+                        "JOIN messages m ON m.id=n.localID " +
+                        "WHERE m.chatId=? AND n.senderID<>? AND n.serverSeq>? AND " +
+                        "n.serverSeq>?",
+                    arrayOf(
+                        id.toString(),
+                        userID.toString(),
+                        seq.toString(),
+                        previouslyRead.toString(),
+                    ),
+                )
+                .use {
+                    it.moveToFirst()
+                    it.getLong(0)
+                }
+        require(unread <= Long.MAX_VALUE - later)
+        db.execSQL("UPDATE chats SET unreadCount=? WHERE id=?", arrayOf(unread + later, id))
         db.execSQL(
-            "INSERT INTO net_chats(chatID,lastSeq,hasOlder,peerUserID,title) " +
-                "VALUES(?,?,1,?,?) " +
+            "INSERT INTO net_chats(chatID,lastSeq,hasOlder,title) " +
+                "VALUES(?,?,1,?) " +
                 "ON CONFLICT(chatID) " +
                 "DO UPDATE " +
-                "SET lastSeq=MAX(lastSeq,excluded.lastSeq),peerUserID=excluded.peerUserID," +
+                "SET lastSeq=MAX(lastSeq,excluded.lastSeq)," +
                 "title=excluded.title",
-            arrayOf<Any?>(id, seq, chat.optLongOrNull("peerUserId"), title),
+            arrayOf(id, seq, title),
         )
         val prior =
             db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf("summarySeq:$id"))
@@ -103,7 +105,6 @@ internal fun NetworkStore.mergeChatRows(
         touched[id] = linkedSetOf()
         removed[id] = ChatServerState.applyState(db, id, chat.optJSONObject("chatState"))
         if (chat.has("archived")) studioArchive(db, id, chat.getBoolean("archived"))
-        chat.optLongOrNull("peerReadSeq")?.let { applyPeerRead(db, id, it, touched) }
         chat.optJSONObject("lastMessage")?.let { wire ->
             merge(db, wire)?.let { touched.getValue(id).add(it) }
         }

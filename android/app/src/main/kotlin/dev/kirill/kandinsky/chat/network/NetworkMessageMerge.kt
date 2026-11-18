@@ -95,13 +95,6 @@ internal fun NetworkStore.merge(db: SQLiteDatabase, wire: JSONObject): Long? {
             "VALUES(?,?,?,?,?,?,0)",
         arrayOf<Any?>(id, server, client, sender, wire.getLong("seq"), revision),
     )
-    if (own && wire.getLong("seq") > 0 && wire.getLong("seq") <= peerRead(db, chat)) {
-        db.execSQL(
-            "UPDATE messages SET deliveryState='read',revision=revision+1 WHERE id=? AND deliveryState<>'read'",
-            arrayOf(id),
-        )
-    }
-    restoreContent(db, server)
     db.delete("attachments", "messageId=?", arrayOf(id.toString()))
     val attachments = wire.getJSONArray("attachments")
     require(attachments.length() <= 10)
@@ -156,11 +149,6 @@ internal fun NetworkStore.merge(db: SQLiteDatabase, wire: JSONObject): Long? {
         "UPDATE net_chats SET lastSeq=MAX(lastSeq,?) WHERE chatID=?",
         arrayOf(wire.getLong("seq"), chat),
     )
-    if (!own)
-        db.execSQL(
-            "INSERT OR IGNORE INTO net_pending_receipts(serverID) VALUES(?)",
-            arrayOf(server),
-        )
     val metadata = wire.optJSONObject("metadata") ?: JSONObject()
     db.execSQL(
         "INSERT OR REPLACE INTO net_message_metadata VALUES(?,?)",

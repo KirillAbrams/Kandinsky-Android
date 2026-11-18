@@ -173,7 +173,7 @@ class VideoSurfaceSoakTest {
                     ?.prepared
             }
             waitFor("Compact round must be laid out before playback") {
-                layout()?.key?.mediaExpanded == false && host.loadedCount == 2
+                layout() != null && host.loadedCount == 2
             }
             lateinit var compact: dev.kirill.kandinsky.chat.rendering.PreparedText
             lateinit var index: dev.kirill.kandinsky.chat.rendering.HistoryIndex
@@ -194,7 +194,7 @@ class VideoSurfaceSoakTest {
             }
             repeat(3) { cycle ->
                 main {
-                    c.play(PlaybackTarget(round.attachments[0], round.id, 2, MessageKind.ROUND))
+                    c.play(PlaybackTarget(round.attachments[0], round.id, MessageKind.ROUND))
                 }
                 waitFor("Cycle $cycle: native video starts") { c.isReady && c.isPlaying }
                 SystemClock.sleep(150)
@@ -1154,7 +1154,7 @@ class VideoSurfaceSoakTest {
             val ready = CountDownLatch(1)
             main {
                 c.onChange = { if (c.isReady || c.lastError != null) ready.countDown() }
-                c.play(PlaybackTarget(first.attachments.first(), first.id, 2, MessageKind.ROUND))
+                c.play(PlaybackTarget(first.attachments.first(), first.id, MessageKind.ROUND))
             }
             assertTrue(ready.await(8, TimeUnit.SECONDS))
             main {

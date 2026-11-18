@@ -365,7 +365,6 @@ class MediaGalleryController(
                 PlaybackTarget(
                     selected.attachment,
                     selected.messageID,
-                    selected.chatID,
                     selected.kind,
                     loopPreview = studioPlayback,
                 )
@@ -404,14 +403,6 @@ class MediaGalleryController(
         surface.visibility = if (failed) View.GONE else View.VISIBLE
         if (!failed && !surface.hasVideoFrame)
             surface.setPoster(pages[selected.id]?.photo?.retainedPreview())
-    }
-
-    private fun cancelVideo() {
-        val selected = model.selected ?: return
-        if (!selected.isVideo) return
-        cancelled.add(selected.id)
-        playback.stop()
-        playerChanged()
     }
 
     private fun retryVideo() {

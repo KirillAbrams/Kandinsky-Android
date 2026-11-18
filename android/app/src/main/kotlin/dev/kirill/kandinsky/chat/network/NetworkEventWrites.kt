@@ -19,7 +19,6 @@ internal fun NetworkStore.applyInitialSnapshot(db: SQLiteDatabase, json: JSONObj
                 touched.getOrPut(message.getLong("chatId")) { linkedSetOf() }.add(it)
             }
         }
-        snapshotContent(db, json, touched)
         state(db, "cursor", json.getLong("cursor").toString())
         rememberStudioRecent(db, json)
         deltas(db, touched, removed, MessageChangeReason.SYNC)
@@ -137,33 +136,6 @@ internal fun NetworkStore.applyEventBatch(db: SQLiteDatabase, json: JSONObject):
                         removed.getOrPut(chat) { arrayListOf() }.add(localID)
                     }
                 }
-                "delivered" -> {
-                    val values = event.optJSONArray("messageIds") ?: JSONArray()
-                    for (j in 0 until values.length()) {
-                        db.rawQuery(
-                                "SELECT localID FROM net_messages WHERE serverID=? AND senderID=?",
-                                arrayOf(values.getLong(j).toString(), userID.toString()),
-                            )
-                            .use {
-                                if (it.moveToFirst()) {
-                                    val id = it.getLong(0)
-                                    ids.add(id)
-                                    db.execSQL(
-                                        "UPDATE messages " +
-                                            "SET deliveryState='delivered',revision=revision+1 " +
-                                            "WHERE id=? AND deliveryState IN ('pending','accepted')",
-                                        arrayOf(id),
-                                    )
-                                }
-                            }
-                    }
-                }
-                "read" -> {
-                    if (event.getLong("userId") != userID)
-                        applyPeerRead(db, chat, event.getLong("through"), touched)
-                    else applyOwnRead(db, chat, event.getLong("through"))
-                    eventContent(db, event, chat, touched)
-                }
                 else -> error("Unsupported persistent event")
             }
         }
@@ -186,7 +158,5 @@ internal fun NetworkStore.applyHistoryPage(db: SQLiteDatabase, chat: Long, json:
             "UPDATE net_chats SET hasOlder=? WHERE chatID=?",
             arrayOf(if (json.getBoolean("hasOlder")) 1 else 0, chat),
         )
-        val touched: MutableMap<Long, MutableSet<Long>> = linkedMapOf(chat to ids)
-        snapshotContent(db, json, touched)
-        deltas(db, touched, emptyMap(), MessageChangeReason.HISTORY)
+        deltas(db, mapOf(chat to ids), emptyMap(), MessageChangeReason.HISTORY)
     }

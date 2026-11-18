@@ -5,27 +5,20 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.*
 import org.json.JSONObject
 
-data class ContentBatch(val chatID: Long, val messageIDs: List<Long>)
-
 class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
-    fun queueContent(db: SQLiteDatabase, localID: Long): List<MessageDelta> =
-        recordContentView(db, localID)
-
-    fun pendingContent(db: SQLiteDatabase): List<ContentBatch> =
-        loadPendingContentViews(db)
-
-    fun confirmContent(
-        db: SQLiteDatabase,
-        json: JSONObject,
-        requestID: String,
-        batch: ContentBatch,
-    ): List<MessageDelta> =
-        confirmContentViews(db, json, requestID, batch)
-
     fun cursor(db: SQLiteDatabase): Long =
         db.rawQuery("SELECT value FROM net_state WHERE key='cursor'", null).use {
             if (it.moveToFirst()) it.getString(0).toLong() else 0L
         }
+
+    fun cursorAwaitingConfirmation(db: SQLiteDatabase): Long? {
+        val saved = cursor(db)
+        val confirmed =
+            db.rawQuery("SELECT value FROM net_state WHERE key='ackedCursor'", null).use {
+                if (it.moveToFirst()) it.getString(0).toLong() else -1L
+            }
+        return saved.takeIf { it > confirmed }
+    }
 
     fun initialized(db: SQLiteDatabase) =
         db.rawQuery("SELECT 1 FROM net_state WHERE key='cursor'", null).use { it.moveToFirst() }
@@ -33,9 +26,6 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     internal fun state(db: SQLiteDatabase, key: String, value: String) {
         db.execSQL("INSERT OR REPLACE INTO net_state(key,value) VALUES(?,?)", arrayOf(key, value))
     }
-
-    fun needsReadRefresh(db: SQLiteDatabase): Boolean =
-        hasStaleReadPositions(db)
 
     fun bootstrap(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
         applyInitialSnapshot(db, json)

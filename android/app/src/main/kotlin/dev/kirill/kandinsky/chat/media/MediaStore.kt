@@ -447,8 +447,6 @@ class MediaStore(
         }
     }
 
-    private data class GifInput(val file: File, val width: Int, val height: Int, val reserve: Int)
-
     fun playbackSource(
         attachment: Attachment,
         callback: (Result<MediaPlaybackSource>) -> Unit,

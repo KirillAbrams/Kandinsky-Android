@@ -505,7 +505,6 @@ class NativeStreamingTest {
                         PlaybackTarget(
                             a,
                             1000 + n.toLong(),
-                            2,
                             if (voice) MessageKind.VOICE
                             else if (n % 3 == 1) MessageKind.ROUND else MessageKind.VIDEO,
                         )

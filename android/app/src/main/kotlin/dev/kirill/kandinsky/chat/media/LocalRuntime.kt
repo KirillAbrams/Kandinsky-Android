@@ -32,11 +32,6 @@ class LocalRuntime(
     val admission = MediaAdmission()
     val playback = MediaCoordinator(admission, media)
 
-    init {
-        val sync = network
-        if (sync != null) playback.onConsumed = { target -> sync.consume(target.messageID) }
-    }
-
     fun close() {
         network?.close()
         playback.close()

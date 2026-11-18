@@ -8,7 +8,6 @@ import java.util.concurrent.atomic.AtomicInteger
 data class PlaybackTarget(
     val attachment: Attachment,
     val messageID: MessageID,
-    val chatID: ChatID? = null,
     val kind: MessageKind? = null,
     val loopPreview: Boolean = false,
 )
@@ -71,7 +70,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
 
     var onChange: (() -> Unit)? = null
     var onDetachOutput: (() -> Unit)? = null
-    var onConsumed: ((PlaybackTarget) -> Unit)? = null
     var presentationOwner: Any? = null
     val isMuted = true
 
@@ -82,45 +80,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
 
     fun removeChangeObserver(token: java.util.UUID) {
         observers.remove(token)
-    }
-
-    private var consumed = false
-    private var seeking = false
-    private var seekTicket = 0
-    private var playedMs = 0L
-    private var lastPlayedPosition: Long? = null
-
-    private fun resetConsumptionProgress() {
-        playedMs = 0
-        lastPlayedPosition = null
-    }
-
-    private fun observeConsumption() {
-        val target = desired ?: return
-        val callback = onConsumed ?: return
-        if (
-            consumed ||
-                closed ||
-                target.chatID == null ||
-                target.kind !in listOf(MessageKind.VOICE, MessageKind.ROUND, MessageKind.VIDEO)
-        )
-            return
-        if (!isReady || !isPlaying || isBuffering || seeking) {
-            lastPlayedPosition = null
-            return
-        }
-        val position = positionMs
-        val previous = lastPlayedPosition
-        lastPlayedPosition = position
-        if (previous == null) return
-        val delta = position - previous
-        // Учитываем только положение проигрывателя, исключая явную перемотку и разрывы измерения
-        if (delta !in 0L..1000L) return
-        playedMs += delta
-        if (playedMs >= 250) {
-            consumed = true
-            callback(target)
-        }
     }
 
     var inlineVisible = false
@@ -231,7 +190,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
                                         positionMs = pos
                                         durationMs = duration
                                         isPlaying = playing && wantsPlaying
-                                        observeConsumption()
                                         notifyChanged()
                                     }
                                 },
@@ -282,7 +240,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
 
     fun pause() {
         wantsPlaying = false
-        resetConsumptionProgress()
         isPlaying = false
         isBuffering = false
         session?.pause()
@@ -303,18 +260,7 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
             completion(false)
             return
         }
-        seekTicket++
-        val seek = seekTicket
-        val ticket = generation
-        seeking = true
-        resetConsumptionProgress()
-        s.seek(ms.coerceIn(0, maxOf(0, durationMs))) { done ->
-            if (ticket == generation && seek == seekTicket) {
-                seeking = false
-                resetConsumptionProgress()
-            }
-            completion(done)
-        }
+        s.seek(ms.coerceIn(0, maxOf(0, durationMs)), completion)
     }
 
     fun attach(surface: Surface?, detached: () -> Unit = {}) {
@@ -324,10 +270,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
     }
 
     fun stop(completed: () -> Unit = {}) {
-        consumed = false
-        seeking = false
-        seekTicket++
-        resetConsumptionProgress()
         desired = null
         desiredSource?.close()
         desiredSource = null
@@ -382,7 +324,6 @@ class MediaCoordinator(private val admission: MediaAdmission, private val media:
     fun close() {
         if (closed) return
         closed = true
-        onConsumed = null
         observers.clear()
         desired = null
         desiredSource?.close()

@@ -12,7 +12,6 @@ data class TextLayoutKey(
     val fontSize: Int,
     val scale: Int,
     val density: Float = fontSize / 17f,
-    val mediaExpanded: Boolean = false,
     val roundDiameter: Int? = null,
 )
 
@@ -574,7 +573,6 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
     fun drawMediaStamp(c: Canvas, manual: Boolean = false) {
         if (generationCard?.isBatch == true) return
         val rect = mediaRect ?: return
-        if (message.kind == MessageKind.ROUND && key.mediaExpanded && !manual) return
         if (isStudioResult) {
             drawStudioMediaBadges(c, rect)
             if (!manual) for (button in mediaActions) button.action.draw(c, button.frame, unit)

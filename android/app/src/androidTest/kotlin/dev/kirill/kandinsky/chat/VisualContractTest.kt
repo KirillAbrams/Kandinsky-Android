@@ -151,13 +151,13 @@ class VisualContractTest {
                 listOf(
                     dev.kirill.kandinsky.chat.rendering.IconID.PLUS,
                     dev.kirill.kandinsky.chat.rendering.IconID.SEND,
-                    dev.kirill.kandinsky.chat.rendering.IconID.BACK,
-                    dev.kirill.kandinsky.chat.rendering.IconID.SEARCH,
+                    dev.kirill.kandinsky.chat.rendering.IconID.COMPOSE,
+                    dev.kirill.kandinsky.chat.rendering.IconID.TUNE,
                 )) {
                 val before = snapshot(icon)
-                snapshot(dev.kirill.kandinsky.chat.rendering.IconID.PIN)
+                snapshot(dev.kirill.kandinsky.chat.rendering.IconID.MENU)
                 assertArrayEquals(
-                    "Filled pin must not change later outlined $icon",
+                    "Заливка значка меню не должна менять отрисовку $icon",
                     before,
                     snapshot(icon),
                 )
