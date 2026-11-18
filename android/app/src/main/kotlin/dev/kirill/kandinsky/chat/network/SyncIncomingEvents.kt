@@ -8,6 +8,8 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
 
     fun receive(value: JSONObject) {
         when (value.getString("type")) {
+            "kandinsky.catalog.changed" -> sync.refreshStudioDirectory()
+            "kandinsky.uploads" -> sync.attachments.acceptStudioTransfers(value)
             "resumed" -> sync.connectionResumed()
             "events" -> {
                 check(eventQueue.size < 64)

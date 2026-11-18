@@ -20,12 +20,15 @@ class NetworkCredentialTest {
         org.junit.Assume.assumeTrue(
             InstrumentationRegistry.getArguments().getString("verify-live-tls") == "1"
         )
-        assertFalse(android.security.NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted)
+        assertFalse(
+            android.security.NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted
+        )
         val api = NetworkAPI(null)
         try {
-            val error = assertThrows(NetworkFailure::class.java) {
-                api.json("/v1/kandinsky/activity", JSONObject())
-            }
+            val error =
+                assertThrows(NetworkFailure::class.java) {
+                    api.json("/v1/kandinsky/activity", JSONObject())
+                }
             assertEquals(401, error.status)
         } finally {
             api.close()
@@ -37,12 +40,19 @@ class NetworkCredentialTest {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
         val sandbox = File(base.cacheDir, "erase-" + UUID.randomUUID()).apply { mkdirs() }
         val namespace = base.packageName + ".qa." + UUID.randomUUID()
-        val context = object : ContextWrapper(base) {
-            override fun getPackageName() = namespace
-            override fun getFilesDir() = File(sandbox, "files").apply { mkdirs() }
-            override fun getCacheDir() = File(sandbox, "cache").apply { mkdirs() }
-            override fun getNoBackupFilesDir() = File(sandbox, "credentials").apply { mkdirs() }
-        }
+        val context =
+            object : ContextWrapper(base) {
+                override fun getPackageName() = namespace
+
+                override fun getSharedPreferences(name: String, mode: Int) =
+                    base.getSharedPreferences("$namespace.$name", mode)
+
+                override fun getFilesDir() = File(sandbox, "files").apply { mkdirs() }
+
+                override fun getCacheDir() = File(sandbox, "cache").apply { mkdirs() }
+
+                override fun getNoBackupFilesDir() = File(sandbox, "credentials").apply { mkdirs() }
+            }
         val credentials = NetworkCredentials(context)
         try {
             val root = dev.kirill.kandinsky.chat.storage.AppDataRoot.resolve(context.filesDir)
@@ -63,6 +73,7 @@ class NetworkCredentialTest {
             assertTrue(File(context.cacheDir, "kandinsky-share/net-v1-u72/result.png").isFile)
             assertEquals(listOf(72L), credentials.profiles().map { it.userID })
         } finally {
+            base.deleteSharedPreferences(namespace + ".studio.navigation")
             sandbox.deleteRecursively()
             val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             keys.deleteEntry(namespace + ".kandinsky.session.v1")
@@ -82,6 +93,9 @@ class NetworkCredentialTest {
                 override fun getNoBackupFilesDir() = root
 
                 override fun getPackageName() = namespace
+
+                override fun getSharedPreferences(name: String, mode: Int) =
+                    base.getSharedPreferences("$namespace.$name", mode)
             }
         try {
             val key =
@@ -130,6 +144,7 @@ class NetworkCredentialTest {
             assertNull(NetworkCredentials(context).load())
             assertEquals(listOf(43L), NetworkCredentials(context).profiles().map { it.userID })
         } finally {
+            base.deleteSharedPreferences(namespace + ".studio.navigation")
             root.deleteRecursively()
             KeyStore.getInstance("AndroidKeyStore").apply {
                 load(null)
@@ -148,6 +163,9 @@ class NetworkCredentialTest {
                 override fun getNoBackupFilesDir() = root
 
                 override fun getPackageName() = namespace
+
+                override fun getSharedPreferences(name: String, mode: Int) =
+                    base.getSharedPreferences("$namespace.$name", mode)
             }
         try {
             val credentials = NetworkCredentials(context)
@@ -175,6 +193,7 @@ class NetworkCredentialTest {
             archive.writeBytes(valid)
             assertEquals(8, credentials.profiles().size)
         } finally {
+            base.deleteSharedPreferences(namespace + ".studio.navigation")
             root.deleteRecursively()
             KeyStore.getInstance("AndroidKeyStore").apply {
                 load(null)

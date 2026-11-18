@@ -58,6 +58,10 @@ class NetworkCredentials(context: Context) {
         navigation.edit().putLong("chat:$user", chat).apply()
     }
 
+    internal fun clearSelectedChat(user: Long) {
+        navigation.edit().remove("chat:$user").apply()
+    }
+
     private val namespace = context.packageName
     private val file = AtomicFile(File(root, "kandinsky-session-v1"))
     private val accounts = AtomicFile(File(root, "kandinsky-accounts-v1"))
@@ -211,7 +215,6 @@ class NetworkCredentials(context: Context) {
         }
 
     private fun removeAccount(userID: Long) {
-        navigation.edit().remove("chat:$userID").apply()
         val remaining = remembered().filter { it.userID != userID }
         write(
             accounts,
@@ -249,6 +252,7 @@ internal object LocalAccountErasure {
             val id = marker.name.toLongOrNull() ?: continue
             if (id <= 0 || marker.name != id.toString()) continue
             credentials.forget(id)
+            credentials.clearSelectedChat(id)
             val namespace = "net-v1-u$id"
             removePrivateTree(File(root(context), namespace))
             removePrivateTree(File(context.cacheDir, "kandinsky-share/$namespace"))

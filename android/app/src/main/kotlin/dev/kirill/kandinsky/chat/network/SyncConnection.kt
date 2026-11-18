@@ -20,7 +20,6 @@ internal class SyncConnection(private val sync: NetworkSync) {
 
     private var reconnectAttempts = 0
 
-
     // У каждого подключения свой номер. По нему отбрасываем поздние ответы от уже закрытого
     // соединения.
     fun connect() {
@@ -88,7 +87,15 @@ internal class SyncConnection(private val sync: NetworkSync) {
                                     result.fold(
                                         {
                                             send(
-                                                JSONObject().put("type", "resume").put("cursor", it)
+                                                JSONObject()
+                                                    .put("type", "resume")
+                                                    .put("cursor", it)
+                                                    .put(
+                                                        "features",
+                                                        JSONObject()
+                                                            .put("chatDirectory", true)
+                                                            .put("uploadProgress", true),
+                                                    )
                                             )
                                         },
                                         { reconnectAfterFailure(connectionID) },
@@ -149,6 +156,7 @@ internal class SyncConnection(private val sync: NetworkSync) {
         sync.publishStatus("В сети")
         sync.flushPendingWork()
         sync.history.refreshCurrentChat()
+        sync.refreshStudioDirectory()
     }
 
     // После переподключения очередь дочитает из SQLite команды без подтверждения.

@@ -56,6 +56,8 @@ class ConversationChrome(
 
     fun setNetworkStatus(value: String) {
         networkStatus = value
+        if (value == "В сети") attachments?.resumePendingUpload(reconnected = true)
+        else if (value.startsWith("Нет связи")) attachments?.pausePendingUpload()
         invalidate()
     }
 
@@ -78,10 +80,34 @@ class ConversationChrome(
                 showError = ::attachmentError,
                 previewVideo = timeline::previewStudioVideo,
                 refresh = ::requestLayout,
-                refreshProgress = ::invalidate,
+                refreshProgress = {
+                    requestLayout()
+                    invalidate()
+                },
+                prepareDraft = { completion ->
+                    prepareSourceDraft?.invoke(completion) ?: completion(Result.success(Unit))
+                },
             )
         } else null
     private val studioUploadBar = RectF()
+    var prepareSourceDraft: (((Result<Unit>) -> Unit) -> Unit)? = null
+    private val transferProgress: Double?
+        get() {
+            if (attachments?.isUploading == true) return attachments.progress
+            val network = runtime?.network ?: return null
+            val remote =
+                network.studioTransfers.filter {
+                    !it.deviceId.equals(network.profile.deviceID, true)
+                }
+            if (remote.isEmpty()) return null
+            return remote.sumOf { it.received }.toDouble() / remote.sumOf { it.total }
+        }
+
+    private val transferTitle: String
+        get() =
+            if (attachments?.isUploading == true) "Загрузка файла"
+            else "Загрузка на другом устройстве"
+
     private val referenceIcon by lazy {
         BitmapFactory.decodeResource(
             resources,
@@ -105,18 +131,17 @@ class ConversationChrome(
         get() =
             when {
                 options.model == "video_sr" -> KandinskyOptions()
-                hadStudioPhoto ->
-                    KandinskyOptions(
-                        model = "video",
-                        aspect = options.aspect,
-                        count = options.count,
-                        seed = options.seed,
-                    )
+                hadStudioPhoto -> options.copy(model = "video")
                 else -> options
             }
 
     fun restoreGenerationOptions(value: KandinskyOptions) {
-        options = value
+        restoringGenerationOptions = true
+        try {
+            options = value
+        } finally {
+            restoringGenerationOptions = false
+        }
         modelName =
             when (value.model) {
                 "video_sr" -> "Улучшение видео"
@@ -127,9 +152,9 @@ class ConversationChrome(
     }
 
     // Сервер создаст чат после первого запроса. До этого черновик уже доступен.
-    fun openStudioDraft() {
+    fun openStudioDraft(restored: dev.kirill.kandinsky.chat.domain.Draft? = null) {
         historyReady = true
-        state?.openStudioDraft()
+        state?.openStudioDraft(restored)
     }
 
     fun setStartingThread(value: Boolean) {
@@ -178,7 +203,13 @@ class ConversationChrome(
     private var body = RectF()
     private var composer = RectF()
     private var card = RectF()
+    private var restoringGenerationOptions = false
     private var options = KandinskyOptions()
+        set(value) {
+            field = value
+            if (!restoringGenerationOptions) state?.updateGenerationOptions(value)
+        }
+
     private var modelName = "Image Lite"
     private var modelCatalog: List<StudioModel>? = null
     private var loadingModels = false
@@ -192,6 +223,10 @@ class ConversationChrome(
         get() = minOf(d, measuredWidth / 390f)
 
     init {
+        runtime?.network?.onStudioTransfersChanged = {
+            requestLayout()
+            invalidate()
+        }
         runtime?.let {
             timeline.configureMedia(it.media)
             timeline.configurePlayback(it.playback, it.media)
@@ -209,6 +244,9 @@ class ConversationChrome(
             if (chatID > 0L) runtime?.network?.viewport(chatID, it)
         }
         state?.onChange = {
+            state.draft.generationOptions?.let { saved ->
+                if (options != saved) restoreGenerationOptions(saved)
+            }
             input.isEnabled = state.isReady && historyReady && !isStartingThread
             if (runtime?.network != null) {
                 val source = state.draft.attachmentDrafts.firstOrNull()
@@ -232,6 +270,7 @@ class ConversationChrome(
                 }
                 hadStudioPhoto = hasPhoto
             }
+            attachments?.resumePendingUpload()
             requestLayout()
             invalidate()
             if (
@@ -361,10 +400,21 @@ class ConversationChrome(
         if (delta.chat.hidden) back()
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        runtime?.network?.onStudioTransfersChanged = {
+            requestLayout()
+            invalidate()
+        }
+        attachments?.resumePendingUpload()
+    }
+
     override fun onDetachedFromWindow() {
         generationLookup++
 
-        attachments?.close(discardDraft = chatID == 0L && state?.chatID == null)
+        attachments?.close(
+            discardDraft = runtime?.network == null && chatID == 0L && state?.chatID == null
+        )
         removeCallbacks(clearStudioFeedback)
         clearStudioFeedback.run()
         actionsUI?.close()
@@ -511,7 +561,7 @@ class ConversationChrome(
                 composer.top,
             )
         else referenceChip.setEmpty()
-        val transferring = attachments?.isUploading == true
+        val transferring = transferProgress != null
         val progressY = composer.top - referenceHeight - 12 * d
         if (transferring)
             studioUploadBar.set(composer.left, progressY, composer.right, progressY + 4 * d)
@@ -521,7 +571,7 @@ class ConversationChrome(
                 0f,
                 header.bottom,
                 width.toFloat(),
-                composer.top - referenceHeight - (if (transferring) 20 else 8) * d,
+                composer.top - referenceHeight - (if (transferring) 40 else 8) * d,
             )
         timeline.layout(0, 0, width, height)
         timeline.updateOverlayInsets(
@@ -638,8 +688,8 @@ class ConversationChrome(
                 NativeAction(
                     318,
                     "studio.upload.progress",
-                    "Загрузка файла",
-                    RectF(studioUploadBar),
+                    "$transferTitle: ${((transferProgress ?: 0.0) * 100).toInt()}%",
+                    RectF(studioUploadBar).apply { top -= 20 * d },
                     button = false,
                 )
         if (referenceVisible) {
@@ -951,6 +1001,14 @@ class ConversationChrome(
         c.drawRoundRect(surface, 17 * unit, 17 * unit, paint)
         drawSharpChrome(c)
         if (!studioUploadBar.isEmpty) {
+            paint.color = KandinskyPalette.studioInk
+            paint.textSize = 12 * d
+            c.drawText(
+                "$transferTitle: ${((transferProgress ?: 0.0) * 100).toInt()}%",
+                studioUploadBar.left,
+                studioUploadBar.top - 6 * d,
+                paint,
+            )
             paint.color = Color.rgb(206, 233, 219)
             c.drawRect(studioUploadBar, paint)
             paint.color = Color.rgb(56, 227, 178)
@@ -958,7 +1016,7 @@ class ConversationChrome(
                 studioUploadBar.left,
                 studioUploadBar.top,
                 studioUploadBar.left +
-                    studioUploadBar.width() * (attachments?.progress ?: 0.0).toFloat(),
+                    studioUploadBar.width() * (transferProgress ?: 0.0).toFloat(),
                 studioUploadBar.bottom,
                 paint,
             )

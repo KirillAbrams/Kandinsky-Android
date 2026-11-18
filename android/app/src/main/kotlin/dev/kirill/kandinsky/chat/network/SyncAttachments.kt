@@ -4,8 +4,78 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.*
 import java.io.File
 import java.util.UUID
+import org.json.JSONObject
 
 internal class SyncAttachments(private val sync: NetworkSync) {
+    fun savedStudioDraft(completion: (Result<StudioDraftRecord?>) -> Unit) =
+        sync.store.submit(StudioDraftStorage::load, completion)
+
+    fun beginStudioDraft(
+        record: StudioDraftRecord,
+        completion: (Result<StudioDraftRecord?>) -> Unit,
+    ) =
+        sync.store.submit(
+            { db ->
+                NetworkStore.transaction(db) {
+                    val previous = StudioDraftStorage.load(db)
+                    StudioDraftStorage.write(db, record)
+                    previous
+                }
+            },
+            completion,
+        )
+
+    fun saveStudioDraft(draft: Draft, identity: UUID, completion: (Result<Unit>) -> Unit) =
+        sync.store.submit(
+            { db ->
+                NetworkStore.transaction(db) {
+                    if (StudioDraftStorage.load(db)?.identity == identity)
+                        StudioDraftStorage.write(db, StudioDraftRecord(identity, draft))
+                }
+            },
+            completion,
+        )
+
+    fun finishStudioDraft(identity: UUID, completion: (Result<Unit>) -> Unit) =
+        sync.store.submit(
+            { db ->
+                NetworkStore.transaction(db) {
+                    if (StudioDraftStorage.load(db)?.identity == identity)
+                        db.execSQL(
+                            "DELETE FROM net_state WHERE key=?",
+                            arrayOf(StudioDraftStorage.KEY),
+                        )
+                }
+            },
+            completion,
+        )
+
+    fun acceptStudioTransfers(value: JSONObject) {
+        val connection = sync.connectionEpoch
+        val rows = value.getJSONArray("uploads")
+        require(rows.length() <= 8)
+        val transfers =
+            List(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                StudioTransfer(
+                    row.getString("id"),
+                    row.getString("deviceId"),
+                    row.getLong("received"),
+                    row.getLong("total"),
+                    row.getString("mime"),
+                )
+            }
+        require(
+            transfers.all { it.isValid } && transfers.map { it.id }.toSet().size == transfers.size
+        )
+        sync.main.post {
+            if (!sync.closed && connection == sync.connectionEpoch) {
+                sync.studioTransfers = transfers
+                sync.onStudioTransfersChanged?.invoke()
+            }
+        }
+    }
+
     fun recentStudioUploads(completion: (Result<List<StudioUpload>>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -43,23 +113,20 @@ internal class SyncAttachments(private val sync: NetworkSync) {
         }
     }
 
-    // Для повторной загрузки берём тот же номер устройства и вложения. Сервер узнает уже принятый
-    // файл.
+    // Номер вложения сохраняется и после нового входа, поэтому сервер узнает повторную загрузку.
     fun uploadStudioSource(
         draft: AttachmentDraft,
         file: File,
         transfer: dev.kirill.kandinsky.chat.media.MediaCancellation,
     ): Pair<String, String?> {
-        val id =
-            UUID.nameUUIDFromBytes((sync.profile.deviceID + ":" + draft.id).toByteArray())
-                .toString()
+        val id = draft.id.lowercase()
         val blob =
             sync.api
                 .upload(file, draft.mime, id, studioSource = true, transfer = transfer)
                 .getString("blobId")
         val preview =
             if (draft.mime.startsWith("image/") && !transfer.isCancelled)
-                NetworkPreview.upload(sync.store.root, draft, sync.api, sync.profile.deviceID)
+                NetworkPreview.upload(sync.store.root, draft, sync.api)
             else null
         return blob to preview
     }
@@ -108,5 +175,33 @@ internal class SyncAttachments(private val sync: NetworkSync) {
                 }
             }
         }
+    }
+}
+
+internal object StudioDraftStorage {
+    const val KEY = "studio.newDraft"
+
+    fun load(db: android.database.sqlite.SQLiteDatabase): StudioDraftRecord? =
+        db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf(KEY)).use { rows ->
+            if (!rows.moveToFirst()) null
+            else {
+                val raw = rows.getString(0)
+                require(raw.toByteArray().size <= 262144)
+                val row = JSONObject(raw)
+                StudioDraftRecord(
+                    UUID.fromString(row.getString("identity")),
+                    ChatStorageCodec.decodeDraft(row.getJSONObject("draft").toString(), ""),
+                )
+            }
+        }
+
+    fun write(db: android.database.sqlite.SQLiteDatabase, record: StudioDraftRecord) {
+        val raw =
+            JSONObject()
+                .put("identity", record.identity.toString())
+                .put("draft", JSONObject(ChatStorageCodec.draft(record.draft)))
+                .toString()
+        require(raw.toByteArray().size <= 262144)
+        db.execSQL("INSERT OR REPLACE INTO net_state(key,value) VALUES(?,?)", arrayOf(KEY, raw))
     }
 }

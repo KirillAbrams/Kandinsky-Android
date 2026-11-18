@@ -56,7 +56,6 @@ class NetworkSync(
 
     internal fun connectionResumed() = connection.connectionResumed()
 
-
     private val ui = NetworkUIBatch { onDeltas?.invoke(it) }
     var onDeltas: ((List<MessageDelta>) -> Unit)? = null
     var onStatus: ((String) -> Unit)? = null
@@ -65,6 +64,10 @@ class NetworkSync(
     private var rejectedSession = false
     private val sessionErrors = setOf("Войдите в аккаунт", "invalid_session", "account_deleted")
     var onStudioRecentChanged: (() -> Unit)? = null
+    var studioTransfers: List<StudioTransfer> = emptyList()
+        internal set
+
+    var onStudioTransfersChanged: (() -> Unit)? = null
     internal val outbox = SyncOutbox(this)
     internal val cursorAcknowledgement = SyncCursorAcknowledgement(this)
     internal val history = SyncHistory(this)
@@ -74,9 +77,33 @@ class NetworkSync(
     private val chatDirectory = SyncChatDirectory(this)
     internal val incomingEvents = SyncIncomingEvents(this)
 
+    fun savedStudioDraft(completion: (Result<StudioDraftRecord?>) -> Unit) =
+        attachments.savedStudioDraft(completion)
+
+    fun beginStudioDraft(
+        record: StudioDraftRecord,
+        completion: (Result<StudioDraftRecord?>) -> Unit,
+    ) = attachments.beginStudioDraft(record, completion)
+
+    fun saveStudioDraft(draft: Draft, identity: UUID, completion: (Result<Unit>) -> Unit) =
+        attachments.saveStudioDraft(draft, identity, completion)
+
+    fun finishStudioDraft(identity: UUID, completion: (Result<Unit>) -> Unit) =
+        attachments.finishStudioDraft(identity, completion)
+
+    fun hasStudioUpload(attachmentID: String, completion: (Result<Boolean>) -> Unit) =
+        store.submit(
+            { db ->
+                db.rawQuery("SELECT 1 FROM net_uploads WHERE attachmentID=?", arrayOf(attachmentID))
+                    .use { it.moveToFirst() }
+            },
+            completion,
+        )
 
     fun openDirect(username: String, threadID: UUID? = null, completion: (Result<Long>) -> Unit) =
         chatDirectory.openDirect(username, threadID, completion)
+
+    internal fun refreshStudioDirectory() = chatDirectory.refreshStudioDirectory()
 
     fun cachedStudioRecent(completion: (Result<StudioRecentPage>) -> Unit) =
         chatDirectory.cachedStudioRecent(completion)
@@ -146,7 +173,6 @@ class NetworkSync(
     fun viewport(chat: Long, anchor: ReadingAnchor) = history.viewport(chat, anchor)
 
     fun visibleChat(chat: Long?) = history.visibleChat(chat)
-
 
     private var nextActivityAtMs = 0L
 
@@ -245,6 +271,8 @@ class NetworkSync(
         onAccountErased = null
         onSessionExpired = null
         onStudioRecentChanged = null
+        onStudioTransfersChanged = null
+        studioTransfers = emptyList()
         worker.post {
             closed = true
             active = false

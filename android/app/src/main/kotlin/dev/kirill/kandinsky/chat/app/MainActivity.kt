@@ -10,7 +10,6 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.TextView
-import dev.kirill.kandinsky.chat.BuildConfig
 import dev.kirill.kandinsky.chat.account.AccountEntryView
 import dev.kirill.kandinsky.chat.chatlist.StudioHistoryPanel
 import dev.kirill.kandinsky.chat.conversation.*
@@ -32,6 +31,7 @@ class MainActivity : Activity() {
     private var repository: ChatRepository? = null
     private var state: ConversationState? = null
     private var chatView: ConversationChrome? = null
+    private var restoredStudioDraft: StudioDraftRecord? = null
     private var rootName = "chat-v1"
     private val appDataRoot by lazy {
         dev.kirill.kandinsky.chat.storage.AppDataRoot.resolve(filesDir)
@@ -105,7 +105,7 @@ class MainActivity : Activity() {
                     }
             }
             sync.onStatus = { text ->
-                chatView?.setNetworkStatus(if (text == "В сети") "подключено" else text)
+                chatView?.setNetworkStatus(text)
             }
             sync.onAccountErased = { eraseAccountLocally(sync) }
             sync.onSessionExpired = {
@@ -126,41 +126,50 @@ class MainActivity : Activity() {
             }
             sync.foreground(isForeground)
             val ticket = generation
-            local.repository.chats("") { result ->
-                if (isDestroyed || generation != ticket) return@chats
-                val rows = result.getOrDefault(emptyList())
-                val lastChat =
-                    restoredID.takeIf { it > 0 }
-                        ?: NetworkCredentials(this).selectedChat(sync.profile.userID)
-                val selected =
-                    rows.firstOrNull { it.id == lastChat && !it.archived }
-                        ?: rows.firstOrNull { !it.archived }
-                if (selected != null) {
-                    coordinator.admitChat(selected.id)
-                    coordinator.openChat(selected.id)
-                } else {
+            sync.savedStudioDraft { pending ->
+                if (isDestroyed || generation != ticket) return@savedStudioDraft
+                val record = pending.getOrNull()
+                if (record?.hasContent == true) {
+                    restoredStudioDraft = record
                     coordinator.showChats()
-                    val draft = chatView ?: return@chats
-                    val draftTicket = generation
-                    sync.studioThreads("recent", "", 0, 1) { remote ->
-                        val first = remote.getOrNull()?.firstOrNull() ?: return@studioThreads
-                        if (
-                            isDestroyed ||
-                                generation != draftTicket ||
-                                draft.studioDraftTouched ||
-                                historyDrawer != null
-                        )
-                            return@studioThreads
-                        sync.admitStudioThread(first) { saved ->
+                    return@savedStudioDraft
+                }
+                local.repository.chats("") { result ->
+                    if (isDestroyed || generation != ticket) return@chats
+                    val rows = result.getOrDefault(emptyList())
+                    val lastChat =
+                        restoredID.takeIf { it > 0 }
+                            ?: NetworkCredentials(this).selectedChat(sync.profile.userID)
+                    val selected =
+                        rows.firstOrNull { it.id == lastChat && !it.archived }
+                            ?: rows.firstOrNull { !it.archived }
+                    if (selected != null) {
+                        coordinator.admitChat(selected.id)
+                        coordinator.openChat(selected.id)
+                    } else {
+                        coordinator.showChats()
+                        val draft = chatView ?: return@chats
+                        val draftTicket = generation
+                        sync.studioThreads("recent", "", 0, 1) { remote ->
+                            val first = remote.getOrNull()?.firstOrNull() ?: return@studioThreads
                             if (
-                                saved.isSuccess &&
-                                    !isDestroyed &&
-                                    generation == draftTicket &&
-                                    !draft.studioDraftTouched &&
-                                    historyDrawer == null
-                            ) {
-                                coordinator.admitChat(first.id)
-                                coordinator.openChat(first.id)
+                                isDestroyed ||
+                                    generation != draftTicket ||
+                                    draft.studioDraftTouched ||
+                                    historyDrawer != null
+                            )
+                                return@studioThreads
+                            sync.admitStudioThread(first) { saved ->
+                                if (
+                                    saved.isSuccess &&
+                                        !isDestroyed &&
+                                        generation == draftTicket &&
+                                        !draft.studioDraftTouched &&
+                                        historyDrawer == null
+                                ) {
+                                    coordinator.admitChat(first.id)
+                                    coordinator.openChat(first.id)
+                                }
                             }
                         }
                     }
@@ -347,16 +356,54 @@ class MainActivity : Activity() {
                 val model = ConversationState(repo)
                 state = model
                 val chat = ConversationChrome(this, 0L, model, runtime) { openStudioDrawer() }
-                val identity = UUID.randomUUID()
+                val record = restoredStudioDraft ?: StudioDraftRecord(UUID.randomUUID(), Draft())
+                restoredStudioDraft = null
+                val identity = record.identity
+                model.persistStudioDraft = { chatID, draft, completion ->
+                    if (chatID == null) sync.saveStudioDraft(draft, identity, completion)
+                    else sync.finishStudioDraft(identity, completion)
+                }
+                chat.prepareSourceDraft = { completion ->
+                    if (model.chatID != null) completion(Result.success(Unit))
+                    else
+                        sync.openDirect("", identity) { created ->
+                            if (isDestroyed || generation != ticket)
+                                completion(
+                                    Result.failure(java.util.concurrent.CancellationException())
+                                )
+                            else
+                                created.fold(
+                                    { id ->
+                                        model.bindStudioDraft(id)
+                                        coordinator.admitChat(id)
+                                        NetworkCredentials(this).selectChat(sync.profile.userID, id)
+                                        completion(Result.success(Unit))
+                                    },
+                                    { completion(Result.failure(it)) },
+                                )
+                        }
+                }
                 chat.restoreGenerationOptions(studioOptions)
                 chat.onNewChat = { composeNetworkChat() }
                 chat.onFirstSend = { options ->
                     submitFirstPrompt(chat, model, sync, identity, options, ticket)
                 }
-                chat.openStudioDraft()
                 chatView = chat
                 surface = chat
-                container.post { reveal() }
+                sync.beginStudioDraft(record) { started ->
+                    if (isDestroyed || generation != ticket) return@beginStudioDraft
+                    started.fold(
+                        { previous ->
+                            if (previous != null && previous.identity != record.identity)
+                                runtime
+                                    ?.media
+                                    ?.discardUnpublishedImports(previous.draft.attachmentDrafts)
+                            chat.openStudioDraft(record.draft)
+                        },
+                        { chat.showError(it) },
+                    )
+                    container.post { reveal() }
+                }
             } else {
                 showAccountEntry()
                 return

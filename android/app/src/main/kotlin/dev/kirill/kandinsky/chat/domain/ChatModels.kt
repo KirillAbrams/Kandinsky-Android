@@ -199,6 +199,40 @@ data class StudioUpload(val blobId: String, val mime: String, val byteSize: Long
         get() = if (isVideo) "Посмотреть загруженное видео" else "Использовать загруженное фото"
 }
 
+data class StudioDraftRecord(val identity: java.util.UUID, val draft: Draft) {
+    val hasContent: Boolean
+        get() =
+            draft.text.isNotBlank() ||
+                draft.attachmentDrafts.isNotEmpty() ||
+                draft.pendingSend != null ||
+                !draft.pendingMediaBatch.isNullOrEmpty() ||
+                draft.generationOptions != null
+}
+
+data class StudioTransfer(
+    val id: String,
+    val deviceId: String,
+    val received: Long,
+    val total: Long,
+    val mime: String,
+) {
+    val isValid: Boolean
+        get() =
+            runCatching {
+                    java.util.UUID.fromString(id).toString() == id.lowercase() &&
+                        (deviceId.isEmpty() ||
+                            java.util.UUID.fromString(deviceId).toString() ==
+                                deviceId.lowercase()) &&
+                        total in 1..20 * 1024 * 1024L &&
+                        received in 0..total &&
+                        mime.toByteArray().size <= 80
+                }
+                .getOrDefault(false)
+
+    val progress: Double
+        get() = received.toDouble() / total
+}
+
 data class StudioChoice(
     val id: String,
     val name: String,
@@ -255,6 +289,7 @@ data class Draft(
     val pendingSend: SendCommand? = null,
     val pendingRevision: Long? = null,
     val pendingMediaBatch: List<SendCommand>? = null,
+    val generationOptions: KandinskyOptions? = null,
 )
 
 data class ReadingAnchor(

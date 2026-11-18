@@ -7,6 +7,78 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal class SyncChatDirectory(private val sync: NetworkSync) {
+    private var refreshing = false
+    private var refreshPending = false
+
+    fun refreshStudioDirectory() {
+        refreshPending = true
+        if (refreshing || sync.closed || !sync.active) return
+        refreshPending = false
+        refreshing = true
+        val connection = sync.connectionEpoch
+        fun complete() {
+            refreshing = false
+            if (refreshPending) refreshStudioDirectory()
+        }
+        sync.database({ sync.cache.studioChatIDs(it) }) { known ->
+            if (sync.closed || connection != sync.connectionEpoch) {
+                complete()
+                return@database
+            }
+            known.fold(
+                { ids -> loadDirectory(ids, connection, ::complete) },
+                {
+                    complete()
+                    sync.reconnectAfterFailure(connection)
+                },
+            )
+        }
+    }
+
+    private fun loadDirectory(known: List<Long>, connection: Int, complete: () -> Unit) {
+        sync.http({
+            val recent = sync.api.json("/v1/chats")
+            // Архивированный чат отсутствует в недавних. Сверяем его флаги по сохранённому номеру.
+            val states =
+                known.chunked(128).map { ids ->
+                    sync.api.json("/v1/chats/states", JSONObject().put("ids", JSONArray(ids)))
+                }
+            recent to states
+        }) { result ->
+            if (sync.closed || connection != sync.connectionEpoch) {
+                complete()
+                return@http
+            }
+            result.fold(
+                { (recent, states) ->
+                    if (refreshPending) {
+                        complete()
+                    } else {
+                        sync.database({ db ->
+                            val changes = sync.cache.mergeChats(db, recent, studioRecent = true)
+                            changes + states.flatMap { sync.cache.mergeChats(db, it) }
+                        }) { applied ->
+                            if (!sync.closed && connection == sync.connectionEpoch) {
+                                applied.fold(
+                                    { changes ->
+                                        sync.emit(changes)
+                                        sync.main.post { sync.onStudioRecentChanged?.invoke() }
+                                    },
+                                    { sync.reconnectAfterFailure(connection) },
+                                )
+                            }
+                            complete()
+                        }
+                    }
+                },
+                {
+                    complete()
+                    sync.reconnectAfterFailure(connection)
+                },
+            )
+        }
+    }
+
     fun openDirect(username: String, threadID: UUID? = null, completion: (Result<Long>) -> Unit) {
         sync.worker.post {
             if (sync.closed) {

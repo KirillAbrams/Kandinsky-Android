@@ -39,6 +39,15 @@ class ConversationState(private val repository: ChatRepository) {
         private set
 
     var anchor: ReadingAnchor? = null
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!closed && isReady && chatID != null) {
+                handler.removeCallbacks(positionWrite)
+                handler.post(positionWrite)
+            }
+        }
+
     var lastError: Throwable? = null
         private set
 
@@ -50,6 +59,23 @@ class ConversationState(private val repository: ChatRepository) {
 
     var onDelta: ((MessageDelta) -> Unit)? = null
     var onChange: (() -> Unit)? = null
+    var persistStudioDraft: ((ChatID?, Draft, (Result<Unit>) -> Unit) -> Unit)? = null
+    // Место чтения сохраняем отдельно от черновика, чтобы остановка процесса не вернула чат в
+    // конец.
+    private val positionWrite = Runnable {
+        val id = chatID
+        val position = anchor
+        if (!closed && isReady && id != null && position != null) {
+            repository.savePosition(id, position) { result ->
+                if (!closed) {
+                    result.exceptionOrNull()?.let { error ->
+                        lastError = error
+                        onChange?.invoke()
+                    }
+                }
+            }
+        }
+    }
     private val debounce = Runnable {
         flush {
             it.exceptionOrNull()?.let { error ->
@@ -93,8 +119,9 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
-    fun openStudioDraft() {
+    fun openStudioDraft(restored: Draft? = null) {
         if (closed || chatID != null) return
+        if (restored != null) draft = restored
         isReady = true
         onChange?.invoke()
     }
@@ -122,17 +149,37 @@ class ConversationState(private val repository: ChatRepository) {
         onChange?.invoke()
     }
 
+    fun updateGenerationOptions(value: KandinskyOptions) {
+        if (closed || !isReady || draft.generationOptions == value) return
+        draft = draft.copy(generationOptions = value)
+        lastError = null
+        handler.removeCallbacks(debounce)
+        handler.postDelayed(debounce, 300)
+        onChange?.invoke()
+    }
+
     // Перед уходом записываем черновик и место чтения, даже если таймер сохранения ещё не сработал.
     fun flush(callback: (Result<Unit>) -> Unit) {
         handler.removeCallbacks(debounce)
+        handler.removeCallbacks(positionWrite)
         if (!isReady) return callback(Result.success(Unit))
-        val id = chatID ?: return callback(Result.success(Unit))
         val value = draft
-        val position = anchor
+        val id = chatID
+        if (id == null) {
+            persistStudioDraft?.invoke(null, value, callback) ?: callback(Result.success(Unit))
+            return
+        }
         repository.saveDraft(id, value) { result ->
             if (result.isFailure) callback(result)
-            else if (position == null) callback(Result.success(Unit))
-            else repository.savePosition(id, position, callback)
+            else {
+                fun saved(result: Result<Unit>) {
+                    // Пока записывался черновик, пользователь мог прокрутить дальше.
+                    val position = anchor
+                    if (result.isFailure || position == null) callback(result)
+                    else repository.savePosition(id, position, callback)
+                }
+                persistStudioDraft?.invoke(id, value, ::saved) ?: saved(Result.success(Unit))
+            }
         }
     }
 
@@ -186,7 +233,11 @@ class ConversationState(private val repository: ChatRepository) {
                     sent.fold(
                         { delta ->
                             draft =
-                                if (draft.revision == revision) Draft(revision = draft.revision + 1)
+                                if (draft.revision == revision)
+                                    Draft(
+                                        revision = draft.revision + 1,
+                                        generationOptions = draft.generationOptions,
+                                    )
                                 else
                                     draft.copy(
                                         operationID = null,

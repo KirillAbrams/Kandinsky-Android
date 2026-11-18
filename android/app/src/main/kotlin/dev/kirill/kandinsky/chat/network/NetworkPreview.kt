@@ -1,18 +1,12 @@
 package dev.kirill.kandinsky.chat.network
 
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
-import android.media.ThumbnailUtils
-import android.util.Size
 import dev.kirill.kandinsky.chat.domain.AttachmentDraft
 import java.io.File
-import java.io.FileOutputStream
 import java.util.UUID
 
 object NetworkPreview {
-    // Номер загрузки вычисляется из устройства и вложения, поэтому повтор относится к тому же
-    // предварительному изображению.
-    fun upload(root: File, a: AttachmentDraft, api: NetworkAPI, deviceID: String): String? {
+    // Номер загрузки привязан к вложению и сохраняется при повторном входе в аккаунт.
+    fun upload(root: File, a: AttachmentDraft, api: NetworkAPI): String? {
         if (!a.mime.startsWith("image/") && !a.mime.startsWith("video/")) return null
         if (a.mime == "image/gif") return null
         val file = File(root, "media/" + a.relativePath)
@@ -23,8 +17,7 @@ object NetworkPreview {
                 file,
                 a.mime,
             )
-        val id =
-            UUID.nameUUIDFromBytes((deviceID + ":" + a.id + ":preview-v1").toByteArray()).toString()
+        val id = UUID.nameUUIDFromBytes((a.id + ":preview-v1").toByteArray()).toString()
         return api.upload(temporary, "image/jpeg", id).getString("blobId")
     }
 }

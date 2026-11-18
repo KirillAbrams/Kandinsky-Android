@@ -4,7 +4,6 @@ import android.database.sqlite.SQLiteDatabase
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.ChatStorageCodec
 import java.io.File
-import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -82,15 +81,13 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
         command: SendCommand,
     ): Pair<String, String?> {
         val file = File(sync.store.root, "media/" + attachment.relativePath)
-        val device = sync.profile.deviceID
-        val uploadID = UUID.nameUUIDFromBytes((device + ":" + attachment.id).toByteArray())
         val source =
             command.generationOptions != null &&
                 (attachment.mime.startsWith("image/") || attachment.mime == "video/mp4")
         val result =
-            sync.api.upload(file, attachment.mime, uploadID.toString(), studioSource = source)
+            sync.api.upload(file, attachment.mime, attachment.id.lowercase(), studioSource = source)
         return result.getString("blobId") to
-            NetworkPreview.upload(sync.store.root, attachment, sync.api, device)
+            NetworkPreview.upload(sync.store.root, attachment, sync.api)
     }
 
     private fun attachmentPayload(

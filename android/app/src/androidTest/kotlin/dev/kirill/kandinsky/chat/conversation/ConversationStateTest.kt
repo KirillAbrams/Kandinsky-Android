@@ -15,6 +15,120 @@ class ConversationStateTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
     @Test
+    fun generationOptionsSurviveARealDatabaseReopen() {
+        var h =
+            RepositoryHarness.open(
+                File(
+                    instrumentation.targetContext.cacheDir,
+                    "generation-options-" + UUID.randomUUID(),
+                )
+            )
+        try {
+            val fixture =
+                """
+                {"text":"Продолжить генерацию","revision":9,"attachmentDrafts":[],
+                 "generationOptions":{"model":"video","aspect":"3:5","duration_seconds":1,
+                 "quality":"standard","resolution":"compact","count":3,"seed":127,
+                 "negative_prompt":"Keep the original scene","guidance_scale":4.0}}
+            """
+                    .trimIndent()
+            val draft = dev.kirill.kandinsky.chat.storage.ChatStorageCodec.decodeDraft(fixture, "")
+            awaitResult<Unit> { h.repo.saveDraft(2, draft, it) }
+            h = h.reopen()
+            val stored = awaitResult<Draft> { h.repo.draft(2, it) }
+            val json =
+                org.json.JSONObject(
+                    dev.kirill.kandinsky.chat.storage.ChatStorageCodec.draft(stored)
+                )
+            val options = json.optJSONObject("generationOptions")
+            assertNotNull("Параметры должны остаться в настоящей базе", options)
+            assertEquals("video", options!!.getString("model"))
+            assertEquals("3:5", options.getString("aspect"))
+            assertEquals(1, options.getInt("duration_seconds"))
+            assertEquals("standard", options.getString("quality"))
+            assertEquals("compact", options.getString("resolution"))
+            assertEquals(3, options.getInt("count"))
+            assertEquals(127, options.getInt("seed"))
+            assertEquals("Keep the original scene", options.getString("negative_prompt"))
+            assertEquals(4.0, options.getDouble("guidance_scale"), 0.0)
+            assertEquals("Продолжить генерацию", stored.text)
+            assertEquals(9L, stored.revision)
+        } finally {
+            h.close()
+        }
+    }
+
+    @Test
+    fun scrollingSavesLatestPositionWithoutEditingOrClosing() {
+        val h =
+            RepositoryHarness.open(
+                File(
+                    instrumentation.targetContext.cacheDir,
+                    "reading-position-" + UUID.randomUUID(),
+                )
+            )
+        val state = ConversationState(h.repo)
+        try {
+            open(state)
+            main {
+                for (message in 1L..100L) {
+                    state.anchor =
+                        ReadingAnchor(messageID = message, fraction = 0.4, followsBottom = false)
+                }
+            }
+            Thread.sleep(400)
+            val stored = awaitResult<ReadingAnchor?> { h.repo.position(2, it) }
+            assertEquals(
+                "Прокрутка должна сохранять место без изменения черновика",
+                state.anchor,
+                stored,
+            )
+            assertEquals("", awaitResult<Draft> { h.repo.draft(2, it) }.text)
+        } finally {
+            main { state.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun draftWriteCannotOverwriteNewerReadingPosition() {
+        val h =
+            RepositoryHarness.open(
+                File(instrumentation.targetContext.cacheDir, "reading-race-" + UUID.randomUUID())
+            )
+        val state = ConversationState(h.repo)
+        try {
+            open(state)
+            val newer = ReadingAnchor(messageID = 2, fraction = 0.5, followsBottom = false)
+            main {
+                state.anchor = ReadingAnchor(messageID = 1, followsBottom = false)
+                state.persistStudioDraft = { _, _, done ->
+                    state.anchor = newer
+                    android.os
+                        .Handler(android.os.Looper.getMainLooper())
+                        .postDelayed({ done(Result.success(Unit)) }, 400)
+                }
+            }
+            awaitResult<Unit> { callback ->
+                main { state.flush(callback) }
+                Cancellation {}
+            }
+            val stored = awaitResult<ReadingAnchor?> { h.repo.position(2, it) }
+            assertEquals(
+                "Запись черновика не должна возвращать прежнее место чтения",
+                newer,
+                stored,
+            )
+        } finally {
+            main {
+                state.persistStudioDraft = null
+                state.close()
+            }
+            h.close()
+        }
+    }
+
+    @Test
     fun retrySurvivesLostReplyAndReopening() {
         val harness =
             RepositoryHarness.open(

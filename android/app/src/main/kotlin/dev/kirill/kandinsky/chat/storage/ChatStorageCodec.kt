@@ -54,6 +54,7 @@ internal object ChatStorageCodec {
                 }
                 put("pendingRevision", d.pendingRevision ?: JSONObject.NULL)
                 put("pendingSend", d.pendingSend?.let { command(it) } ?: JSONObject.NULL)
+                d.generationOptions?.let { put("generationOptions", generationOptions(it)) }
                 put("text", d.text)
                 put("revision", d.revision)
                 put("operationID", d.operationID ?: JSONObject.NULL)
@@ -85,6 +86,7 @@ internal object ChatStorageCodec {
                 else decodeCommand(o.getJSONObject("pendingSend")),
                 nullable(o, "pendingRevision"),
                 batch,
+                o.optJSONObject("generationOptions")?.let { decodeGenerationOptions(it) },
             )
         } catch (t: org.json.JSONException) {
             Draft(text)
@@ -158,24 +160,24 @@ internal object ChatStorageCodec {
             c.generationOptions?.let { put("generationOptions", generationOptions(it)) }
         }
 
+    private fun decodeGenerationOptions(value: JSONObject) =
+        KandinskyOptions(
+            value.getString("model"),
+            value.getString("aspect"),
+            value.getInt("duration_seconds"),
+            quality = if (value.isNull("quality")) null else value.getString("quality"),
+            resolution = if (value.isNull("resolution")) null else value.getString("resolution"),
+            count = if (value.isNull("count")) null else value.getInt("count"),
+            seed = if (value.isNull("seed")) null else value.getInt("seed"),
+            negativePrompt =
+                if (value.isNull("negative_prompt")) null else value.getString("negative_prompt"),
+            guidanceScale =
+                if (value.isNull("guidance_scale")) null else value.getDouble("guidance_scale"),
+        )
+
     private fun decodeCommand(o: JSONObject): SendCommand {
         val a = o.getJSONArray("attachments")
-        val options =
-            o.optJSONObject("generationOptions")?.let {
-                KandinskyOptions(
-                    it.getString("model"),
-                    it.getString("aspect"),
-                    it.getInt("duration_seconds"),
-                    quality = if (it.isNull("quality")) null else it.getString("quality"),
-                    resolution = if (it.isNull("resolution")) null else it.getString("resolution"),
-                    count = if (it.isNull("count")) null else it.getInt("count"),
-                    seed = if (it.isNull("seed")) null else it.getInt("seed"),
-                    negativePrompt =
-                        if (it.isNull("negative_prompt")) null else it.getString("negative_prompt"),
-                    guidanceScale =
-                        if (it.isNull("guidance_scale")) null else it.getDouble("guidance_scale"),
-                )
-            }
+        val options = o.optJSONObject("generationOptions")?.let { decodeGenerationOptions(it) }
         return SendCommand(
             o.getString("operationID"),
             o.getLong("chatID"),

@@ -263,6 +263,15 @@ class NetworkMedia(
         // исходники.
         fun pendingReferences(database: android.database.sqlite.SQLiteDatabase): Set<String> {
             val paths = mutableSetOf<String>()
+            StudioDraftStorage.load(database)?.draft?.let { draft ->
+                paths.addAll(draft.attachmentDrafts.map { it.relativePath })
+                draft.pendingSend?.let { command ->
+                    paths.addAll(command.attachments.map { it.relativePath })
+                }
+                draft.pendingMediaBatch.orEmpty().forEach { command ->
+                    paths.addAll(command.attachments.map { it.relativePath })
+                }
+            }
             database.rawQuery("SELECT payload FROM net_outbox WHERE action='send'", null).use {
                 while (it.moveToNext()) for (a in
                     ChatStorageCodec.readCommand(it.getString(0)).attachments) paths.add(

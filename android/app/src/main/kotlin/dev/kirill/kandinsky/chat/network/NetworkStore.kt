@@ -30,24 +30,25 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
     fun bootstrap(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
         applyInitialSnapshot(db, json)
 
-    fun retireStudioThread(db: SQLiteDatabase, chat: Long): List<Long>? =
-        retireChat(db, chat)
+    fun retireStudioThread(db: SQLiteDatabase, chat: Long): List<Long>? = retireChat(db, chat)
 
     fun mergeChats(
         db: SQLiteDatabase,
         json: JSONObject,
         studioRecent: Boolean = false,
-    ): List<MessageDelta> =
-        mergeChatList(db, json, studioRecent)
+    ): List<MessageDelta> = mergeChatList(db, json, studioRecent)
 
-    fun studioRecent(db: SQLiteDatabase): StudioRecentPage =
-        loadRecentChats(db)
+    fun studioRecent(db: SQLiteDatabase): StudioRecentPage = loadRecentChats(db)
+
+    fun studioChatIDs(db: SQLiteDatabase): List<Long> =
+        db.rawQuery("SELECT chatID FROM net_chats ORDER BY chatID", null).use { rows ->
+            buildList { while (rows.moveToNext()) add(rows.getLong(0)) }
+        }
 
     fun hasUnknownChats(db: SQLiteDatabase, json: JSONObject): Boolean =
         containsUnknownChat(db, json)
 
-    fun events(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
-        applyEventBatch(db, json)
+    fun events(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> = applyEventBatch(db, json)
 
     fun history(db: SQLiteDatabase, chat: Long, json: JSONObject): List<MessageDelta> =
         applyHistoryPage(db, chat, json)
@@ -61,8 +62,7 @@ class NetworkStore(val local: SQLiteChatRepository, val userID: Long) {
         json: JSONObject,
         retryKey: String? = null,
         operation: String? = null,
-    ): List<MessageDelta> =
-        saveGenerationResponse(db, chat, json, retryKey, operation)
+    ): List<MessageDelta> = saveGenerationResponse(db, chat, json, retryKey, operation)
 
     fun accepted(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
         confirmSentMessages(db, json)

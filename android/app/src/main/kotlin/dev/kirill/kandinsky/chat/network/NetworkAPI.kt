@@ -50,6 +50,14 @@ class NetworkAPI(
     private val socketClient by lazy {
         client.newBuilder().pingInterval(20, TimeUnit.SECONDS).build()
     }
+    private val sourceClient by lazy {
+        client
+            .newBuilder()
+            .callTimeout(1, TimeUnit.HOURS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(90, TimeUnit.SECONDS)
+            .build()
+    }
 
     private fun request(path: String): Request.Builder {
         require(path.startsWith("/v1/"))
@@ -85,8 +93,12 @@ class NetworkAPI(
         return executeJSON(builder.build())
     }
 
-    private fun executeJSON(request: Request, transfer: MediaCancellation? = null): JSONObject {
-        val call = client.newCall(request)
+    private fun executeJSON(
+        request: Request,
+        transfer: MediaCancellation? = null,
+        transport: OkHttpClient = client,
+    ): JSONObject {
+        val call = transport.newCall(request)
         transfer?.onCancel { call.cancel() }
         call.execute().use { response ->
             val body = response.body ?: throw IOException("Empty response")
@@ -122,6 +134,7 @@ class NetworkAPI(
         studioSource: Boolean = false,
         transfer: MediaCancellation? = null,
     ): JSONObject {
+        initialize()
         val size = file.length()
         require(size in 1..67108864L)
         val digest = MessageDigest.getInstance("SHA-256")
@@ -135,7 +148,10 @@ class NetworkAPI(
         }
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         val request = request("/v1/uploads/$id").header("x-content-sha256", hash)
-        if (studioSource) request.header("x-kandinsky-source", "1")
+        if (studioSource) {
+            request.header("x-kandinsky-source", "1")
+            profile?.let { request.header("x-kandinsky-device", it.deviceID) }
+        }
         val original = file.asRequestBody(mime.toMediaType())
         val body =
             if (transfer == null) original
@@ -165,7 +181,11 @@ class NetworkAPI(
                         counted.emit()
                     }
                 }
-        return executeJSON(request.put(body).build(), transfer)
+        return executeJSON(
+            request.put(body).build(),
+            transfer,
+            if (studioSource) sourceClient else client,
+        )
     }
 
     fun download(

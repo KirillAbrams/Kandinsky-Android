@@ -343,11 +343,9 @@ class StudioHistoryPanel(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         network.onStudioRecentChanged = {
-            if (
-                showingRecent() &&
-                    pageOffset <= StudioRecentPage.CATALOG_LIMIT &&
-                    (!loading || readingRecent)
-            )
+            if (!showingRecent()) {
+                reload()
+            } else if (pageOffset <= StudioRecentPage.CATALOG_LIMIT && (!loading || readingRecent))
                 loadRecent()
         }
         reload()

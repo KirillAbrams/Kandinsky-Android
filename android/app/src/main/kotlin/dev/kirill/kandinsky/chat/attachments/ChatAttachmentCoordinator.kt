@@ -36,6 +36,7 @@ internal class ChatAttachmentCoordinator(
     private val previewVideo: (Attachment, (() -> Unit)?, () -> Unit) -> Unit,
     private val refresh: () -> Unit,
     private val refreshProgress: () -> Unit,
+    private val prepareDraft: ((Result<Unit>) -> Unit) -> Unit = { it(Result.success(Unit)) },
 ) {
     private val cameraOrGalleryError =
         "Не удалось открыть камеру или галерею. Проверьте разрешения."
@@ -44,6 +45,8 @@ internal class ChatAttachmentCoordinator(
     private var documentPending = false
     private var activeTransfer: MediaCancellation? = null
     private var mappingDraft: AttachmentDraft? = null
+    private var lastSourceAttempt: String? = null
+    private var checkingSource: String? = null
     var progress = 0.0
         private set
 
@@ -51,13 +54,39 @@ internal class ChatAttachmentCoordinator(
         get() = activeTransfer != null
 
     val isBusy
-        get() = pendingImport != null || isUploading
+        get() = pendingImport != null || isUploading || checkingSource != null
 
     val canPick
         get() = !isBusy && !documentPending
 
+    fun resumePendingUpload(reconnected: Boolean = false) {
+        val network = runtime.network ?: return
+        val source = state.draft.attachmentDrafts.firstOrNull() ?: return
+        if (!isActive() || !state.isReady || isBusy || !source.mime.startsWith("image/")) return
+        if (reconnected) lastSourceAttempt = null
+        if (lastSourceAttempt == source.id) return
+        lastSourceAttempt = source.id
+        checkingSource = source.id
+        network.hasStudioUpload(source.id) { saved ->
+            if (checkingSource == source.id) checkingSource = null
+            if (
+                saved.getOrNull() == false &&
+                    isActive() &&
+                    !isBusy &&
+                    state.draft.attachmentDrafts.firstOrNull()?.id == source.id
+            )
+                upload(source)
+        }
+    }
+
     fun stopCapture() {
         camera?.cancel()
+    }
+
+    fun pausePendingUpload() {
+        activeTransfer?.cancel()
+        activeTransfer = null
+        refresh()
     }
 
     fun close(discardDraft: Boolean) {
@@ -66,7 +95,10 @@ internal class ChatAttachmentCoordinator(
         pendingImport = null
         activeTransfer?.cancel()
         activeTransfer = null
-        mappingDraft?.let { runtime.media.discardUnpublishedImport(it) }
+        mappingDraft?.let { file ->
+            if (state.draft.attachmentDrafts.none { it.id == file.id })
+                runtime.media.discardUnpublishedImport(file)
+        }
         mappingDraft = null
         if (documentPending) {
             activity.documentResult = null
@@ -211,6 +243,12 @@ internal class ChatAttachmentCoordinator(
     }
 
     fun replacePhoto(photo: AttachmentDraft?) {
+        if (photo == null) {
+            pendingImport?.cancel()
+            activeTransfer?.cancel()
+            activeTransfer = null
+            checkingSource = null
+        }
         val model =
             if (photo != null) "video"
             else if (options().model == "video_sr") "image" else options().model
@@ -221,6 +259,7 @@ internal class ChatAttachmentCoordinator(
         val media = runtime.media
         val options = options()
         val previous = state.draft.attachmentDrafts
+        if (previous.map { it.id } == listOfNotNull(source?.id)) return
         val next =
             if (model == "video_sr") KandinskyOptions(model = model)
             else
@@ -251,6 +290,7 @@ internal class ChatAttachmentCoordinator(
             return
         }
         val transfer = MediaCancellation()
+        lastSourceAttempt = file.id
         activeTransfer = transfer
         progress = 0.0
         transfer.onProgress { value ->
@@ -262,21 +302,58 @@ internal class ChatAttachmentCoordinator(
             }
         }
         refresh()
-        thread(name = "KandinskyStudioUpload") {
-            val result = runCatching {
-                network.uploadStudioSource(file, media.fileURL(file.relativePath), transfer)
+        fun transmit() {
+            thread(name = "KandinskyStudioUpload") {
+                val result = runCatching {
+                    network.uploadStudioSource(file, media.fileURL(file.relativePath), transfer)
+                }
+                activity.runOnUiThread {
+                    if (activeTransfer !== transfer || !isActive()) {
+                        finishUpload(transfer, file, kept = false)
+                    } else {
+                        result.fold(
+                            { (blob, previewID) ->
+                                rememberUpload(network, transfer, file, blob, previewID)
+                            },
+                            { error -> uploadFailed(transfer, file, error) },
+                        )
+                    }
+                }
             }
-            activity.runOnUiThread {
+        }
+        if (!isPhoto) {
+            transmit()
+            return
+        }
+        replacePhoto(file)
+        state.flush { persisted ->
+            if (persisted.isFailure || activeTransfer !== transfer || !isActive()) {
+                if (persisted.isFailure) showError("Не удалось сохранить выбранное фото")
+                finishUpload(transfer, file, kept = false)
+                return@flush
+            }
+            prepareDraft { prepared ->
                 if (activeTransfer !== transfer || !isActive()) {
                     finishUpload(transfer, file, kept = false)
-                } else {
-                    result.fold(
-                        { (blob, previewID) ->
-                            rememberUpload(network, transfer, file, blob, previewID)
-                        },
-                        { error -> uploadFailed(transfer, file, error) },
-                    )
+                    return@prepareDraft
                 }
+                prepared.fold(
+                    {
+                        state.flush { saved ->
+                            if (saved.isSuccess && activeTransfer === transfer && isActive())
+                                transmit()
+                            else {
+                                if (saved.isFailure)
+                                    showError("Не удалось сохранить выбранное фото")
+                                finishUpload(transfer, file, kept = false)
+                            }
+                        }
+                    },
+                    {
+                        showError("Фото осталось на устройстве. Проверьте соединение.")
+                        finishUpload(transfer, file, kept = true)
+                    },
+                )
             }
         }
     }
@@ -323,7 +400,8 @@ internal class ChatAttachmentCoordinator(
             activeTransfer = null
             refresh()
         }
-        if (!kept) runtime.media.discardUnpublishedImport(file)
+        if (!kept && state.draft.attachmentDrafts.none { it.id == file.id })
+            runtime.media.discardUnpublishedImport(file)
     }
 
     private fun preview(file: AttachmentDraft, media: MediaStore) {
