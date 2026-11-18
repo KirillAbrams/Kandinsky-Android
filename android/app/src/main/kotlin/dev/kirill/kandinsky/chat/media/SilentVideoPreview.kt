@@ -35,6 +35,10 @@ class SilentVideoPreview(
     private var transformedHeight = 0
     private var generation = 0
     private var hasFrame = false
+    private var playbackKey: VideoPlaybackKey? = null
+    private var cacheGeneration = 0
+    private var restoring = false
+    private var visible = true
     private var circular = false
     private var cornerRadius = 0f
     private var bottomSquare = false
@@ -53,7 +57,22 @@ class SilentVideoPreview(
         private set
 
     val active
-        get() = !closed && hasFrame && session != null
+        get() = !closed && !restoring && hasFrame && session != null
+    val isPlaying
+        get() = active && visible
+
+    fun setVisible(value: Boolean) {
+        if (closed || visible == value) return
+        visible = value
+        alpha = if (value) 1f else 0f
+        if (value) {
+            if (!restoring) session?.resume()
+        } else {
+            if (retiring) { close(); return }
+            rememberFrame()
+            session?.pause { rememberPosition(it) }
+        }
+    }
 
     private val invalidation = store.registerInvalidation { close() }
 
@@ -92,6 +111,7 @@ class SilentVideoPreview(
         stamp: RenderNode,
         prepared: PreparedText,
         studioAlbum: Boolean = false,
+        playbackKey: VideoPlaybackKey? = null,
     ) {
         val stampChanged = this.stamp !== stamp
         val outlineChanged =
@@ -136,6 +156,8 @@ class SilentVideoPreview(
         val lease = MediaAdmission.reservePreview(studioAlbum) { close() } ?: return
         val life = PreviewLifetime(lease)
         lifetime = life
+        this.playbackKey = playbackKey ?: VideoPlaybackKey(0, attachment)
+        cacheGeneration = store.videoPlayback.generation
         identity = attachment.relativePath
         val ticket = ++generation
         life.begin()
@@ -157,7 +179,7 @@ class SilentVideoPreview(
                                     { _, _, _ -> },
                                     { ready ->
                                         if (!closed && generation == ticket)
-                                            ready.fold({ session?.resume() }, { retireNative() })
+                                            ready.fold({ duration -> restorePosition(duration, ticket) }, { failPreview() })
                                     },
                                     loop = true,
                                 )
@@ -165,7 +187,7 @@ class SilentVideoPreview(
                             next.open(source)
                             surface?.let { next.attach(it) {} }
                         },
-                        { retireNative() },
+                        { failPreview() },
                     )
                 } finally {
                     life.end()
@@ -266,12 +288,50 @@ class SilentVideoPreview(
         drawForeground(canvas)
     }
 
+    private fun rememberPosition(value: Long) {
+        playbackKey?.let { store.videoPlayback.rememberPosition(value, it, cacheGeneration) }
+    }
+
+    private fun rememberFrame() {
+        val key = playbackKey ?: return
+        if (!hasFrame || restoring || !texture.isAvailable) return
+        store.videoPlayback.rememberFrame(key, cacheGeneration, width, height) { w, h ->
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val copied = texture.getBitmap(bitmap)
+            if (copied == null) bitmap.recycle()
+            copied
+        }
+    }
+
+    private fun restorePosition(duration: Long, ticket: Int) {
+        val saved = playbackKey?.let { store.videoPlayback.position(it) } ?: 0L
+        val target = saved.coerceIn(0, maxOf(0, duration - 1))
+        if (target == 0L) {
+            if (visible) session?.resume()
+            return
+        }
+        restoring = true
+        session?.seek(target) { finished ->
+            if (closed || generation != ticket) return@seek
+            if (!finished) { failPreview(); return@seek }
+            restoring = false
+            if (visible) session?.resume()
+        }
+    }
+
     private fun releaseOutputs() {
         outputsRetired = true
         surface?.release()
         surface = null
         heldTextures.forEach { it.release() }
         heldTextures.clear()
+    }
+
+    private fun failPreview() {
+        retireNative()
+        // Пока строка видна, ошибка остаётся на месте. Новый запрос начнётся после
+        // ухода и возврата, а обновление экрана не создаст непрерывных повторов.
+        if (!visible) close()
     }
 
     private fun retireNative() {
@@ -290,7 +350,9 @@ class SilentVideoPreview(
         // подтверждение возвращает место
         if (old != null) {
             life?.begin()
-            old.release {
+            old.release(position = { value ->
+                if (!restoring) rememberPosition(value)
+            }) {
                 releaseOutputs()
                 life?.end()
                 life?.retire()
@@ -305,6 +367,7 @@ class SilentVideoPreview(
 
     override fun close() {
         if (closed) return
+        rememberFrame()
         closed = true
         generation++
         retireNative()
@@ -342,6 +405,7 @@ class SilentVideoPreview(
 
     override fun onSurfaceTextureUpdated(value: SurfaceTexture) {
         if (closed || retiring || texture.surfaceTexture !== value) return
+        if (restoring) return
         if (!hasFrame) {
             hasFrame = true
             texture.alpha = 1f

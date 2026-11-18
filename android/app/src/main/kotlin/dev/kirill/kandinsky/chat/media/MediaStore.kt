@@ -28,6 +28,7 @@ class MediaStore(
     private val mediaDecodeQueue = MediaDecodeQueue()
     private val videoPreparation = MediaVideoPreparation()
     private val imageMemoryBudget = ImageByteBudget()
+    internal val videoPlayback = VideoPlaybackCache(imageMemoryBudget)
     private val tinyPreviewCache = ThumbnailCache(imageMemoryBudget, entryLimit = 64)
     private val imageWorkQueue = MediaImageWorkQueue()
     private val thumbnailRequests = MediaThumbnailRequests()
@@ -352,7 +353,8 @@ class MediaStore(
                 willDownload = willDownload,
                 admit = {
                     if (closed || fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
-                    if (!thumbnailCache.makeRoom(reserve) && !tinyPreviewCache.makeRoom(reserve))
+                    if (!thumbnailCache.makeRoom(reserve) && !tinyPreviewCache.makeRoom(reserve) &&
+                        !videoPlayback.makeRoom(reserve))
                         throw MediaException(MediaError.UNAVAILABLE)
                     imageMemoryBudget.reserve(reserve) ?: throw MediaException(MediaError.UNAVAILABLE)
                 },
@@ -440,7 +442,8 @@ class MediaStore(
         val reserve = 64 * 64 * 8 + 4096
         val charge =
             if (!closed && text != null && key != null &&
-                (tinyPreviewCache.makeRoom(reserve) || thumbnailCache.makeRoom(reserve)))
+                (tinyPreviewCache.makeRoom(reserve) || thumbnailCache.makeRoom(reserve) ||
+                    videoPlayback.makeRoom(reserve)))
                 imageMemoryBudget.reserve(reserve)
             else null
         if (charge == null) {
@@ -585,6 +588,7 @@ class MediaStore(
         else {
             thumbnailCache.clear()
             tinyPreviewCache.clear()
+            videoPlayback.clearFrames()
         }
     }
 
@@ -607,6 +611,7 @@ class MediaStore(
         invalidationHandlers.values.toList().forEach { it() }
         thumbnailCache.clear()
         tinyPreviewCache.clear()
+        videoPlayback.clearFrames()
         imageMemoryBudget.limit = 24 * 1024 * 1024
     }
 
@@ -614,6 +619,7 @@ class MediaStore(
         checkMainThread()
         if (closed) return
         closed = true
+        videoPlayback.close()
         invalidationHandlers.values.toList().forEach { it() }
         invalidationHandlers.clear()
         mediaDecodeQueue.close()

@@ -27,6 +27,73 @@ import org.junit.Test
 
 class WarmNavigationCacheTest {
     @Test
+    fun albumBecomingSingleKeepsOnlyTheRemainingVideoBinding() {
+        val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "album-to-single-" + UUID.randomUUID()))
+        main {
+            val media = MediaStore(h.store, h.repo, studioOriginals = true)
+            val scene = RetainedChatScene()
+            scene.mediaStore = media
+            scene.movingContainer = android.widget.FrameLayout(i.targetContext)
+            scene.viewport = RectF(0f, 0f, 1080f, 2000f)
+            scene.imageViewport = scene.viewport
+            val a = Attachment("one", "missing/one.mp4", "video/mp4", 100, 640, 360, 1, 3000, "one")
+            val b = Attachment("two", "missing/two.mp4", "video/mp4", 100, 640, 360, 1, 3000, "two")
+            fun show(attachments: List<Attachment>, revision: Int): MessageNode {
+                val row = Message(79001, 2, OrderKey(1, 79001), MessageDirection.INCOMING,
+                    0, MessageKind.VIDEO, "", "", null, revision, attachments)
+                val prepared = PreparedText(row, TextLayoutKey(row.id, revision, 300, 17, 3))
+                scene.apply(SceneSnapshot(scene.ticket, listOf(SceneFragment(prepared, 0,
+                    RectF(36f, 100f, 36f + prepared.width, 100f + prepared.height)))))
+                val nodes = scene.javaClass.getDeclaredField("nodes").apply { isAccessible = true }
+                    .get(scene) as Map<*, *>
+                return nodes.values.single() as MessageNode
+            }
+            try {
+                val album = show(listOf(a, b), 1)
+                assertEquals(2, album.albumVideos.size)
+                val single = show(listOf(a), 2)
+                assertSame(album, single)
+                assertNotNull(single.video)
+                assertTrue("Deleting the other cell removes obsolete album bindings", single.albumVideos.isEmpty())
+            } finally { scene.close(); media.close() }
+        }
+        h.close()
+    }
+
+    @Test
+    fun videoReturnCacheBoundsIdentityAndLateInvalidation() {
+        val budget = ImageByteBudget()
+        val cache = VideoPlaybackCache(budget)
+        val a = Attachment("same", "media/same.mp4", "video/mp4", 100, 1920, 1080, 1, 3000, "same")
+        fun key(id: Long) = VideoPlaybackKey(id, a)
+        val ticket = cache.generation
+        for (id in 1L..300L) cache.rememberPosition(id, key(id), ticket)
+        assertEquals(0L, cache.position(key(44)))
+        assertEquals(45L, cache.position(key(45)))
+        assertEquals(300L, cache.position(key(300)))
+        for (id in 1L..6L) cache.rememberFrame(key(id), ticket, 1920, 1080) { w, h ->
+            assertEquals(1024, w)
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }
+        assertNull(cache.frame(key(2)))
+        val frame = checkNotNull(cache.frame(key(3)))
+        assertEquals(1024, frame.bitmap?.width)
+        frame.close()
+        assertTrue(budget.bytes <= 4 * 1024 * 576 * 4)
+        cache.clearFrames()
+        assertEquals(0, budget.bytes)
+        var lateRender = false
+        cache.rememberFrame(key(3), ticket, 32, 32) { _, _ -> lateRender = true; null }
+        cache.rememberPosition(999, key(300), ticket)
+        assertFalse(lateRender)
+        assertEquals(300L, cache.position(key(300)))
+        cache.close()
+        cache.rememberPosition(999, key(300), cache.generation)
+        assertEquals(0L, cache.position(key(300)))
+        assertEquals(0, budget.bytes)
+    }
+
+    @Test
     fun shortHistoryPanelKeepsCachedChatsReachableAndSelectsTheExactRow() {
         val activity = emptyActivity()
         val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "short-library-" + UUID.randomUUID()))

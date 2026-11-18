@@ -115,11 +115,15 @@ internal class PlayerSession(
         }
     }
 
-    fun pause() {
+    fun pause(position: ((Long) -> Unit)? = null) {
         worker.post {
             worker.removeCallbacks(clock)
             val p = native
-            if (!closing && prepared && p != null && p.isPlaying) p.pause()
+            if (!closing && prepared && p != null) {
+                if (p.isPlaying) p.pause()
+                val value = p.currentPosition.toLong()
+                main.post { if (!closing) position?.invoke(value) }
+            }
         }
     }
 
@@ -169,7 +173,7 @@ internal class PlayerSession(
         }
     }
 
-    fun release(completed: () -> Unit) {
+    fun release(position: ((Long) -> Unit)? = null, completed: () -> Unit) {
         if (closing) {
             worker.post { main.post(completed) }
             return
@@ -181,6 +185,7 @@ internal class PlayerSession(
             worker.removeCallbacks(clock)
             val p = native
             native = null
+            val saved = if (p != null && prepared) runCatching { p.currentPosition.toLong() }.getOrNull() else null
             if (p != null) {
                 runCatching { p.setSurface(null) }
                 p.setOnSeekCompleteListener(null)
@@ -196,6 +201,7 @@ internal class PlayerSession(
             seekDone = null
             main.post {
                 pending?.invoke(false)
+                saved?.let { position?.invoke(it) }
                 completed()
             }
         }

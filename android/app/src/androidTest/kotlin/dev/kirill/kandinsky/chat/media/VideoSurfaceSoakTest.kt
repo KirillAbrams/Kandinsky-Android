@@ -21,6 +21,162 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VideoSurfaceSoakTest {
+    @Test
+    fun failedPreviewRetriesOnlyAfterLeavingAndReturning() {
+        val activity = emptyActivity()
+        val h = RepositoryHarness.open(File(context.cacheDir, "failed-preview-" + UUID.randomUUID()))
+        lateinit var media: MediaStore
+        lateinit var root: FrameLayout
+        main { media = MediaStore(h.store, h.repo); root = FrameLayout(activity); activity.setContentView(root) }
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val pool = SilentVideoPreviewPool()
+        try {
+            val d = awaitResult<AttachmentDraft> { cb ->
+                main { media.stage({ TestFixtures.assets.open("media/video-00.mp4") }, "video/mp4", cb) }
+                Cancellation {}
+            }
+            val a = Attachment(d.id, d.relativePath, d.mime, d.byteSize, d.rawWidth, d.rawHeight,
+                d.orientation, d.durationMs, d.thumbnailKey)
+            val key = VideoPlaybackKey(78004, a)
+            lateinit var first: SilentVideoPreview
+            lateinit var prepared: dev.kirill.kandinsky.chat.rendering.PreparedText
+            val stamp = android.graphics.RenderNode("Failure retry fixture")
+            fun bind(owner: SilentVideoPreview) {
+                owner.bind(a, android.graphics.RectF(0f, 0f, 600f, 400f), false, 12f, false,
+                    stamp, prepared, playbackKey = key)
+            }
+            main {
+                val file = media.fileURL(d.relativePath)
+                media.remotePlayback = { _, _ ->
+                    if (attempts.incrementAndGet() == 1) throw MediaException(MediaError.UNAVAILABLE)
+                    MediaPlaybackSource(file = file)
+                }
+                val row = Message(78004, 2, OrderKey(1, 78004), MessageDirection.INCOMING, 0,
+                    MessageKind.VIDEO, "", "", null, 1, listOf(a))
+                prepared = dev.kirill.kandinsky.chat.rendering.PreparedText(row,
+                    dev.kirill.kandinsky.chat.rendering.TextLayoutKey(row.id, 1, 300, 17, 3))
+                pool.beginFrame(listOf(key), 2)
+                first = checkNotNull(pool.preview(key) { SilentVideoPreview(activity, media) {}.also { root.addView(it) } })
+                bind(first)
+            }
+            waitFor("The failed request returns its native lease") { attempts.get() == 1 && MediaAdmission.previewOwnerCount == 0 }
+            main {
+                repeat(10) {
+                    pool.beginFrame(listOf(key), 2)
+                    val owner = checkNotNull(pool.preview(key) { SilentVideoPreview(activity, media) {} })
+                    assertSame(first, owner)
+                    bind(owner)
+                }
+            }
+            SystemClock.sleep(100)
+            assertEquals("Failure must not start an automatic request loop", 1, attempts.get())
+            lateinit var returned: SilentVideoPreview
+            main {
+                pool.beginFrame(emptyList(), 2)
+                assertTrue("A failed owner leaves the retained set when scrolled away", first.closed)
+                pool.beginFrame(listOf(key), 2)
+                returned = checkNotNull(pool.preview(key) { SilentVideoPreview(activity, media) {}.also { root.addView(it) } })
+                assertNotSame(first, returned)
+                bind(returned)
+            }
+            waitFor("Returning opens actual native video again") { returned.active }
+            assertEquals(2, attempts.get())
+            main { prepared.close(); stamp.discardDisplayList() }
+        } finally {
+            main { pool.clear(); media.close(); activity.finish() }
+            waitFor("All retry preview leases retire") { MediaAdmission.previewOwnerCount == 0 }
+            h.close()
+        }
+    }
+
+    @Test
+    fun evictedVideoReturnsOnItsOwnRenderedFrameAndSavedPlayhead() {
+        val activity = emptyActivity()
+        val h = RepositoryHarness.open(File(context.cacheDir, "evicted-video-" + UUID.randomUUID()))
+        lateinit var media: MediaStore
+        lateinit var scene: dev.kirill.kandinsky.chat.rendering.RetainedChatScene
+        lateinit var root: FrameLayout
+        main {
+            media = MediaStore(h.store, h.repo)
+            root = FrameLayout(activity)
+            activity.setContentView(root)
+            scene = dev.kirill.kandinsky.chat.rendering.RetainedChatScene()
+            scene.mediaStore = media
+            scene.movingContainer = root
+            scene.viewport = android.graphics.RectF(0f, 0f, 1080f, 2000f)
+            scene.imageViewport = scene.viewport
+        }
+        try {
+            val d = awaitResult<AttachmentDraft> { cb ->
+                main { media.stage({ TestFixtures.assets.open("media/video-00.mp4") }, "video/mp4", cb) }
+                Cancellation {}
+            }
+            val a = Attachment(d.id, d.relativePath, d.mime, d.byteSize, d.rawWidth, d.rawHeight,
+                d.orientation, d.durationMs, d.thumbnailKey)
+            fun show(id: Long): SilentVideoPreview {
+                val row = Message(id, 2, OrderKey(id, id), MessageDirection.INCOMING, 0,
+                    MessageKind.VIDEO, "", "", null, 1, listOf(a))
+                val prepared = dev.kirill.kandinsky.chat.rendering.PreparedText(row,
+                    dev.kirill.kandinsky.chat.rendering.TextLayoutKey(id, 1, 300, 17, 3))
+                val fragment = dev.kirill.kandinsky.chat.rendering.SceneFragment(prepared, 0,
+                    android.graphics.RectF(36f, 400f, 36f + prepared.width, 400f + prepared.height))
+                scene.apply(dev.kirill.kandinsky.chat.rendering.SceneSnapshot(scene.ticket, listOf(fragment)))
+                val nodes = scene.javaClass.getDeclaredField("nodes").apply { isAccessible = true }.get(scene) as Map<*, *>
+                return checkNotNull((nodes.values.single() as dev.kirill.kandinsky.chat.rendering.MessageNode).video)
+            }
+            fun session(owner: SilentVideoPreview): Any = SilentVideoPreview::class.java
+                .getDeclaredField("session").apply { isAccessible = true }.get(owner)!!
+            lateinit var first: SilentVideoPreview
+            main { first = show(78001) }
+            waitFor("Use an actual rendered video") { first.active }
+            lateinit var native: Any
+            main { native = session(first) }
+            val until = SystemClock.elapsedRealtime() + 4000
+            while (nativePosition(native) < 700 && SystemClock.elapsedRealtime() < until) SystemClock.sleep(20)
+            main { show(78002) }
+            val paused = nativePosition(native)
+            assertTrue("Save a nonzero actual time before eviction", paused >= 650)
+            lateinit var expected: android.graphics.Bitmap
+            main { expected = checkNotNull((first.getChildAt(0) as TextureView).bitmap) }
+            main { show(78003); assertTrue("Third distinct message evicts paused decoder", first.closed) }
+            SystemClock.sleep(200)
+            lateinit var returned: SilentVideoPreview
+            main {
+                returned = show(78001)
+                assertNotSame(first, returned)
+                val frame = scene.preview(78001)
+                assertNotNull("First binding turn shows its saved frame while replacement prepares", frame)
+                try {
+                    val actual = checkNotNull(frame?.bitmap)
+                    val wanted = android.graphics.Bitmap.createScaledBitmap(expected, 32, 18, true)
+                    val shown = android.graphics.Bitmap.createScaledBitmap(actual, 32, 18, true)
+                    var difference = 0L
+                    for (y in 0 until 18) for (x in 0 until 32) {
+                        val left = wanted.getPixel(x, y); val right = shown.getPixel(x, y)
+                        difference += kotlin.math.abs(android.graphics.Color.red(left) - android.graphics.Color.red(right))
+                        difference += kotlin.math.abs(android.graphics.Color.green(left) - android.graphics.Color.green(right))
+                        difference += kotlin.math.abs(android.graphics.Color.blue(left) - android.graphics.Color.blue(right))
+                    }
+                    val mean = difference.toDouble() / (32 * 18 * 3)
+                    println("KANDINSKY_VIDEO_RETURN_FRAME mean=$mean saved=$paused")
+                    assertTrue("Saved decoded scene must replace the initial poster: $mean", mean < 4)
+                    if (wanted !== expected) wanted.recycle()
+                    if (shown !== actual) shown.recycle()
+                } finally { frame?.close(); expected.recycle() }
+            }
+            waitFor("Replacement native output becomes ready") { returned.active }
+            lateinit var next: Any
+            main { next = session(returned) }
+            val resumed = nativePosition(next)
+            assertEquals("Replacement seeks to this message's saved time before presentation",
+                paused.toDouble(), resumed.toDouble(), 150.0)
+        } finally {
+            main { scene.close(); media.close(); activity.finish() }
+            waitFor("Native leases all retire") { MediaAdmission.previewOwnerCount == 0 }
+            h.close()
+        }
+    }
+
     // Проверку запускаем без сохранённого профиля, чтобы она не открыла сеанс на рабочем сервере.
     private fun emptyActivity(): MainActivity {
         val context = i.targetContext
@@ -75,6 +231,21 @@ class VideoSurfaceSoakTest {
         return activity
     }
 
+    private fun nativePosition(native: Any): Long {
+        val worker = native.javaClass.getDeclaredField("worker")
+            .apply { isAccessible = true }.get(native) as android.os.Handler
+        var value = -1L
+        val done = CountDownLatch(1)
+        worker.post {
+            val player = native.javaClass.getDeclaredField("native")
+                .apply { isAccessible = true }.get(native) as android.media.MediaPlayer?
+            value = player?.currentPosition?.toLong() ?: -1L
+            done.countDown()
+        }
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        return value
+    }
+
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
@@ -89,6 +260,81 @@ class VideoSurfaceSoakTest {
             SystemClock.sleep(20)
         }
         throw AssertionError(description)
+    }
+
+    @Test
+    fun scrollAwayAndBackKeepsNativeVideoFrameSessionAndPausedPlayhead() {
+        val activity = emptyActivity()
+        val h = RepositoryHarness.open(File(context.cacheDir, "scroll-continuity-" + UUID.randomUUID()))
+        lateinit var media: MediaStore
+        lateinit var scene: dev.kirill.kandinsky.chat.rendering.RetainedChatScene
+        lateinit var root: FrameLayout
+        main {
+            media = MediaStore(h.store, h.repo)
+            root = FrameLayout(activity)
+            activity.setContentView(root)
+            scene = dev.kirill.kandinsky.chat.rendering.RetainedChatScene()
+            scene.mediaStore = media
+            scene.movingContainer = root
+        }
+        try {
+            val d = awaitResult<AttachmentDraft> { cb ->
+                main { media.stage({ TestFixtures.assets.open("media/video-00.mp4") }, "video/mp4", cb) }
+                Cancellation {}
+            }
+            val a = Attachment(d.id, d.relativePath, d.mime, d.byteSize, d.rawWidth, d.rawHeight,
+                d.orientation, d.durationMs, d.thumbnailKey)
+            val row = Message(77001, 2, OrderKey(1, 77001), MessageDirection.INCOMING, 0,
+                MessageKind.VIDEO, "", "", null, 1, listOf(a))
+            lateinit var prepared: dev.kirill.kandinsky.chat.rendering.PreparedText
+            lateinit var fragment: dev.kirill.kandinsky.chat.rendering.SceneFragment
+            val viewport = android.graphics.RectF(0f, 0f, 1080f, 2000f)
+            fun show(rect: android.graphics.RectF) {
+                scene.viewport = rect
+                scene.imageViewport = rect
+                scene.apply(dev.kirill.kandinsky.chat.rendering.SceneSnapshot(scene.ticket, listOf(fragment)))
+            }
+            lateinit var owner: SilentVideoPreview
+            main {
+                prepared = dev.kirill.kandinsky.chat.rendering.PreparedText(row,
+                    dev.kirill.kandinsky.chat.rendering.TextLayoutKey(77001, 1, 300, 17, 3))
+                fragment = dev.kirill.kandinsky.chat.rendering.SceneFragment(prepared, 0,
+                    android.graphics.RectF(36f, 400f, 36f + prepared.width, 400f + prepared.height))
+                show(viewport)
+                owner = root.getChildAt(0) as SilentVideoPreview
+            }
+            waitFor("Real native preview must render before scrolling") { owner.active }
+            SystemClock.sleep(600)
+            lateinit var native: Any
+            main {
+                native = SilentVideoPreview::class.java.getDeclaredField("session")
+                    .apply { isAccessible = true }.get(owner)!!
+                show(android.graphics.RectF(viewport).apply { offset(0f, 5000f) })
+                assertFalse("Leaving autoplay visibility must pause, not destroy, retained video", owner.closed)
+                assertSame(native, SilentVideoPreview::class.java.getDeclaredField("session")
+                    .apply { isAccessible = true }.get(owner))
+            }
+            val paused = nativePosition(native)
+            SystemClock.sleep(500)
+            assertEquals("Paused native playhead remains still", paused.toDouble(), nativePosition(native).toDouble(), 80.0)
+            val before = owner.frameCallbacks
+            SystemClock.sleep(500)
+            main {
+                assertEquals("Paused preview must stop rendering new decoded frames", before, owner.frameCallbacks)
+                show(viewport)
+                val nodes = scene.javaClass.getDeclaredField("nodes").apply { isAccessible = true }.get(scene) as Map<*, *>
+                val node = nodes.values.single() as dev.kirill.kandinsky.chat.rendering.MessageNode
+                assertSame("First return reuses the exact output", owner, node.video)
+                assertSame(native, SilentVideoPreview::class.java.getDeclaredField("session")
+                    .apply { isAccessible = true }.get(owner))
+                assertTrue("No tiny while owned output is ready", owner.active)
+            }
+            waitFor("The same output resumes decoded video frames") { owner.frameCallbacks > before + 1 }
+        } finally {
+            main { scene.close(); media.close(); activity.finish() }
+            waitFor("All actual native preview owners retire") { MediaAdmission.previewOwnerCount == 0 }
+            h.close()
+        }
     }
 
     @Test

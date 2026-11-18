@@ -38,8 +38,8 @@ class MessageNode(var fragment: SceneFragment) {
     val albumVideos = linkedMapOf<String, SilentVideoPreview>()
     internal val progressViews = linkedMapOf<String, StudioProgressView>()
 
-    fun retireAlbumVideos() {
-        albumVideos.values.forEach { it.close() }
+    fun retireAlbumVideos(keepingPlayers: Boolean = false) {
+        albumVideos.values.forEach { if (keepingPlayers) it.setVisible(false) else it.close() }
         albumVideos.clear()
     }
 
@@ -116,6 +116,7 @@ class MessageNode(var fragment: SceneFragment) {
 class RetainedChatScene {
     private val nodes = linkedMapOf<FragmentID, MessageNode>()
     private val imagePrefetch = MediaImagePrefetch()
+    private val videoPreviews = SilentVideoPreviewPool()
     var ticket = 1
         private set
 
@@ -125,6 +126,7 @@ class RetainedChatScene {
             field = value
             if (!value) {
                 imagePrefetch.clear()
+                videoPreviews.clear()
                 nodes.values.forEach {
                     it.video?.close()
                     it.video = null
@@ -141,6 +143,7 @@ class RetainedChatScene {
         set(value) {
             field = value
             if (!value) {
+                videoPreviews.clear()
                 nodes.values.forEach {
                     it.video?.close()
                     it.video = null
@@ -242,6 +245,7 @@ class RetainedChatScene {
     // У новой сцены свой номер. По нему отсеиваем результаты подготовки от уже закрытой сцены.
     fun advanceGeneration() {
         imagePrefetch.clear()
+        videoPreviews.clear()
         main()
         ticket++
         nodes.values.forEach {
@@ -330,12 +334,36 @@ class RetainedChatScene {
                 .map { it.id }
                 .toSet()
         val wanted = fragments.map { it.id }.toSet()
+        val videoKeys = fragments.filter {
+            it.id in animated && it.prepared.message.kind in listOf(MessageKind.VIDEO, MessageKind.ROUND)
+        }.mapNotNull { f -> f.prepared.message.attachments.firstOrNull()?.let {
+            VideoPlaybackKey(f.prepared.message.id, it)
+        } }.toMutableList()
+        var hasAlbumVideo = false
+        val currentMedia = mediaStore
+        if (mediaVisible && movingMediaVisible && MediaAdmission.previewsAllowed && currentMedia != null) {
+            for (f in fragments.filter { it.part == 0 }) {
+                val prepared = f.prepared
+                if (prepared.mediaItemRects.size <= 1 && prepared.generationCard?.isBatch != true) continue
+                prepared.message.attachments.forEachIndexed { index, a ->
+                    if (!a.mime.startsWith("video/") || index !in prepared.mediaItemRects.indices) return@forEachIndexed
+                    if (prepared.generationCard?.isBatch != true && !currentMedia.isStudioVideo(a)) return@forEachIndexed
+                    val frame = RectF(prepared.mediaItemRects[index]).apply { offset(f.frame.left, f.frame.top) }
+                    val shown = RectF(frame)
+                    if (shown.intersect(viewport) && shown.height() >= minOf(frame.height(), viewport.height()) * .5f) {
+                        videoKeys += VideoPlaybackKey(prepared.message.id, a)
+                        hasAlbumVideo = true
+                    }
+                }
+            }
+        }
+        videoPreviews.beginFrame(videoKeys, if (hasAlbumVideo) 4 else 2)
         nodes.keys
             .filter { it !in wanted }
             .forEach {
                 nodes.remove(it)?.let { node ->
-                    node.video?.close()
-                    node.retireAlbumVideos()
+                    node.video?.setVisible(false)
+                    node.retireAlbumVideos(keepingPlayers = true)
                     node.retireProgress()
                     node.retireImages()
                     node.native.discardDisplayList()
@@ -388,6 +416,7 @@ class RetainedChatScene {
                     media != null &&
                     a != null
             ) {
+                node.retireAlbumVideos(keepingPlayers = true)
                 node.retireExtraImages()
                 val slot =
                     node.image
@@ -410,6 +439,9 @@ class RetainedChatScene {
                     localOnly = preparing,
                 )
                 imagePrefetch.preview(a, media)?.let { node.image?.seed(it) }
+                val playbackKey = VideoPlaybackKey(fragment.prepared.message.id, a)
+                if (fragment.prepared.message.kind in listOf(MessageKind.VIDEO, MessageKind.ROUND))
+                    media.videoPlayback.frame(playbackKey)?.let { slot.seedPlaybackFrame(it) }
                 val container = movingContainer
                 if (
                     fragment.id in animated &&
@@ -417,18 +449,16 @@ class RetainedChatScene {
                         fragment.prepared.message.kind in
                             listOf(MessageKind.VIDEO, MessageKind.ROUND)
                 ) {
-                    if (node.video?.closed == true) node.video = null
-                    val video =
-                        node.video
-                            ?: SilentVideoPreview(container.context, media) {
+                    val key = VideoPlaybackKey(fragment.prepared.message.id, a)
+                    val video = videoPreviews.preview(key) {
+                        SilentVideoPreview(container.context, media) {
                                     updateClockMetrics()
                                     onFrameChanged?.invoke()
                                 }
-                                .also {
-                                    node.video = it
-                                    container.addView(it)
-                                }
-                    video.bind(
+                    }
+                    node.video = video
+                    if (video != null && video.parent == null) container.addView(video)
+                    video?.bind(
                         a,
                         RectF(rect).apply { offset(fragment.frame.left, fragment.frame.top) },
                         fragment.prepared.message.kind == MessageKind.ROUND,
@@ -436,15 +466,16 @@ class RetainedChatScene {
                         fragment.prepared.mediaBottomSquare,
                         node.overlay,
                         fragment.prepared,
+                        playbackKey = key,
                     )
                 } else {
-                    node.video?.close()
+                    node.video?.setVisible(false)
                     node.video = null
                 }
             } else {
-                node.video?.close()
+                node.video?.setVisible(false)
                 node.video = null
-                node.retireAlbumVideos()
+                node.retireAlbumVideos(keepingPlayers = true)
                 node.retireImages()
             }
             bindProgress(fragment, node)
@@ -502,7 +533,7 @@ class RetainedChatScene {
         media: MediaStore,
         preparing: Boolean,
     ) {
-        node.video?.close()
+        node.video?.setVisible(false)
         node.video = null
         val wanted = mutableSetOf<Int>()
         val playing = mutableSetOf<String>()
@@ -558,6 +589,8 @@ class RetainedChatScene {
             )
             imagePrefetch.preview(attachment, media)?.let { slot.seed(it) }
             if (kind == MessageKind.VIDEO) {
+                val playbackKey = VideoPlaybackKey(fragment.prepared.message.id, attachment)
+                media.videoPlayback.frame(playbackKey)?.let { slot.seedPlaybackFrame(it) }
                 val visible = RectF(rect)
                 if (
                     studioVideo &&
@@ -568,17 +601,16 @@ class RetainedChatScene {
                         visible.height() >= minOf(rect.height(), viewport.height()) * .5f
                 ) {
                     playing += attachment.id
-                    if (node.albumVideos[attachment.id]?.closed == true)
-                        node.albumVideos.remove(attachment.id)
-                    val video =
-                        node.albumVideos.getOrPut(attachment.id) {
+                    val key = VideoPlaybackKey(fragment.prepared.message.id, attachment)
+                    val video = videoPreviews.preview(key) {
                             SilentVideoPreview(container.context, media) {
                                     updateClockMetrics()
                                     onFrameChanged?.invoke()
                                 }
                                 .also { container.addView(it) }
-                        }
-                    video.bind(
+                    }
+                    if (video != null) node.albumVideos[attachment.id] = video
+                    video?.bind(
                         attachment,
                         rect,
                         false,
@@ -587,6 +619,7 @@ class RetainedChatScene {
                         node.overlay,
                         fragment.prepared,
                         studioAlbum = true,
+                        playbackKey = key,
                     )
                 } else if (!preparing) slot.prepareOriginalVideo(attachment)
             }
@@ -594,7 +627,7 @@ class RetainedChatScene {
         node.albumVideos.keys
             .toList()
             .filter { it !in playing }
-            .forEach { node.albumVideos.remove(it)?.close() }
+            .forEach { node.albumVideos.remove(it)?.setVisible(false) }
         if (0 !in wanted) {
             node.image?.close()
             node.image = null
@@ -721,8 +754,8 @@ class RetainedChatScene {
     private fun updateClockMetrics() {
         metrics.activeFrameClocks =
             nodes.values.sumOf { node ->
-                (if (node.video?.active == true) 1 else 0) +
-                    node.albumVideos.values.count { it.active }
+                (if (node.video?.isPlaying == true) 1 else 0) +
+                    node.albumVideos.values.count { it.isPlaying }
             }
     }
 

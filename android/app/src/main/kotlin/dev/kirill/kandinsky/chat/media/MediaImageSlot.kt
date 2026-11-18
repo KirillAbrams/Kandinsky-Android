@@ -392,6 +392,13 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
 
     fun preview(): PreparedImage? = displayed?.retained()
 
+    fun seedPlaybackFrame(image: PreparedImage) {
+        val token = binding
+        if (token == null) { image.close(); return }
+        mailbox.offer(token, 5L, image)
+        mailbox.flush()
+    }
+
     fun seed(image: PreparedImage) {
         val token = binding
         if (token == null) {
