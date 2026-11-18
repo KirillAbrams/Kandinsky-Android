@@ -118,15 +118,16 @@ internal class SyncAttachments(private val sync: NetworkSync) {
         draft: AttachmentDraft,
         file: File,
         transfer: dev.kirill.kandinsky.chat.media.MediaCancellation,
+        chat: Long,
     ): Pair<String, String?> {
         val id = draft.id.lowercase()
         val blob =
             sync.api
-                .upload(file, draft.mime, id, studioSource = true, transfer = transfer)
+                .upload(file, draft.mime, id, studioSource = true, transfer = transfer, chat = chat)
                 .getString("blobId")
         val preview =
             if (draft.mime.startsWith("image/") && !transfer.isCancelled)
-                NetworkPreview.upload(sync.store.root, draft, sync.api)
+                NetworkPreview.upload(sync.store.root, draft, sync.api, parent = blob)
             else null
         return blob to preview
     }

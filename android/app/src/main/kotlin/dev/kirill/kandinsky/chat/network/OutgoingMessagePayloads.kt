@@ -85,9 +85,9 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
             command.generationOptions != null &&
                 (attachment.mime.startsWith("image/") || attachment.mime == "video/mp4")
         val result =
-            sync.api.upload(file, attachment.mime, attachment.id.lowercase(), studioSource = source)
-        return result.getString("blobId") to
-            NetworkPreview.upload(sync.store.root, attachment, sync.api)
+            sync.api.upload(file, attachment.mime, attachment.id.lowercase(), studioSource = source, chat = command.chatID)
+        val blob = result.getString("blobId")
+        return blob to NetworkPreview.upload(sync.store.root, attachment, sync.api, parent = blob)
     }
 
     private fun attachmentPayload(

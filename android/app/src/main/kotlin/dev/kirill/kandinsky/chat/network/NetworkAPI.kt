@@ -19,12 +19,19 @@ import org.json.JSONObject
 class NetworkFailure(val status: Int, val code: String) :
     IOException("Network request failed ($status, $code)")
 
-class NetworkAPI(
+class NetworkAPI private constructor(
     private val profile: NetworkProfile?,
-    private val onRequestFinished: (() -> Unit)? = null,
+    private val onRequestFinished: (() -> Unit)?,
+    private val configuredClient: OkHttpClient?,
 ) {
+    constructor(profile: NetworkProfile?, onRequestFinished: (() -> Unit)? = null) :
+        this(profile, onRequestFinished, null)
+
+    internal constructor(profile: NetworkProfile?, client: OkHttpClient) :
+        this(profile, null, client)
+
     private val client by lazy {
-        OkHttpClient.Builder()
+        configuredClient ?: OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
@@ -89,7 +96,9 @@ class NetworkAPI(
     fun json(path: String, value: JSONObject? = null, method: String? = null): JSONObject {
         val builder = request(path)
         val body = value?.toString()?.toRequestBody("application/json".toMediaType())
-        if (method != null) builder.method(method, body) else if (body != null) builder.post(body)
+        // OkHttp требует тело даже у POST, который передаёт только номер в адресе.
+        val requestBody = if (method == "POST" && body == null) ByteArray(0).toRequestBody() else body
+        if (method != null) builder.method(method, requestBody) else if (body != null) builder.post(body)
         return executeJSON(builder.build())
     }
 
@@ -133,6 +142,8 @@ class NetworkAPI(
         id: String,
         studioSource: Boolean = false,
         transfer: MediaCancellation? = null,
+        chat: Long? = null,
+        parent: String? = null,
     ): JSONObject {
         initialize()
         val size = file.length()
@@ -148,6 +159,8 @@ class NetworkAPI(
         }
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         val request = request("/v1/uploads/$id").header("x-content-sha256", hash)
+        chat?.let { request.header("x-kandinsky-chat", it.toString()) }
+        parent?.let { request.header("x-kandinsky-parent", it) }
         if (studioSource) {
             request.header("x-kandinsky-source", "1")
             profile?.let { request.header("x-kandinsky-device", it.deviceID) }

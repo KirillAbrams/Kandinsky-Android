@@ -139,7 +139,8 @@ class NetworkSync(
         draft: AttachmentDraft,
         file: File,
         transfer: dev.kirill.kandinsky.chat.media.MediaCancellation,
-    ): Pair<String, String?> = attachments.uploadStudioSource(draft, file, transfer)
+        chat: Long,
+    ): Pair<String, String?> = attachments.uploadStudioSource(draft, file, transfer, chat)
 
     fun studioModels(completion: (Result<List<StudioModel>>) -> Unit) =
         modelCatalog.studioModels(completion)

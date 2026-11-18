@@ -193,13 +193,33 @@ internal class ChatAttachmentCoordinator(
     private fun selectRecent(upload: StudioUpload) {
         val network = runtime.network ?: return
         if (!canPick || !isActive()) return
-        val suffix = if (upload.isVideo) ".mp4" else ".jpg"
-        val temporary = File(activity.cacheDir, "kandinsky-" + java.util.UUID.randomUUID() + suffix)
         val download = MediaCancellation()
         pendingImport = download
         refresh()
+        prepareDraft { prepared ->
+            if (pendingImport !== download || download.isCancelled || !isActive()) return@prepareDraft
+            if (prepared.isSuccess) downloadRecent(network, upload, download)
+            else {
+                pendingImport = null
+                refresh()
+                showError("Не удалось подготовить чат")
+            }
+        }
+    }
+
+    private fun downloadRecent(network: NetworkSync, upload: StudioUpload, download: MediaCancellation) {
+        val chat = state.chatID ?: run {
+            pendingImport = null
+            refresh()
+            return
+        }
+        val suffix = if (upload.isVideo) ".mp4" else ".jpg"
+        val temporary = File(activity.cacheDir, "kandinsky-" + java.util.UUID.randomUUID() + suffix)
         thread(name = "KandinskyRecentUpload") {
             val result = runCatching {
+                network.api.json(
+                    "/v1/kandinsky/threads/$chat/sources/${upload.blobId}", method = "POST"
+                )
                 network.api.download(upload.blobId, temporary, upload.byteSize, download)
             }
             activity.runOnUiThread {
@@ -303,9 +323,13 @@ internal class ChatAttachmentCoordinator(
         }
         refresh()
         fun transmit() {
+            val chat = state.chatID ?: run {
+                finishUpload(transfer, file, kept = false)
+                return
+            }
             thread(name = "KandinskyStudioUpload") {
                 val result = runCatching {
-                    network.uploadStudioSource(file, media.fileURL(file.relativePath), transfer)
+                    network.uploadStudioSource(file, media.fileURL(file.relativePath), transfer, chat)
                 }
                 activity.runOnUiThread {
                     if (activeTransfer !== transfer || !isActive()) {
@@ -322,7 +346,10 @@ internal class ChatAttachmentCoordinator(
             }
         }
         if (!isPhoto) {
-            transmit()
+            prepareDraft { prepared ->
+                if (prepared.isSuccess && activeTransfer === transfer && isActive()) transmit()
+                else finishUpload(transfer, file, kept = false)
+            }
             return
         }
         replacePhoto(file)
