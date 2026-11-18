@@ -533,7 +533,6 @@ class RetainedChatScene {
                 kind = kind,
                 showControls = !studioVideo,
                 studioPhotoDelivery = deliveringPhoto,
-                studioPhotoMaxPixel = cellPixelLimit,
                 showLoadingControl = kind != MessageKind.PHOTO,
                 localOnly = preparing,
             )

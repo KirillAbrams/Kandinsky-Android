@@ -28,6 +28,7 @@ class MediaStore(
     private val mediaDecodeQueue = MediaDecodeQueue()
     private val videoPrefetchQueue = MediaDecodeQueue(1)
     private val imageMemoryBudget = ImageByteBudget()
+    private val pixelDecodeLock = Any()
     private val thumbnailCache =
         ThumbnailCache(
             imageMemoryBudget,
@@ -231,11 +232,7 @@ class MediaStore(
         )
             return null
         val edge = maxOf(attachment.rawWidth, attachment.rawHeight)
-        val limit =
-            minOf(
-                if (maximumThumbnailPixel < 1024) maximumThumbnailPixel else 1280,
-                maxPixel ?: 1280,
-            )
+        val limit = minOf(1280, maxPixel ?: 1280)
         return ThumbnailKey(if (edge > 0) minOf(edge, limit) else limit, studioOriginal = true)
     }
 
@@ -247,7 +244,8 @@ class MediaStore(
         val original = key.studioOriginal || key.maxPixel > 1024
         val size =
             minOf(
-                if (original) if (maximumThumbnailPixel < 1024) 1024 else 2048
+                if (key.studioOriginal) 1280
+                else if (original) if (maximumThumbnailPixel < 1024) 1024 else 2048
                 else maximumThumbnailPixel,
                 key.maxPixel,
             )
@@ -272,7 +270,8 @@ class MediaStore(
         val original = key.studioOriginal || key.maxPixel > 1024
         val size =
             minOf(
-                if (original) if (maximumThumbnailPixel < 1024) 1024 else 2048
+                if (key.studioOriginal) 1280
+                else if (original) if (maximumThumbnailPixel < 1024) 1024 else 2048
                 else maximumThumbnailPixel,
                 key.maxPixel,
             )
@@ -310,9 +309,7 @@ class MediaStore(
                 )
             else size
         val reserve = size * height * 8 + 4096
-        val charge =
-            if (thumbnailCache.makeRoom(reserve)) imageMemoryBudget.reserve(reserve) else null
-        if (charge == null) {
+        if (!thumbnailCache.makeRoom(reserve)) {
             mainHandler.post {
                 token.finish()
                 completion(ticket, Result.failure(MediaException(MediaError.UNAVAILABLE)))
@@ -347,12 +344,23 @@ class MediaStore(
                                     resolved.second,
                                 )
                             else resolved.first
-                        val image =
-                            decode(normal, if (video) "image/jpeg" else resolved.second, size)
-                        charge.shrink(image.allocationByteCount)
-                        ImagePixels(image, charge)
+                        // Ожидающие загрузки не удерживают память будущих изображений.
+                        synchronized(pixelDecodeLock) {
+                            if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
+                            val charge =
+                                imageMemoryBudget.reserve(reserve)
+                                    ?: throw MediaException(MediaError.UNAVAILABLE)
+                            try {
+                                val image =
+                                    decode(normal, if (video) "image/jpeg" else resolved.second, size)
+                                charge.shrink(image.allocationByteCount)
+                                ImagePixels(image, charge)
+                            } catch (error: Throwable) {
+                                charge.close()
+                                throw error
+                            }
+                        }
                     } catch (t: Throwable) {
-                        charge.close()
                         throw map(t)
                     }
                 },
@@ -360,7 +368,6 @@ class MediaStore(
             ) { result ->
                 if (closed) {
                     result.getOrNull()?.closeOwner()
-                    charge.close()
                     completion(ticket, Result.failure(MediaException(MediaError.CANCELLED)))
                 } else
                     result.fold(
@@ -383,7 +390,6 @@ class MediaStore(
                             }
                         },
                         {
-                            charge.close()
                             token.finish()
                             completion(ticket, Result.failure(map(it)))
                         },

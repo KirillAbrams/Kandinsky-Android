@@ -41,8 +41,8 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode =
-            providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(9).get()
-        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.8").get()
+            providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(10).get()
+        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.9").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     val standFixtures = rootProject.layout.projectDirectory.dir("../fixtures")

@@ -21,6 +21,63 @@ import org.junit.Test
 
 class MediaStoreTest {
     @Test
+    fun corruptOriginalReleasesItsDecodeMemory() {
+        checkRejectedOriginal(pressureDuringFetch = false)
+    }
+
+    @Test
+    fun memoryWarningDuringFetchRejectsAnOversizedDecodeWithoutAllocatingPixels() {
+        checkRejectedOriginal(pressureDuringFetch = true)
+    }
+
+    private fun checkRejectedOriginal(pressureDuringFetch: Boolean) {
+        val h = RepositoryHarness.open(File(context.cacheDir, "rejected-original-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val file = File(h.root, "original.jpg")
+        if (pressureDuringFetch) {
+            TestFixtures.assets.open("media/" + photoName()).use { source ->
+                file.outputStream().use { source.copyTo(it) }
+            }
+        } else file.writeText("Invalid image data")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(if (pressureDuringFetch) 1 else 0)
+        val finished = CountDownLatch(1)
+        var failure: Throwable? = null
+        val edge = if (pressureDuringFetch) 2048 else 1024
+        val photo = Attachment(
+            "rejected", "remote/rejected.jpg", "image/jpeg", file.length(),
+            edge, edge, 1, null, "rejected",
+        )
+        try {
+            main {
+                media.remoteFile = { _, _, _ ->
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    file to "image/jpeg"
+                }
+                media.thumbnail(photo, ThumbnailKey(edge, studioOriginal = !pressureDuringFetch), 1) { _, result ->
+                    failure = result.exceptionOrNull()
+                    result.getOrNull()?.close()
+                    finished.countDown()
+                }
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            if (pressureDuringFetch) main { media.trimMemory() }
+            release.countDown()
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                if (pressureDuringFetch) MediaError.UNAVAILABLE else MediaError.CORRUPT,
+                (failure as? MediaException)?.reason,
+            )
+            main { assertEquals(0, media.bytesUsed) }
+        } finally {
+            release.countDown()
+            main { media.close() }
+            h.close()
+        }
+    }
+
+    @Test
     fun studioPhotoKeepsTheSameIndicatorUntilPixelsArePresented() {
         val h =
             RepositoryHarness.open(File(context.cacheDir, "studio-delivery-" + UUID.randomUUID()))
@@ -136,17 +193,23 @@ class MediaStoreTest {
             RepositoryHarness.open(File(context.cacheDir, "album-navigation-" + UUID.randomUUID()))
         val media = MediaStore(h.store, h.repo, studioOriginals = true)
         val original = File(h.root, "album.png")
-        val pixels = Bitmap.createBitmap(1024, 1024, Bitmap.Config.ARGB_8888)
+        val source = TestFixtures.assets.open("media/" + photoName()).use {
+            checkNotNull(BitmapFactory.decodeStream(it))
+        }
+        val pixels = Bitmap.createScaledBitmap(source, 1024, 1024, true)
         try {
             original.outputStream().use {
                 assertTrue(pixels.compress(Bitmap.CompressFormat.PNG, 100, it))
             }
         } finally {
             pixels.recycle()
+            if (source !== pixels) source.recycle()
         }
         val gate = CountDownLatch(1)
         val old = RetainedChatScene()
         val next = RetainedChatScene()
+        val reopened = RetainedChatScene()
+        val afterPressure = RetainedChatScene()
         fun snapshot(scene: RetainedChatScene, id: Long, prefix: String): SceneSnapshot {
             val photos =
                 (0 until 4).map { index ->
@@ -209,6 +272,7 @@ class MediaStoreTest {
         }
         val oldReady = CountDownLatch(1)
         val nextReady = CountDownLatch(1)
+        val pressureReady = CountDownLatch(1)
         fun ready(scene: RetainedChatScene, id: Long) = (0 until 4).map { scene.imageReady(id, it) }
         try {
             main {
@@ -237,13 +301,65 @@ class MediaStoreTest {
             )
             main {
                 assertTrue(next.loadActions().isEmpty())
+                fun assertOriginalDetail(scene: RetainedChatScene, id: Long) {
+                    repeat(4) { index ->
+                        val frame = checkNotNull(scene.preview(id, index))
+                        try {
+                            assertEquals(
+                                "Album photo $index must retain original detail",
+                                1024,
+                                frame.bitmap?.width,
+                            )
+                            assertEquals(1024, frame.bitmap?.height)
+                        } finally {
+                            frame.close()
+                        }
+                    }
+                }
+                assertOriginalDetail(old, 1)
+                assertOriginalDetail(next, 2)
+                next.apply(snapshot(next, 2, "new"))
+                assertOriginalDetail(next, 2)
+                reopened.mediaStore = media
+                reopened.viewport = android.graphics.RectF(0f, 0f, 390f, 650f)
+                reopened.apply(snapshot(reopened, 2, "new"))
+                assertTrue(ready(reopened, 2).all { it })
+                assertOriginalDetail(reopened, 2)
                 assertTrue(media.peakBytesUsed <= 48 * 1024 * 1024)
+                old.close()
+                next.close()
+                reopened.close()
+                media.trimMemory()
+                afterPressure.mediaStore = media
+                afterPressure.viewport = android.graphics.RectF(0f, 0f, 390f, 650f)
+                afterPressure.onImageReady = {
+                    if (ready(afterPressure, 2).all { it }) pressureReady.countDown()
+                }
+                afterPressure.apply(snapshot(afterPressure, 2, "new"))
+            }
+            assertTrue(
+                "Four originals reload after memory cleanup",
+                pressureReady.await(5, TimeUnit.SECONDS),
+            )
+            main {
+                repeat(4) { index ->
+                    val frame = checkNotNull(afterPressure.preview(2, index))
+                    try {
+                        assertEquals(1024, frame.bitmap?.width)
+                        assertEquals(1024, frame.bitmap?.height)
+                    } finally {
+                        frame.close()
+                    }
+                }
+                assertTrue(media.bytesUsed <= 24 * 1024 * 1024)
             }
         } finally {
             gate.countDown()
             main {
                 old.close()
                 next.close()
+                reopened.close()
+                afterPressure.close()
                 media.close()
             }
             h.close()
@@ -657,6 +773,8 @@ class MediaStoreTest {
         val displayed = CountDownLatch(1)
         lateinit var timeline: MediaImageSlot
         lateinit var gallery: MediaImageSlot
+        lateinit var restored: MediaImageSlot
+        val restoredReady = CountDownLatch(1)
         val cell = android.graphics.RectF(0f, 0f, 350f, 210f)
         main {
             media.remoteFile = { _, small, _ ->
@@ -668,6 +786,9 @@ class MediaStoreTest {
                     if (timeline.ready && !timeline.loading) displayed.countDown()
                 }
             gallery = MediaImageSlot(media) {}
+            restored = MediaImageSlot(media) {
+                if (restored.ready && !restored.loading) restoredReady.countDown()
+            }
             timeline.bind(
                 photo,
                 cell,
@@ -695,11 +816,27 @@ class MediaStoreTest {
                 } finally {
                     first.close()
                 }
+                gallery.close()
+                timeline.close()
+                media.trimMemory()
+                restored.bind(photo, cell, maxPixel = 512, kind = MessageKind.PHOTO)
+            }
+            assertTrue(restoredReady.await(5, TimeUnit.SECONDS))
+            main {
+                val frame = checkNotNull(restored.preview())
+                try {
+                    assertEquals(1280, frame.bitmap?.width)
+                    assertEquals(768, frame.bitmap?.height)
+                    assertTrue(media.bytesUsed <= 24 * 1024 * 1024)
+                } finally {
+                    frame.close()
+                }
             }
         } finally {
             main {
                 gallery.close()
                 timeline.close()
+                restored.close()
                 media.close()
             }
             h.close()

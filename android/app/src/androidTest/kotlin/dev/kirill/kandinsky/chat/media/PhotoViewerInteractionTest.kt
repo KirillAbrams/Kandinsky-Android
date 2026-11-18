@@ -7,8 +7,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inspector.WindowInspector
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
-import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.*
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.results.MediaGalleryController
@@ -21,6 +19,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoViewerInteractionTest {
+    // Одного окна недостаточно: сохранённый аккаунт ещё открывается и может заменить его содержимое.
+    private fun awaitApplicationContent(device: UiDevice) {
+        val deadline = SystemClock.uptimeMillis() + 30_000
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (
+                device.hasObject(By.res("composer.input")) ||
+                    device.hasObject(By.res("account.username"))
+            ) return
+            SystemClock.sleep(50)
+        }
+        fail("The native conversation or account screen must finish opening before the viewer test")
+    }
+
     @Test
     fun pagingLargeOriginalsReleasesInactiveResolutionBeforeTheNextDecode() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -37,7 +48,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "gallery-large-" + UUID.randomUUID()))
         lateinit var media: MediaStore
         val pages = mutableListOf<PhotoViewerController>()
@@ -193,7 +204,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h =
             RepositoryHarness.open(File(context.cacheDir, "gallery-cancel-" + UUID.randomUUID()))
         val admission = MediaAdmission()
@@ -417,7 +428,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "gallery-pages-" + UUID.randomUUID()))
         val admission = MediaAdmission()
         lateinit var media: MediaStore
@@ -631,7 +642,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "photo-cutout-" + UUID.randomUUID()))
         lateinit var media: MediaStore
         var viewer: PhotoViewerController? = null
@@ -740,7 +751,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "photo-caption-" + UUID.randomUUID()))
         val admission = MediaAdmission()
         lateinit var media: MediaStore
@@ -836,10 +847,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(
-            "Окно приложения открылось",
-            device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 30000),
-        )
+        awaitApplicationContent(device)
         val h =
             RepositoryHarness.open(File(context.cacheDir, "studio-autoplay-" + UUID.randomUUID()))
         val admission = MediaAdmission()
@@ -908,19 +916,15 @@ class PhotoViewerInteractionTest {
                     }
                 viewer!!.onDeleteResult = { _, _ -> fail("Closing a video must never delete it") }
                 viewer!!.show()
-                assertEquals(3, controls().size)
-                assertTrue(
-                    "Transport is hidden before the first frame",
-                    controls().all { it.visibility == View.GONE },
-                )
+                assertTrue("Transport controls are absent before the first frame", controls().isEmpty())
             }
             waitFor("Video starts without a tap") {
                 player.isPlaying && player.positionMs > 0 && surface.hasVideoFrame
             }
             i.runOnMainSync {
                 assertTrue(
-                    "Transport stays hidden after playback starts",
-                    controls().all { it.visibility == View.GONE },
+                    "Transport controls remain absent after playback starts",
+                    controls().isEmpty(),
                 )
                 assertEquals(1, player.peakNativePlayers)
                 assertEquals(second.id, player.currentTarget?.attachment?.id)
@@ -994,7 +998,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "video-route-" + UUID.randomUUID()))
         val admission = MediaAdmission()
         lateinit var media: MediaStore
@@ -1091,7 +1095,7 @@ class PhotoViewerInteractionTest {
     }
 
     @Test
-    fun fullScreenGifDisplaysChangingOriginalFramesAndRetiresOnDismissal() {
+    fun gifReferenceDisplaysItsStaticOriginalWithoutAMovingDecoder() {
         val i = InstrumentationRegistry.getInstrumentation()
         val context = i.targetContext
         val device = UiDevice.getInstance(i)
@@ -1105,7 +1109,7 @@ class PhotoViewerInteractionTest {
                     )
                 }
             ) as android.app.Activity
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        awaitApplicationContent(device)
         val h = RepositoryHarness.open(File(context.cacheDir, "gif-viewer-" + UUID.randomUUID()))
         lateinit var media: MediaStore
         var viewer: PhotoViewerController? = null
@@ -1151,9 +1155,14 @@ class PhotoViewerInteractionTest {
                 viewer = PhotoViewerController(activity, a, media)
                 viewer!!.show()
             }
-            awaitState("The fullscreen GIF must own one bounded moving output") {
-                MediaAdmission.previewOwnerCount == 1
+            awaitState("The GIF reference must finish decoding its static original") {
+                media.cachedThumbnail(a, ThumbnailKey(maxPixel = 2048))?.let { frame ->
+                    frame.close()
+                    true
+                } == true
             }
+            i.waitForIdleSync()
+            SystemClock.sleep(100)
             assertTrue(device.wait(Until.gone(By.res("media.cancel")), 5000))
             val hashes = mutableSetOf<Int>()
             val end = SystemClock.uptimeMillis() + 2000
@@ -1161,21 +1170,20 @@ class PhotoViewerInteractionTest {
                 val b = checkNotNull(i.uiAutomation.takeScreenshot())
                 val values = IntArray(80 * 80)
                 val x = b.width / 2 - 40
-                val y = b.height / 2 - 200
+                val y = b.height / 2 - 40
                 b.getPixels(values, 0, 80, x, y, 80, 80)
+                assertTrue("The original must contain actual visible pixels", values.toSet().size > 16)
                 hashes += values.contentHashCode()
                 b.recycle()
                 SystemClock.sleep(60)
             }
-            assertTrue(
-                "A GIF viewer must display changing source pixels, not the first static frame",
-                hashes.size >= 3,
-            )
+            assertEquals("A reference image stays static in the photo viewer", 1, hashes.size)
+            i.runOnMainSync { assertEquals(0, MediaAdmission.previewOwnerCount) }
             i.runOnMainSync {
                 media.trimMemory()
                 viewer!!.close()
             }
-            awaitState("Dismissal after a memory warning must retire the native GIF reservation") {
+            awaitState("A static reference must leave no moving decoder after dismissal") {
                 MediaAdmission.previewOwnerCount == 0
             }
             i.runOnMainSync {
@@ -1199,25 +1207,21 @@ class PhotoViewerInteractionTest {
         val device = UiDevice.getInstance(i)
         device.wakeUp()
         Configurator.getInstance().waitForIdleTimeout = 0
-        context.startActivity(
-            context.packageManager.getLaunchIntentForPackage(context.packageName)!!.apply {
-                addFlags(
-                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
-                )
-            }
-        )
-        assertTrue(device.wait(Until.hasObject(By.pkg(i.targetContext.packageName)), 15000))
+        val activity =
+            i.startActivitySync(
+                context.packageManager.getLaunchIntentForPackage(context.packageName)!!.apply {
+                    addFlags(
+                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                            android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    )
+                }
+            ) as android.app.Activity
+        awaitApplicationContent(device)
         val h =
             RepositoryHarness.open(File(context.cacheDir, "photo-interaction-" + UUID.randomUUID()))
-        lateinit var activity: android.app.Activity
         lateinit var media: MediaStore
         var viewer: PhotoViewerController? = null
         i.runOnMainSync {
-            activity =
-                ActivityLifecycleMonitorRegistry.getInstance()
-                    .getActivitiesInStage(Stage.RESUMED)
-                    .first()
             media = MediaStore(h.store, h.repo)
             activity.setContentView(
                 android.widget.FrameLayout(activity).apply { setBackgroundColor(Color.BLACK) }
