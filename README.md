@@ -96,9 +96,9 @@
 | Вернуться из полного просмотра загруженного видео | [Закрыть просмотр](android/app/src/main/res/drawable-nodpi/kandinsky_upload_close.png) |
 | Отметить закреплённый чат | [Скрепка](android/app/src/main/res/drawable/heroicons_paper_clip.xml) |
 
+Сборки для установки и прошлые версии доступны на [странице выпусков Андроида](https://github.com/KirillAbrams/Kandinsky-Android/releases).
+
 ## Связанные части проекта
 
 - [Сервер Кандинского](https://github.com/KirillAbrams/Kandinsky-Backend)
 - [Приложение для айфона](https://github.com/KirillAbrams/Kandinsky-iOS)
-
-Общий снимок исходников проекта [057b0f7](https://github.com/KirillAbrams/Kandinsky/commit/057b0f78beed79a138f764d084b9ce29b8699ccd)
