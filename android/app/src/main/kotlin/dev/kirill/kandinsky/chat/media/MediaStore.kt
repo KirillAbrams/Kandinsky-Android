@@ -26,9 +26,12 @@ class MediaStore(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val tinyPreviewQueue = MediaDecodeQueue(1)
     private val mediaDecodeQueue = MediaDecodeQueue()
-    private val videoPrefetchQueue = MediaDecodeQueue(1)
+    private val videoPreparation = MediaVideoPreparation()
     private val imageMemoryBudget = ImageByteBudget()
+    private val tinyPreviewCache = ThumbnailCache(imageMemoryBudget, entryLimit = 64)
     private val imageWorkQueue = MediaImageWorkQueue()
+    private val thumbnailRequests = MediaThumbnailRequests()
+        .also { it.onRemoteActivity = videoPreparation::setPaused }
     private val thumbnailCache =
         ThumbnailCache(
             imageMemoryBudget,
@@ -267,6 +270,21 @@ class MediaStore(
         progress: (Double) -> Unit = {},
         completion: (Int, Result<PreparedImage>) -> Unit,
     ): Cancellation {
+        if (!studioOriginals) return loadThumbnail(attachment, key, ticket, localOnly, priority,
+            progress, { true }, completion)
+        val identity = attachment.relativePath + "@${key.maxPixel}:${key.studioOriginal}:$localOnly"
+        return thumbnailRequests.submit(identity, priority, progress,
+            start = { priority, willDownload, progress, done ->
+                loadThumbnail(attachment, key, ticket, localOnly, priority, progress,
+                    willDownload) { _, result -> done(result) }
+            }, completion = { completion(ticket, it) })
+    }
+
+    private fun loadThumbnail(
+        attachment: Attachment, key: ThumbnailKey, ticket: Int, localOnly: Boolean,
+        priority: Int, progress: (Double) -> Unit, willDownload: () -> Boolean,
+        completion: (Int, Result<PreparedImage>) -> Unit,
+    ): Cancellation {
         checkMainThread()
         val token = MediaCancellation()
         val original = key.studioOriginal || key.maxPixel > 1024
@@ -323,7 +341,7 @@ class MediaStore(
                 fetch = fetch,
                 local = {
                     if (cachedFile != null) cachedFile(attachment, !original, fetch)
-                    else if (localOnly || remote == null) {
+                    else if (localOnly || remote == null || priority <= 0) {
                         if (file.isFile) file to attachment.mime else null
                     } else null
                 },
@@ -331,9 +349,11 @@ class MediaStore(
                     if (localOnly) throw MediaException(MediaError.UNAVAILABLE)
                     remote?.invoke(attachment, !original, fetch) ?: (file to attachment.mime)
                 },
+                willDownload = willDownload,
                 admit = {
                     if (closed || fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
-                    if (!thumbnailCache.makeRoom(reserve)) throw MediaException(MediaError.UNAVAILABLE)
+                    if (!thumbnailCache.makeRoom(reserve) && !tinyPreviewCache.makeRoom(reserve))
+                        throw MediaException(MediaError.UNAVAILABLE)
                     imageMemoryBudget.reserve(reserve) ?: throw MediaException(MediaError.UNAVAILABLE)
                 },
                 decode = { resolved, charge ->
@@ -388,15 +408,39 @@ class MediaStore(
 
     // Не ждёт загрузки оригинала, поэтому даёт первый рисунок до появления более подробного
     // изображения.
+    private fun tinyPreviewKey(attachment: Attachment): String? {
+        val text = dev.kirill.kandinsky.chat.storage.MediaPreviewStorage.tiny(attachment.tinyPreview)
+            ?: return null
+        return attachment.relativePath + "@tiny:" + text
+    }
+
+    // Готовое размытие появляется при привязке ячейки, без очереди декодирования.
+    fun cachedTinyPreview(attachment: Attachment): PreparedImage? {
+        checkMainThread()
+        if (closed || !studioOriginals) return null
+        return tinyPreviewKey(attachment)?.let { tinyPreviewCache.frame(it) }
+    }
+
     fun tinyPreview(
         attachment: Attachment,
         completion: (Result<PreparedImage>) -> Unit,
     ): Cancellation {
+        cachedTinyPreview(attachment)?.let { frame ->
+            val token = MediaCancellation()
+            token.onCancel { frame.close() }
+            mainHandler.post {
+                if (token.finish()) completion(Result.success(frame))
+                else { frame.close(); completion(Result.failure(MediaException(MediaError.CANCELLED))) }
+            }
+            return token
+        }
         val text =
             dev.kirill.kandinsky.chat.storage.MediaPreviewStorage.tiny(attachment.tinyPreview)
+        val key = tinyPreviewKey(attachment)
         val reserve = 64 * 64 * 8 + 4096
         val charge =
-            if (!closed && text != null && thumbnailCache.makeRoom(reserve))
+            if (!closed && text != null && key != null &&
+                (tinyPreviewCache.makeRoom(reserve) || thumbnailCache.makeRoom(reserve)))
                 imageMemoryBudget.reserve(reserve)
             else null
         if (charge == null) {
@@ -414,7 +458,7 @@ class MediaStore(
                         BitmapFactory.decodeByteArray(data, 0, data.size)
                             ?: throw MediaException(MediaError.CORRUPT)
                     charge.shrink(bitmap.allocationByteCount)
-                    ImagePixels(bitmap, charge)
+                    ImagePixels(bitmap, charge, isTinyPreview = true)
                 } catch (t: Throwable) {
                     charge.close()
                     throw t
@@ -424,8 +468,17 @@ class MediaStore(
         ) { result ->
             result.fold(
                 { pixels ->
-                    val frame = pixels.frame()
-                    pixels.closeOwner()
+                    if (closed) {
+                        pixels.closeOwner()
+                        completion(Result.failure(MediaException(MediaError.CANCELLED)))
+                        return@fold
+                    }
+                    val frame = if (studioOriginals) {
+                        tinyPreviewCache.insert(pixels, checkNotNull(key))
+                        tinyPreviewCache.frame(key)
+                    } else {
+                        pixels.frame().also { pixels.closeOwner() }
+                    }
                     if (frame != null) completion(Result.success(frame))
                     else completion(Result.failure(MediaException(MediaError.CANCELLED)))
                 },
@@ -468,26 +521,17 @@ class MediaStore(
                 recovering ||
                 !attachment.relativePath.startsWith("remote/") ||
                 attachment.mime != "video/mp4" ||
-                attachment.byteSize !in 1L..(15L * 1024 * 1024)
+                attachment.byteSize !in 1L..(64L * 1024 * 1024)
         )
             return null
-        val resolve = remoteFile ?: return null
-        val transfer = MediaCancellation()
-        val fetch = MediaCancellation()
-        val work =
-            videoPrefetchQueue.submit(
-                work = {
-                    resolve(attachment, false, fetch)
-                    Unit
-                },
-                dispose = {},
-                completion = { transfer.finish() },
-            )
-        transfer.onCancel {
-            fetch.cancel()
-            work.cancel()
+        val playback = remotePlayback ?: return null
+        return videoPreparation.acquire(attachment.relativePath) { fetch ->
+            playback(attachment, fetch).use { source ->
+                fetch.onCancel { source.close() }
+                if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
+                source.prepareForPlayback(fetch)
+            }
         }
-        return transfer
     }
 
     // Отмена прекращает ожидающее чтение, а готовые изображения соседних сообщений не очищаются
@@ -537,7 +581,11 @@ class MediaStore(
 
     fun releaseIdleImages() {
         checkMainThread()
-        if (navigating) thumbnailCache.retainNavigationImages() else thumbnailCache.clear()
+        if (navigating) thumbnailCache.retainNavigationImages()
+        else {
+            thumbnailCache.clear()
+            tinyPreviewCache.clear()
+        }
     }
 
     fun registerInvalidation(action: () -> Unit): UUID {
@@ -553,10 +601,12 @@ class MediaStore(
     }
 
     fun trimMemory() {
+        videoPreparation.clear()
         checkMainThread()
         maximumThumbnailPixel = 512
         invalidationHandlers.values.toList().forEach { it() }
         thumbnailCache.clear()
+        tinyPreviewCache.clear()
         imageMemoryBudget.limit = 24 * 1024 * 1024
     }
 
@@ -568,9 +618,11 @@ class MediaStore(
         invalidationHandlers.clear()
         mediaDecodeQueue.close()
         imageWorkQueue.close()
+        thumbnailRequests.clear()
         tinyPreviewQueue.close()
-        videoPrefetchQueue.close()
+        videoPreparation.close()
         thumbnailCache.clear()
+        tinyPreviewCache.clear()
         previewThread?.quitSafely()
         previewThread = null
     }

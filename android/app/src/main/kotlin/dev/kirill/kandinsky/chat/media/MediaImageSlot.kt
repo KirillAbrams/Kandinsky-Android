@@ -32,7 +32,7 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     private var studioPhotoDelivery = false
     private var studioPhotoMaxPixel: Int? = null
     val awaitingStudioPhoto
-        get() = studioPhotoDelivery && !ready && !failed
+        get() = studioPhotoDelivery && (!ready || displayed?.isTinyPreview == true) && !failed
 
     private val controlPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val density = android.content.res.Resources.getSystem().displayMetrics.density
@@ -128,11 +128,17 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
             mailbox.flush()
             return
         }
-        if (!preserve && !studioPhotoDelivery && attachment.tinyPreview != null)
-            tinyRequest =
-                store.tinyPreview(attachment) { result ->
+        if (!preserve) {
+            val tiny = store.cachedTinyPreview(attachment)
+            if (tiny != null) {
+                mailbox.offer(token, 2, tiny)
+                mailbox.flush()
+            } else if (attachment.tinyPreview != null) {
+                tinyRequest = store.tinyPreview(attachment) { result ->
                     result.onSuccess { mailbox.offer(token, 2, it) }
                 }
+            }
+        }
         record()
         request =
             store.thumbnail(
@@ -394,7 +400,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         }
         val bitmap = image.bitmap
         val serial =
-            if (bitmap != null && maxOf(bitmap.width, bitmap.height) >= pixelLimit) 4L else 2L
+            if (!image.isTinyPreview && bitmap != null &&
+                maxOf(bitmap.width, bitmap.height) >= pixelLimit) 4L else 2L
         mailbox.offer(token, serial, image)
         mailbox.flush()
     }

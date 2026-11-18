@@ -9,6 +9,13 @@ class MediaPlaybackSource(
     private val onClose: () -> Unit = {},
 ) : AutoCloseable {
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun prepareForPlayback(token: MediaCancellation) {
+        val cache = ranges ?: return
+        val chunk = MediaRangeCache.CHUNK_SIZE.toLong()
+        for (offset in listOf(0L, chunk, (cache.length - 1) / chunk * chunk).distinct()) {
+            if (offset < cache.length) cache.read(offset, 1, token)
+        }
+    }
     val dataSource: MediaDataSource? =
         ranges?.let { cache ->
             object : MediaDataSource() {

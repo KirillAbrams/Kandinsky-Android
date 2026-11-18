@@ -52,8 +52,7 @@ class ChatScrollHost(context: Context) : ViewGroup(context) {
 
     internal var pendingAnchor: ReadingAnchor? = null
     internal var offset = 0.0
-    internal var lastPreparedOffset: Double? = null
-    internal var preparingOlder = true
+    internal val mediaPreparation = MediaPreparationWindow()
     internal val d = resources.displayMetrics.density
     internal var layoutWidth = 0
     internal var layoutFontSize = desiredFontSize()

@@ -68,7 +68,9 @@ internal fun ChatScrollHost.restoreCachedRowHeights(anchor: ReadingAnchor): Bool
 // Учитывает верхнюю и нижнюю панели, чтобы содержимое не смещалось из выбранной точки.
 internal fun ChatScrollHost.setGeometry(anchor: ReadingAnchor) {
     index.configureInsets(overlayTop + 8 * d, overlayBottom + 8 * d)
+    val previousOffset = offset
     offset = resolved(anchor)
+    mediaPreparation.rebase(offset - previousOffset)
     invalidate()
 }
 

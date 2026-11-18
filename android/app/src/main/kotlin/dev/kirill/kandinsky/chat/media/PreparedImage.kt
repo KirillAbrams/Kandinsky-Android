@@ -55,7 +55,11 @@ class ImageByteCharge(private val budget: ImageByteBudget, private var amount: I
     }
 }
 
-internal class ImagePixels(bitmap: Bitmap, private val charge: ImageByteCharge) {
+internal class ImagePixels(
+    bitmap: Bitmap,
+    private val charge: ImageByteCharge,
+    val isTinyPreview: Boolean = false,
+) {
     private val gate = Any()
     private var value: Bitmap? = bitmap
     private var references = 1
@@ -106,6 +110,8 @@ internal class ImagePixels(bitmap: Bitmap, private val charge: ImageByteCharge) 
 class PreparedImage internal constructor(private var pixels: ImagePixels?) : AutoCloseable {
     private val gate = Any()
     val orientation = 1
+    val isTinyPreview: Boolean
+        get() = synchronized(gate) { pixels?.isTinyPreview == true }
     @Volatile
     var closeCount = 0
         private set

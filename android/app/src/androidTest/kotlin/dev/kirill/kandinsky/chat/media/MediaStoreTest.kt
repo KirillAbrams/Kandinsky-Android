@@ -21,6 +21,372 @@ import org.junit.Test
 
 class MediaStoreTest {
     @Test
+    fun leavingStudioOutsideNavigationReleasesCachedBlurPixels() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "background-blur-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val asset = attachment(draft).copy(tinyPreview = draft.tinyPreview)
+        try {
+            val frame = awaitResult<PreparedImage> { callback ->
+                main { media.tinyPreview(asset, callback) }
+                Cancellation {}
+            }
+            main {
+                frame.close()
+                assertTrue(media.bytesUsed > 0)
+                media.releaseIdleImages()
+                assertEquals("Background must release blurred pixels too", 0, media.bytesUsed)
+                assertNull(media.cachedTinyPreview(asset))
+            }
+        } finally {
+            main { media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun videoPreparationChangesNearestRowWithoutDroppingPreparedPosters() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "video-nearest-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val photo = media.fileURL(draft.relativePath)
+        val a = attachment(draft).copy(id = "near-a", mime = "video/mp4", byteSize = 1024,
+            durationMs = 1000, relativePath = "remote/" + "a".repeat(32) + ".mp4")
+        val b = a.copy(id = "near-b", relativePath = "remote/" + "b".repeat(32) + ".mp4")
+        main { media.remoteFile = { _, _, _ -> photo to "image/jpeg" } }
+        for (asset in listOf(a, b)) {
+            awaitResult<PreparedImage> { callback ->
+                main { media.thumbnail(asset, ThumbnailKey(1024), 0) { _, result -> callback(result) } }
+                Cancellation {}
+            }.close()
+        }
+        val entered = CountDownLatch(1)
+        val changed = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val prefetch = MediaImagePrefetch()
+        try {
+            main {
+                media.remotePlayback = { asset, _ ->
+                    val first = asset.id == a.id
+                    if (!first) changed.countDown()
+                    val cache = MediaRangeCache(h.store.root, (if (first) "a" else "b").repeat(32),
+                        1024, File(h.store.root, "media/${asset.relativePath}")) { _, _, token ->
+                        if (first) {
+                            entered.countDown()
+                            token.onCancel { release.countDown() }
+                            release.await(3, TimeUnit.SECONDS)
+                            throw MediaException(MediaError.CANCELLED)
+                        }
+                        ByteArray(1024) { 7 }
+                    }
+                    MediaPlaybackSource(ranges = cache)
+                }
+                prefetch.update(listOf(a, b), media)
+            }
+            assertTrue(entered.await(1, TimeUnit.SECONDS))
+            main { prefetch.update(listOf(b, a), media) }
+            assertTrue("Changed nearest video must replace previous preparation",
+                changed.await(1, TimeUnit.SECONDS))
+            main { for (asset in listOf(a, b)) {
+                val frame = prefetch.preview(asset, media)
+                assertNotNull(frame)
+                frame?.close()
+            } }
+        } finally {
+            release.countDown()
+            main { prefetch.clear(); media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun videoPreparationWarmsBoundedStartAndTailForTheNextPlayer() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "video-warm-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val bytes = ByteArray(2 * 1024 * 1024 + 17) { (it % 251).toByte() }
+        val blob = "a".repeat(32)
+        val asset = Attachment("range-warm", "remote/$blob.mp4", "video/mp4", bytes.size.toLong(),
+            640, 480, 1, 8000L, blob)
+        val fetched = Collections.synchronizedList(mutableListOf<Pair<Long, Long>>())
+        val warmed = CountDownLatch(3)
+        var request: Cancellation? = null
+        try {
+            main {
+                media.remotePlayback = { _, _ ->
+                    val cache = MediaRangeCache(h.store.root, blob, bytes.size.toLong(),
+                        File(h.store.root, "media/${asset.relativePath}")) { start, end, _ ->
+                        fetched.add(start to end)
+                        warmed.countDown()
+                        bytes.copyOfRange(start.toInt(), end.toInt() + 1)
+                    }
+                    MediaPlaybackSource(ranges = cache)
+                }
+                request = media.prepareStudioVideo(asset)
+                assertNotNull("Video preparation must use ranged provider", request)
+            }
+            assertTrue(warmed.await(2, TimeUnit.SECONDS))
+            assertEquals(listOf(0L, 1L, 8L), fetched.map { it.first / MediaRangeCache.CHUNK_SIZE })
+            assertTrue(fetched.sumOf { it.second - it.first + 1 } <= 3 * 256 * 1024)
+            Thread.sleep(50)
+            val cache = MediaRangeCache(h.store.root, blob, bytes.size.toLong(),
+                File(h.store.root, "media/${asset.relativePath}")) { _, _, _ ->
+                fail("The next player must reuse prepared parts")
+                byteArrayOf()
+            }
+            assertArrayEquals(bytes.copyOfRange(0, 10), cache.read(0, 10, MediaCancellation()))
+            assertArrayEquals(bytes.takeLast(10).toByteArray(),
+                cache.read(bytes.size - 10L, 10, MediaCancellation()))
+            cache.close()
+        } finally {
+            main { request?.cancel(); media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun foregroundPhotoPreemptsOtherPrefetch() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "prefetch-priority-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val original = media.fileURL(draft.relativePath)
+        val a = attachment(draft).copy(id = "a", relativePath = "remote/prefetch-a.jpg")
+        val b = a.copy(id = "b", relativePath = "remote/visible-b.jpg")
+        val started = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val foreground = CountDownLatch(1)
+        val cancelledAt = java.util.concurrent.atomic.AtomicLong()
+        val visibleAt = java.util.concurrent.atomic.AtomicLong()
+        var background: Cancellation? = null
+        try {
+            main {
+                media.remoteFile = { attachment, _, token ->
+                    if (attachment.id == "a") {
+                        started.countDown()
+                        token.onCancel {
+                            cancelledAt.compareAndSet(0, System.nanoTime())
+                            stopped.countDown(); release.countDown()
+                        }
+                        check(release.await(4, TimeUnit.SECONDS) && !token.isCancelled)
+                    } else visibleAt.set(System.nanoTime())
+                    original to "image/jpeg"
+                }
+                background = media.thumbnail(a, ThumbnailKey(512), 0, priority = 0) { _, result ->
+                    result.getOrNull()?.close()
+                }
+            }
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            main {
+                media.thumbnail(b, ThumbnailKey(512), 0) { _, result ->
+                    result.getOrNull()?.let { it.close(); foreground.countDown() }
+                }
+            }
+            assertTrue("Foreground transfer must preempt other prefetch", stopped.await(1, TimeUnit.SECONDS))
+            assertTrue(foreground.await(1, TimeUnit.SECONDS))
+            val delay = (visibleAt.get() - cancelledAt.get()) / 1_000_000.0
+            println("KANDINSKY_PREFETCH_FOREGROUND_ADMISSION milliseconds=$delay")
+            assertTrue(delay >= 0 && delay < 150)
+        } finally {
+            release.countDown()
+            main { background?.cancel(); media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun visiblePhotoJoinsPrefetchWithoutAnotherDownloadOrDecode() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "prefetch-share-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val original = media.fileURL(draft.relativePath)
+        val asset = attachment(draft).copy(id = "shared", relativePath = "remote/shared.jpg")
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val done = CountDownLatch(2)
+        val calls = AtomicInteger()
+        val frames = mutableListOf<PreparedImage>()
+        try {
+            main {
+                media.remoteFile = { _, _, token ->
+                    calls.incrementAndGet()
+                    started.countDown()
+                    token.onCancel { release.countDown() }
+                    check(release.await(4, TimeUnit.SECONDS))
+                    original to "image/jpeg"
+                }
+                media.thumbnail(asset, ThumbnailKey(512), 0, priority = 0) { _, result ->
+                    result.getOrNull()?.let { frames.add(it) }; done.countDown()
+                }
+            }
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            main {
+                media.thumbnail(asset, ThumbnailKey(512), 0) { _, result ->
+                    result.getOrNull()?.let { frames.add(it) }; done.countDown()
+                }
+            }
+            release.countDown()
+            assertTrue(done.await(2, TimeUnit.SECONDS))
+            main {
+                assertEquals("Visibility must promote existing work", 1, calls.get())
+                assertEquals(2, frames.size)
+                assertSame(frames[0].bitmap, frames[1].bitmap)
+            }
+        } finally {
+            release.countDown()
+            main { frames.forEach { it.close() }; media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun preparedStudioBlurDoesNotFinishDeliveryBeforeOriginalPixels() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "studio-blur-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val value = attachment(draft).copy(
+            relativePath = "remote/studio-blur.jpg", tinyPreview = checkNotNull(draft.tinyPreview),
+        )
+        val tiny = awaitResult<PreparedImage> { callback ->
+            main { media.tinyPreview(value, callback) }
+            Cancellation {}
+        }
+        val release = CountDownLatch(1)
+        val original = media.fileURL(draft.relativePath)
+        var slot: MediaImageSlot? = null
+        try {
+            main {
+                tiny.close()
+                media.remoteFile = { _, _, token ->
+                    token.onCancel { release.countDown() }
+                    check(release.await(5, TimeUnit.SECONDS))
+                    original to "image/jpeg"
+                }
+                val image = MediaImageSlot(media) {}
+                slot = image
+                image.bind(value, android.graphics.RectF(0f, 0f, 300f, 200f),
+                    kind = MessageKind.PHOTO, studioPhotoDelivery = true)
+                val first = image.preview()
+                try {
+                    assertNotNull("Generated photo must show own prepared blur before original", first)
+                    assertTrue("Blur is not original delivery completion", image.awaitingStudioPhoto)
+                } finally { first?.close() }
+            }
+            release.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            var waiting = true
+            while (waiting && System.nanoTime() < deadline) {
+                main { waiting = checkNotNull(slot).awaitingStudioPhoto }
+                Thread.sleep(10)
+            }
+            main {
+                assertFalse(checkNotNull(slot).awaitingStudioPhoto)
+                val full = checkNotNull(checkNotNull(slot).preview())
+                try { assertTrue(checkNotNull(full.bitmap).width > 64) }
+                finally { full.close() }
+            }
+        } finally {
+            release.countDown()
+            main { slot?.close(); media.close() }
+            h.close()
+        }
+    }
+    @Test
+    fun studioTinyCacheHas64EntriesAndReleasesOwnersOnWarningAndClose() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "tiny-bound-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        var last: Attachment? = null
+        var one = 0
+        try {
+            for (index in 0 until 80) {
+                val value = attachment(draft).copy(
+                    id = "tiny-$index", relativePath = "remote/tiny-$index.jpg",
+                    tinyPreview = checkNotNull(draft.tinyPreview),
+                )
+                val frame = awaitResult<PreparedImage> { callback ->
+                    main { media.tinyPreview(value, callback) }
+                    Cancellation {}
+                }
+                main {
+                    one = checkNotNull(frame.bitmap).allocationByteCount
+                    frame.close()
+                    assertTrue(media.bytesUsed <= 64 * one)
+                }
+                last = value
+            }
+            main {
+                val value = checkNotNull(last)
+                assertNull(media.cachedTinyPreview(value.copy(tinyPreview = "AA==")))
+                val held = checkNotNull(media.cachedTinyPreview(value))
+                media.trimMemory()
+                assertNull(media.cachedTinyPreview(value))
+                assertEquals(one, media.bytesUsed)
+                held.close()
+                assertEquals(0, media.bytesUsed)
+                media.close()
+                assertNull(media.cachedTinyPreview(value))
+            }
+        } finally { main { media.close() }; h.close() }
+    }
+    @Test
+    fun warmBlurredPreviewIsPresentDuringFirstBindWithTinyDecoderBlocked() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "first-blur-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = stage(media)
+        val value = attachment(draft).copy(
+            relativePath = "remote/fast-scroll-preview.jpg",
+            tinyPreview = checkNotNull(draft.tinyPreview),
+        )
+        val first = awaitResult<PreparedImage> { callback ->
+            main { media.tinyPreview(value, callback) }
+            Cancellation {}
+        }
+        val expected = checkNotNull(first.bitmap)
+        main { first.close() }
+        val queue = MediaStore::class.java.getDeclaredField("tinyPreviewQueue").let {
+            it.isAccessible = true
+            it.get(media) as MediaDecodeQueue
+        }
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val network = CountDownLatch(1)
+        val original = media.fileURL(draft.relativePath)
+        try {
+            main {
+                queue.submit(work = {
+                    started.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    0
+                }, dispose = {}, completion = {})
+                media.remoteFile = { _, _, token ->
+                    token.onCancel { network.countDown() }
+                    check(network.await(5, TimeUnit.SECONDS))
+                    original to "image/jpeg"
+                }
+            }
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            for (kind in listOf(MessageKind.PHOTO, MessageKind.VIDEO)) main {
+                val slot = MediaImageSlot(media) {}
+                slot.bind(value, android.graphics.RectF(0f, 0f, 300f, 200f),
+                    kind = kind, showControls = false)
+                val shown = slot.preview()
+                try {
+                    assertNotNull("Own prepared blur must be visible before any queue turn", shown)
+                    if (shown != null) {
+                        val pixels = checkNotNull(shown.bitmap)
+                        assertSame(expected, pixels)
+                        assertTrue(maxOf(pixels.width, pixels.height) <= 64)
+                    }
+                } finally { shown?.close(); slot.close() }
+            }
+        } finally {
+            release.countDown()
+            network.countDown()
+            main { media.close() }
+            h.close()
+        }
+    }
+    @Test
     fun visibleAlbumDoesNotFailBehindPreparedNeighbors() {
         val h = RepositoryHarness.open(File(context.cacheDir, "neighbors-" + UUID.randomUUID()))
         val media = MediaStore(h.store, h.repo, studioOriginals = true)

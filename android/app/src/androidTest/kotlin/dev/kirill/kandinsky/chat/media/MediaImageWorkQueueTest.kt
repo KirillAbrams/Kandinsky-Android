@@ -14,6 +14,43 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaImageWorkQueueTest {
+    @Test
+    fun lastSubscriberCancellationStopsSharedWorkBeforeMainQueueRuns() {
+        val retired = CountDownLatch(3)
+        main {
+            val requests = MediaThumbnailRequests()
+            val inner = MediaCancellation()
+            var starts = 0
+            val start: ThumbnailStart = { _, _, _, _ ->
+                starts++
+                if (starts == 1) inner else MediaCancellation()
+            }
+            val complete: (Result<PreparedImage>) -> Unit = { result ->
+                result.getOrNull()?.close()
+                retired.countDown()
+            }
+            val a = requests.submit("shared", 0, {}, start, complete)
+            val b = requests.submit("shared", 1, {}, start, complete)
+            val finished = CountDownLatch(1)
+            var afterFirst = true
+            var afterLast = false
+            Thread {
+                a.cancel(); afterFirst = inner.isCancelled
+                b.cancel(); afterLast = inner.isCancelled
+                finished.countDown()
+            }.start()
+            try {
+                assertTrue(finished.await(1, TimeUnit.SECONDS))
+                assertFalse("Other owner still needs the transfer", afterFirst)
+                assertTrue("Cancellation must not wait behind queued pixels", afterLast)
+                val replacement = requests.submit("shared", 1, {}, start, complete)
+                assertEquals("A new subscriber must not join cancelled work", 2, starts)
+                replacement.cancel()
+            } finally { requests.clear() }
+        }
+        assertTrue(retired.await(1, TimeUnit.SECONDS))
+    }
+
     private enum class Phase { LOOKUP, DOWNLOAD, DECODE }
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)

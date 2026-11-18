@@ -264,6 +264,8 @@ class RetainedChatScene {
         val fragments = snapshot.fragments.take(128)
         val imageView = imageViewport
         val preparation = imagePreparationViewport
+        val towardOlder = imageView != null && preparation != null &&
+            imageView.top - preparation.top >= preparation.bottom - imageView.bottom
         val prefetched =
             if (mediaVisible && imageView != null && preparation != null)
                 fragments
@@ -281,10 +283,14 @@ class RetainedChatScene {
                             RectF.intersects(preparation, rect) &&
                                 !RectF.intersects(imageView, rect)
                         )
-                            fragment.id to kotlin.math.abs(rect.centerY() - imageView.centerY())
+                            Triple(fragment.id,
+                                if (towardOlder) rect.centerY() < imageView.centerY()
+                                else rect.centerY() > imageView.centerY(),
+                                kotlin.math.abs(rect.centerY() - imageView.centerY()))
                         else null
                     }
-                    .sortedBy { it.second }
+                    .sortedWith(compareByDescending<Triple<FragmentID, Boolean, Float>> { it.second }
+                        .thenBy { it.third })
                     .take(3)
                     .map { it.first }
                     .toSet()
@@ -445,6 +451,7 @@ class RetainedChatScene {
         }
         mediaStore?.let { media ->
             val attachments = fragments.filter { it.id in prefetched }
+                .sortedBy { prefetched.indexOf(it.id) }
                 .flatMap { it.prepared.message.attachments }
             imagePrefetch.update(attachments, media)
         }

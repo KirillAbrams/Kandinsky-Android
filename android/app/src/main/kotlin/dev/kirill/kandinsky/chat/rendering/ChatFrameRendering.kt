@@ -78,12 +78,10 @@ internal fun ChatScrollHost.renderVisibleRows() {
     if (width <= 0 || height <= 0 || closed) return
     val renderToken = MetricsRuntime.recorder.begin()
     if (MetricsRuntime.enabled) android.os.Trace.beginSection("Kandinsky.Scene")
-    lastPreparedOffset?.let { if (offset != it) preparingOlder = offset < it }
-    lastPreparedOffset = offset
-    val leading = minOf(600.0 * d, height * 0.9)
-    val trailing = minOf(320.0 * d, height * 0.4)
-    val before = if (preparingOlder) leading else trailing
-    val after = if (preparingOlder) trailing else leading
+    mediaPreparation.observe(offset, android.os.SystemClock.uptimeMillis() / 1000.0,
+        height.toDouble(), d.toDouble())
+    val before = minOf(mediaPreparation.before, height * 3.0)
+    val after = minOf(mediaPreparation.after, height * 3.0)
     val current = index.visible(max(0.0, offset), height.toDouble(), overscan = 0)
     val runwayTop = max(0.0, offset - before)
     val runway = index.visible(runwayTop, offset + height + after - runwayTop, overscan = 0)

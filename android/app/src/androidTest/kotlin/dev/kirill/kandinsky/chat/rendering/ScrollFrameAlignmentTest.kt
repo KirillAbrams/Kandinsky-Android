@@ -141,6 +141,17 @@ class ScrollFrameAlignmentTest {
                     )
                 }
             }
+            i.runOnMainSync {
+                val scroller = field("scroller").get(chat) as OverScroller
+                scroller.abortAnimation()
+                chat.renderVisibleRows()
+                SystemClock.sleep(20)
+                chat.offset -= chat.height * 3.0
+                chat.renderVisibleRows()
+                val area = checkNotNull(chat.scene.imagePreparationViewport)
+                assertTrue("Fast media lead must exceed two viewports", area.top <= -chat.height * 2f)
+                assertTrue(area.bottom >= chat.height)
+            }
         } finally {
             i.runOnMainSync {
                 host?.close()

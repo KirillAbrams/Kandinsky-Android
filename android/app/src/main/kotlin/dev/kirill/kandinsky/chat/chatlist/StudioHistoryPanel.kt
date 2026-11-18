@@ -76,6 +76,11 @@ class StudioHistoryPanel(
     private val search = EditText(context)
     private val archiveTile = label(15f)
     private val history = ListView(context)
+    private val scrollingHeader = LinearLayout(context).apply { orientation = VERTICAL }
+    private val scrollingFooter = LinearLayout(context).apply { orientation = VERTICAL }
+    private var headerControls = emptyList<View>()
+    private var footerControls = emptyList<View>()
+    private var compact = false
     private val adapter =
         object : BaseAdapter() {
             override fun getCount() = items.size
@@ -251,7 +256,7 @@ class StudioHistoryPanel(
         history.divider = null
         history.isVerticalScrollBarEnabled = false
         history.setOnItemClickListener { _, _, position, _ ->
-            when (val item = items.getOrNull(position)) {
+            when (val item = items.getOrNull(position - history.headerViewsCount)) {
                 is Item.Thread -> select(item.value)
                 is Item.Footer -> if (item.canLoad) loadPage()
                 else -> Unit
@@ -320,6 +325,44 @@ class StudioHistoryPanel(
                 }
             }
         addView(exit, LayoutParams(-1, dp(44)))
+        val listIndex = indexOfChild(history)
+        headerControls = (0 until listIndex).map(::getChildAt)
+        footerControls = (listIndex + 1 until childCount).map(::getChildAt)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val availableHeight = MeasureSpec.getSize(heightMeasureSpec) - paddingTop - paddingBottom
+        val needsCompactLayout = MeasureSpec.getMode(heightMeasureSpec) != MeasureSpec.UNSPECIFIED &&
+            availableHeight < dp(480)
+        if (needsCompactLayout != compact) {
+            compact = needsCompactLayout
+            if (compact) {
+                for (view in headerControls) {
+                    removeView(view)
+                    scrollingHeader.addView(view)
+                }
+                for (view in footerControls) {
+                    removeView(view)
+                    scrollingFooter.addView(view)
+                }
+                // На низком экране кнопки прокручиваются вместе с историей; строки остаются в ListView.
+                history.addHeaderView(scrollingHeader, null, false)
+                history.addFooterView(scrollingFooter, null, false)
+            } else {
+                history.removeHeaderView(scrollingHeader)
+                history.removeFooterView(scrollingFooter)
+                for ((index, view) in headerControls.withIndex()) {
+                    scrollingHeader.removeView(view)
+                    addView(view, index)
+                }
+                for (view in footerControls) {
+                    scrollingFooter.removeView(view)
+                    addView(view)
+                }
+            }
+            history.setSelection(0)
+        }
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()

@@ -24,6 +24,7 @@ internal class MediaImageWorkQueue {
         remote: (MediaCancellation) -> Pair<File, String>,
         admit: () -> ImageByteCharge,
         decode: (Pair<File, String>, ImageByteCharge) -> ImagePixels,
+        willDownload: () -> Boolean = { true },
         completion: (Result<ImagePixels>) -> Unit,
     ): Cancellation {
         check(Looper.myLooper() == Looper.getMainLooper())
@@ -83,6 +84,10 @@ internal class MediaImageWorkQueue {
                 { source ->
                     if (source != null) prepare(source)
                     else {
+                        if (!willDownload()) {
+                            finish(Result.failure(MediaException(MediaError.CANCELLED)))
+                            return@fold
+                        }
                         val download = downloads.submit(
                             priority = priority,
                             work = { remote(fetch) },

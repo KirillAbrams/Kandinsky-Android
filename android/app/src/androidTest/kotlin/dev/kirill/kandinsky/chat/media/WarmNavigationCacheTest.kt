@@ -7,6 +7,13 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import dev.kirill.kandinsky.chat.app.MainActivity
 import dev.kirill.kandinsky.chat.conversation.ConversationChrome
+import dev.kirill.kandinsky.chat.chatlist.StudioHistoryPanel
+import dev.kirill.kandinsky.chat.network.NetworkAPI
+import dev.kirill.kandinsky.chat.network.NetworkProfile
+import dev.kirill.kandinsky.chat.network.NetworkSchema
+import dev.kirill.kandinsky.chat.network.NetworkStore
+import dev.kirill.kandinsky.chat.network.NetworkSync
+import dev.kirill.kandinsky.chat.network.StudioThread
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.rendering.*
 import dev.kirill.kandinsky.chat.support.*
@@ -19,6 +26,122 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WarmNavigationCacheTest {
+    @Test
+    fun shortHistoryPanelKeepsCachedChatsReachableAndSelectsTheExactRow() {
+        val activity = emptyActivity()
+        val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "short-library-" + UUID.randomUUID()))
+        val api = NetworkAPI(null).also { it.initialize(); it.close() }
+        val network = NetworkSync(NetworkProfile(1, "fixture", "QA", "", 0), h.store, h.repo, api)
+        val cache = NetworkStore(h.repo, 1)
+        val page = org.json.JSONObject().put("chats", org.json.JSONArray()
+            .put(StudioThread(7, "Первый", 0, 0, false, false, 7000, false).wire())
+            .put(StudioThread(9, "Второй", 0, 0, false, false, 9000, false).wire()))
+        awaitResult<Unit> { callback ->
+            h.store.submit({ db -> NetworkSchema.install(db); cache.mergeChats(db, page, true); Unit }, callback)
+        }
+        lateinit var panel: StudioHistoryPanel
+        lateinit var history: android.widget.ListView
+        val selected = mutableListOf<Long>()
+        var unrelated = 0
+        try {
+            main {
+                panel = StudioHistoryPanel(activity, network, null, { unrelated++ }, { selected.add(it) },
+                    { unrelated++ }, { unrelated++ }, { unrelated++ }, { unrelated++ })
+                val root = android.widget.FrameLayout(activity)
+                root.addView(panel, android.widget.FrameLayout.LayoutParams(
+                    (304 * activity.resources.displayMetrics.density).toInt(),
+                    (640 * activity.resources.displayMetrics.density).toInt()))
+                activity.setContentView(root)
+                history = StudioHistoryPanel::class.java.getDeclaredField("history")
+                    .apply { isAccessible = true }.get(panel) as android.widget.ListView
+            }
+            val deadline = SystemClock.uptimeMillis() + 3000
+            var loaded = false
+            while (!loaded && SystemClock.uptimeMillis() < deadline) {
+                main { loaded = (0 until history.count).map { history.adapter.getItemId(it) }
+                    .containsAll(listOf(7L, 9L)) }
+                if (!loaded) SystemClock.sleep(10)
+            }
+            assertTrue("Use only the two cached fixture chats with a closed API", loaded)
+            for (height in listOf(640, 320, 180, 640)) {
+                main {
+                    panel.layoutParams.height = (height * activity.resources.displayMetrics.density).toInt()
+                    panel.requestLayout()
+                }
+                i.waitForIdleSync()
+                main { assertTrue("History must have a viewport at ${height}dp", history.height > 0) }
+                for (id in listOf(7L, 9L)) {
+                    var position = -1
+                    main {
+                        position = (0 until history.count).first { history.adapter.getItemId(it) == id }
+                        history.setSelection(position)
+                    }
+                    i.waitForIdleSync()
+                    main {
+                        val row = history.getChildAt(position - history.firstVisiblePosition)
+                        assertNotNull("Cached chat $id must be reachable at ${height}dp", row)
+                        val visible = android.graphics.Rect()
+                        assertTrue(checkNotNull(row).getGlobalVisibleRect(visible) && visible.height() > 0)
+                        history.performItemClick(row, position, id)
+                        assertEquals("Headers must not shift the selected chat", id, selected.last())
+                        assertEquals("Row selection cannot trigger another account action", 0, unrelated)
+                    }
+                }
+            }
+            assertEquals(listOf(7L, 9L, 7L, 9L, 7L, 9L, 7L, 9L), selected)
+        } finally {
+            main { activity.setContentView(android.widget.FrameLayout(activity)); network.close(); activity.finish() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun directionalPrefetchStartsAheadOfTheOppositeNeighbor() {
+        val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "direction-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val draft = photo(media)
+        val original = media.fileURL(draft.relativePath)
+        val scene = RetainedChatScene()
+        val started = CountDownLatch(3)
+        val release = CountDownLatch(1)
+        val requested = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        val positions = listOf(-1500f, -1150f, -800f, 550f)
+        val fragments = positions.mapIndexed { index, y ->
+            val id = index + 1L
+            val asset = attachment(draft).copy(id = "a$id", relativePath = "remote/a$id.jpg",
+                tinyPreview = draft.tinyPreview)
+            val row = Message(id, 2, OrderKey(id, id), MessageDirection.INCOMING, 0,
+                MessageKind.PHOTO, "", "", null, 1, listOf(asset))
+            val prepared = PreparedText(row, TextLayoutKey(id, 1, 300, 17, 3))
+            SceneFragment(prepared, 0, RectF(0f, y, prepared.width, y + prepared.height))
+        }
+        val aheadCenter = positions[2] + checkNotNull(fragments[2].prepared.mediaRect).centerY()
+        val oppositeCenter = positions[3] + checkNotNull(fragments[3].prepared.mediaRect).centerY()
+        assertTrue("Fixture must put opposite neighbor closer",
+            kotlin.math.abs(oppositeCenter - 250) < kotlin.math.abs(aheadCenter - 250))
+        assertTrue("Opposite row must stay outside visible20dp overscan",
+            positions[3] + checkNotNull(fragments[3].prepared.mediaRect).top > 520)
+        try {
+            main {
+                scene.mediaStore = media
+                scene.viewport = RectF(0f, 0f, 390f, 500f)
+                scene.imageViewport = scene.viewport
+                scene.imagePreparationViewport = RectF(0f, -1500f, 390f, 820f)
+                media.remoteFile = { attachment, _, token ->
+                    if (requested.add(attachment.id)) started.countDown()
+                    original to "image/jpeg"
+                }
+                scene.apply(SceneSnapshot(scene.ticket, fragments))
+            }
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            assertEquals("Prepare ahead before the opposite neighbor", setOf("a1", "a2", "a3"), requested)
+        } finally {
+            release.countDown()
+            main { scene.close(); media.close() }
+            h.close()
+        }
+    }
+
     private val i
         get() = InstrumentationRegistry.getInstrumentation()
 
@@ -144,7 +267,7 @@ class WarmNavigationCacheTest {
             assertTrue(cachedFile.delete())
             main { scene.apply(snapshot) }
             waitFor("An uncached offscreen row can prepare its tiny preview") { width() in 1..64 }
-            assertEquals("Offscreen preparation must not start a remote original", 0, calls.get())
+            waitFor("The missing original must be requested before its row appears") { calls.get() == 1 }
             main {
                 scene.viewport = RectF(viewport).apply { offset(0f, 400f) }
                 scene.imageViewport = scene.viewport
@@ -471,6 +594,7 @@ class WarmNavigationCacheTest {
         lateinit var runtime: LocalRuntime
         var chrome: ConversationChrome? = null
         var model: dev.kirill.kandinsky.chat.conversation.ConversationState? = null
+        val originalRelease = CountDownLatch(1)
         main { runtime = LocalRuntime(activity, h.store) }
         try {
             val draft = photo(runtime.media)
@@ -487,20 +611,54 @@ class WarmNavigationCacheTest {
                     }
                     .inserted
                     .single()
+            main {
+                val file = runtime.media.fileURL(row.attachments.single().relativePath)
+                runtime.media.remoteFile = { _, _, token ->
+                    token.onCancel { originalRelease.countDown() }
+                    check(originalRelease.await(4, TimeUnit.SECONDS))
+                    file to "image/jpeg"
+                }
+            }
             val first = openConversation(activity, runtime, row)
             chrome = first.first
             model = first.second
+            main {
+                val preview = checkNotNull(scene(host(first.first)).preview(row.id))
+                try {
+                    val bitmap = checkNotNull(preview.bitmap)
+                    assertTrue("Cold history shows its own blur while original is held",
+                        maxOf(bitmap.width, bitmap.height) <= 64)
+                    println("KANDINSKY_NAVIGATION_COLD pixels=${bitmap.width}x${bitmap.height}")
+                } finally { preview.close() }
+            }
+            originalRelease.countDown()
+            // Сравниваем возврат уже готового фото. Первый показ мог завершиться на размытой копии.
+            val readyUntil = SystemClock.uptimeMillis() + 3000
+            var sharp = false
+            while (!sharp && SystemClock.uptimeMillis() < readyUntil) {
+                main {
+                    sharp = scene(host(first.first)).preview(row.id)?.use { image ->
+                        image.bitmap?.let { maxOf(it.width, it.height) > 64 } == true
+                    } == true
+                }
+                if (!sharp) SystemClock.sleep(10)
+            }
+            assertTrue("Show the actual original before measuring warm navigation", sharp)
             var expected: Bitmap? = null
             main {
                 scene(host(first.first)).preview(row.id)?.use { expected = it.bitmap }
                 assertNotNull(expected)
+                println("KANDINSKY_NAVIGATION_INITIAL pixels=${expected?.width}x${expected?.height}" +
+                    " ownedBytes=${runtime.media.bytesUsed}")
                 runtime.media.withNavigationCache {
                     host(first.first).close()
                     first.second.close()
                     activity.setContentView(android.widget.FrameLayout(activity))
                     runtime.media.releaseIdleImages()
                 }
-                assertTrue(runtime.media.bytesUsed in 1..8 * 1024 * 1024)
+                assertTrue("Navigation bytes=${runtime.media.bytesUsed}, firstPixels=" +
+                    "${expected?.width}x${expected?.height}",
+                    runtime.media.bytesUsed in 1..8 * 1024 * 1024)
             }
             val next = openConversation(activity, runtime, row)
             chrome = next.first
@@ -518,6 +676,7 @@ class WarmNavigationCacheTest {
             }
             assertEquals("Скрытие вне навигации освобождает изображения", 0, bytes)
         } finally {
+            originalRelease.countDown()
             main {
                 chrome?.let { host(it).close() }
                 model?.close()
