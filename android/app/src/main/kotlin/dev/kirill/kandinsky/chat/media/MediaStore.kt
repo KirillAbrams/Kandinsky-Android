@@ -28,15 +28,16 @@ class MediaStore(
     private val mediaDecodeQueue = MediaDecodeQueue()
     private val videoPrefetchQueue = MediaDecodeQueue(1)
     private val imageMemoryBudget = ImageByteBudget()
-    private val pixelDecodeLock = Any()
+    private val imageWorkQueue = MediaImageWorkQueue()
     private val thumbnailCache =
         ThumbnailCache(
             imageMemoryBudget,
             if (studioOriginals) 48 else 16,
-            (if (studioOriginals) 16 else 8) * 1024 * 1024,
+            (if (studioOriginals) 32 else 8) * 1024 * 1024,
         )
     var remotePlayback: ((Attachment, MediaCancellation) -> MediaPlaybackSource)? = null
     var remoteFile: ((Attachment, Boolean, MediaCancellation) -> Pair<File, String>)? = null
+    var remoteCached: ((Attachment, Boolean, MediaCancellation) -> Pair<File, String>?)? = null
     var pendingReferences: ((android.database.sqlite.SQLiteDatabase) -> Set<String>)? = null
     private var closed = false
     private var recovering = false
@@ -262,6 +263,7 @@ class MediaStore(
         key: ThumbnailKey,
         ticket: Int,
         localOnly: Boolean = false,
+        priority: Int = 1,
         progress: (Double) -> Unit = {},
         completion: (Int, Result<PreparedImage>) -> Unit,
     ): Cancellation {
@@ -309,63 +311,45 @@ class MediaStore(
                 )
             else size
         val reserve = size * height * 8 + 4096
-        if (!thumbnailCache.makeRoom(reserve)) {
-            mainHandler.post {
-                token.finish()
-                completion(ticket, Result.failure(MediaException(MediaError.UNAVAILABLE)))
-            }
-            return token
-        }
         val remote = remoteFile
+        val cachedFile = remoteCached
         val fetch =
             MediaCancellation().also {
                 it.onProgress { value -> mainHandler.post { progress(value) } }
             }
         val request =
-            mediaDecodeQueue.submit(
-                priority = if (localOnly) 0 else 1,
-                work = {
-                    try {
-                        val resolved =
-                            if (localOnly) {
-                                if (!file.isFile) throw MediaException(MediaError.UNAVAILABLE)
-                                file to attachment.mime
-                            } else
-                                remote?.invoke(attachment, !original, fetch)
-                                    ?: (file to attachment.mime)
-                        if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
-                        val video = resolved.second.startsWith("video/")
-                        val normal =
-                            if (video)
-                                MediaPreviewGenerator.normalFile(
-                                    store.root,
-                                    attachment.relativePath,
-                                    resolved.first,
-                                    resolved.second,
-                                )
-                            else resolved.first
-                        // Ожидающие загрузки не удерживают память будущих изображений.
-                        synchronized(pixelDecodeLock) {
-                            if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
-                            val charge =
-                                imageMemoryBudget.reserve(reserve)
-                                    ?: throw MediaException(MediaError.UNAVAILABLE)
-                            try {
-                                val image =
-                                    decode(normal, if (video) "image/jpeg" else resolved.second, size)
-                                charge.shrink(image.allocationByteCount)
-                                ImagePixels(image, charge)
-                            } catch (error: Throwable) {
-                                charge.close()
-                                throw error
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        throw map(t)
-                    }
+            imageWorkQueue.submit(
+                priority = priority,
+                fetch = fetch,
+                local = {
+                    if (cachedFile != null) cachedFile(attachment, !original, fetch)
+                    else if (localOnly || remote == null) {
+                        if (file.isFile) file to attachment.mime else null
+                    } else null
                 },
-                dispose = { it.closeOwner() },
+                remote = {
+                    if (localOnly) throw MediaException(MediaError.UNAVAILABLE)
+                    remote?.invoke(attachment, !original, fetch) ?: (file to attachment.mime)
+                },
+                admit = {
+                    if (closed || fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
+                    if (!thumbnailCache.makeRoom(reserve)) throw MediaException(MediaError.UNAVAILABLE)
+                    imageMemoryBudget.reserve(reserve) ?: throw MediaException(MediaError.UNAVAILABLE)
+                },
+                decode = { resolved, charge ->
+                    try {
+                        val video = resolved.second.startsWith("video/")
+                        val normal = if (video) MediaPreviewGenerator.normalFile(
+                            store.root, attachment.relativePath, resolved.first, resolved.second,
+                        ) else resolved.first
+                        if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
+                        val image = decode(normal, if (video) "image/jpeg" else resolved.second, size)
+                        charge.shrink(image.allocationByteCount)
+                        ImagePixels(image, charge)
+                    } catch (error: Throwable) { throw map(error) }
+                },
             ) { result ->
+                fetch.cancel()
                 if (closed) {
                     result.getOrNull()?.closeOwner()
                     completion(ticket, Result.failure(MediaException(MediaError.CANCELLED)))
@@ -583,6 +567,7 @@ class MediaStore(
         invalidationHandlers.values.toList().forEach { it() }
         invalidationHandlers.clear()
         mediaDecodeQueue.close()
+        imageWorkQueue.close()
         tinyPreviewQueue.close()
         videoPrefetchQueue.close()
         thumbnailCache.clear()

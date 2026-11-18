@@ -115,6 +115,7 @@ class MessageNode(var fragment: SceneFragment) {
 
 class RetainedChatScene {
     private val nodes = linkedMapOf<FragmentID, MessageNode>()
+    private val imagePrefetch = MediaImagePrefetch()
     var ticket = 1
         private set
 
@@ -123,6 +124,7 @@ class RetainedChatScene {
         set(value) {
             field = value
             if (!value) {
+                imagePrefetch.clear()
                 nodes.values.forEach {
                     it.video?.close()
                     it.video = null
@@ -173,9 +175,14 @@ class RetainedChatScene {
     }
 
     fun preview(id: MessageID, attachmentIndex: Int = 0): PreparedImage? =
-        nodes[FragmentID(id, 0)]?.let {
-            if (attachmentIndex == 0) it.image?.preview()
-            else it.extraImages[attachmentIndex]?.preview()
+        nodes[FragmentID(id, 0)]?.let { node ->
+            val shown = if (attachmentIndex == 0) node.image?.preview()
+                else node.extraImages[attachmentIndex]?.preview()
+            shown ?: mediaStore?.let { store ->
+                node.fragment.prepared.message.attachments.getOrNull(attachmentIndex)?.let {
+                    imagePrefetch.preview(it, store)
+                }
+            }
         }
 
     // Учитывает номер вложения, чтобы различать отдельные результаты альбома.
@@ -234,6 +241,7 @@ class RetainedChatScene {
 
     // У новой сцены свой номер. По нему отсеиваем результаты подготовки от уже закрытой сцены.
     fun advanceGeneration() {
+        imagePrefetch.clear()
         main()
         ticket++
         nodes.values.forEach {
@@ -351,8 +359,7 @@ class RetainedChatScene {
             val a = fragment.prepared.message.attachments.firstOrNull()
             val preparing = fragment.id in prefetched
             val imageIsNear =
-                preparing ||
-                    imageView == null ||
+                imageView == null ||
                     rect == null ||
                     RectF.intersects(
                         RectF(imageView).apply { inset(0f, -20f * fragment.prepared.key.density) },
@@ -396,6 +403,7 @@ class RetainedChatScene {
                     showLoadingControl = fragment.prepared.message.kind != MessageKind.PHOTO,
                     localOnly = preparing,
                 )
+                imagePrefetch.preview(a, media)?.let { node.image?.seed(it) }
                 val container = movingContainer
                 if (
                     fragment.id in animated &&
@@ -434,6 +442,11 @@ class RetainedChatScene {
                 node.retireImages()
             }
             bindProgress(fragment, node)
+        }
+        mediaStore?.let { media ->
+            val attachments = fragments.filter { it.id in prefetched }
+                .flatMap { it.prepared.message.attachments }
+            imagePrefetch.update(attachments, media)
         }
         metrics.liveFragments = nodes.size
         updateClockMetrics()
@@ -536,6 +549,7 @@ class RetainedChatScene {
                 showLoadingControl = kind != MessageKind.PHOTO,
                 localOnly = preparing,
             )
+            imagePrefetch.preview(attachment, media)?.let { slot.seed(it) }
             if (kind == MessageKind.VIDEO) {
                 val visible = RectF(rect)
                 if (

@@ -75,6 +75,9 @@ internal class ImagePixels(bitmap: Bitmap, private val charge: ImageByteCharge) 
 
     fun bitmap(): Bitmap? = synchronized(gate) { value }
 
+    val hasOnlyCacheOwner: Boolean
+        get() = synchronized(gate) { references == 1 && !ownerClosed }
+
     fun closeOwner() {
         synchronized(gate) {
             if (ownerClosed) return
@@ -137,7 +140,9 @@ internal class ThumbnailCache(
     fun makeRoom(amount: Int): Boolean {
         val iterator = values.entries.iterator()
         while (!budget.canFit(amount) && iterator.hasNext()) {
-            iterator.next().value.closeOwner()
+            val value = iterator.next().value
+            if (!value.hasOnlyCacheOwner) continue
+            value.closeOwner()
             iterator.remove()
         }
         return budget.canFit(amount)

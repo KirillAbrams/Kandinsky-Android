@@ -21,6 +21,160 @@ import org.junit.Test
 
 class MediaStoreTest {
     @Test
+    fun visibleAlbumDoesNotFailBehindPreparedNeighbors() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "neighbors-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo, studioOriginals = true)
+        val scene = RetainedChatScene()
+        val folder = File(h.root, "media/remote").apply { mkdirs() }
+        val original = File(folder, "reference.png")
+        val source = TestFixtures.assets.open("media/" + photoName()).use {
+            checkNotNull(BitmapFactory.decodeStream(it))
+        }
+        val scaled = Bitmap.createScaledBitmap(source, 1280, 1280, true)
+        try {
+            original.outputStream().use {
+                assertTrue(scaled.compress(Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally {
+            if (source !== scaled) source.recycle()
+            scaled.recycle()
+        }
+        val photos = (0 until 7).map { index ->
+            val name = "pressure-$index.png"
+            original.copyTo(File(folder, name))
+            Attachment(name, "remote/$name", "image/png", original.length(),
+                1280, 1280, 1, null, name)
+        }
+        fun fragment(id: Long, attachments: List<Attachment>, y: Float, album: Boolean): SceneFragment {
+            val generation = if (album) StudioGeneration(
+                StudioGeneration.Stage.SUCCEEDED, "image", "1:1", null, null,
+                slots = attachments.map {
+                    StudioGeneration.Slot(it.id, StudioGeneration.Stage.SUCCEEDED, it.thumbnailKey, 100)
+                },
+            ) else null
+            val row = Message(id, 1, OrderKey(id, id), MessageDirection.INCOMING, 0,
+                MessageKind.PHOTO, "", "", null, 1, attachments, studioGeneration = generation)
+            val prepared = PreparedText(row, TextLayoutKey(id, 1, 300, 17, 3))
+            return SceneFragment(prepared, 0,
+                android.graphics.RectF(0f, y, prepared.width, y + prepared.height))
+        }
+        val neighbors = (0 until 3).map {
+            fragment((it + 1).toLong(), listOf(photos[it]), -1900f + it * 600, false)
+        }
+        fun waitFor(predicate: () -> Boolean): Boolean {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (System.nanoTime() < deadline) {
+                var ready = false
+                main { ready = predicate() }
+                if (ready) return true
+                Thread.sleep(5)
+            }
+            return false
+        }
+        try {
+            main {
+                media.remoteFile = { a, preview, _ ->
+                    check(!preview)
+                    File(h.root, "media/" + a.relativePath) to "image/png"
+                }
+                scene.mediaStore = media
+                scene.viewport = android.graphics.RectF(0f, 0f, 390f, 650f)
+                scene.imageViewport = scene.viewport
+                scene.imagePreparationViewport = android.graphics.RectF(0f, -2300f, 390f, 800f)
+                scene.apply(SceneSnapshot(scene.ticket, neighbors))
+            }
+            assertTrue("First prepare all three neighbors", waitFor {
+                photos.take(3).all { a ->
+                    media.cachedThumbnail(a, checkNotNull(media.studioPhotoKey(a)))?.let {
+                        it.close(); true
+                    } ?: false
+                }
+            })
+            val visible = fragment(10, photos.takeLast(4), 0f, true)
+            main { scene.apply(SceneSnapshot(scene.ticket, neighbors + visible)) }
+            val ready = waitFor { (0 until 4).all { scene.imageReady(10, it) } }
+            main {
+                println("KANDINSKY_PREFETCH_PRESSURE ready=" + (0 until 4).map { scene.imageReady(10, it) } +
+                    " bytes=${media.bytesUsed} peak=${media.peakBytesUsed}")
+                assertTrue("All four visible originals must fit after speculative neighbors", ready)
+                repeat(4) { index ->
+                    val frame = checkNotNull(scene.preview(10, index))
+                    try { assertEquals(1280, frame.bitmap?.width) } finally { frame.close() }
+                }
+                assertTrue(media.peakBytesUsed <= 48 * 1024 * 1024)
+            }
+            for (photo in photos.take(3)) {
+                val frame = awaitResult<PreparedImage> { callback ->
+                    main {
+                        media.thumbnail(photo, checkNotNull(media.studioPhotoKey(photo)), 0,
+                            localOnly = true, priority = 0) { _, result -> callback(result) }
+                    }
+                    Cancellation {}
+                }
+                frame.close()
+            }
+            main {
+                for (photo in photos.takeLast(4)) {
+                    val cached = media.cachedThumbnail(photo, checkNotNull(media.studioPhotoKey(photo)))
+                    assertNotNull("A speculative decode must not drop a displayed cache owner", cached)
+                    cached?.close()
+                }
+                media.withNavigationCache { scene.advanceGeneration(); media.releaseIdleImages() }
+                scene.apply(SceneSnapshot(scene.ticket, listOf(visible)))
+                assertEquals("All warmed album originals must bind immediately after returning",
+                    listOf(true, true, true, true), (0 until 4).map { scene.imageReady(10, it) })
+            }
+        } finally {
+            main { scene.close(); media.close() }
+            h.close()
+        }
+    }
+
+    @Test
+    fun localSharpDecodeDoesNotWaitBehindUnrelatedNetworkReads() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "local-priority-" + UUID.randomUUID()))
+        val media = MediaStore(h.store, h.repo)
+        val draft = stage(media) { TestFixtures.assets.open("media/" + photoName()) }
+        val file = File(h.root, "media/" + draft.relativePath)
+        val started = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val requests = mutableListOf<Cancellation>()
+        try {
+            main {
+                media.remoteFile = { _, _, token ->
+                    started.countDown()
+                    token.onCancel { release.countDown() }
+                    release.await(1, TimeUnit.SECONDS)
+                    file to "image/jpeg"
+                }
+                repeat(2) { index ->
+                    val a = Attachment("blocked-$index", "remote/blocked-$index.jpg", "image/jpeg",
+                        file.length(), 1024, 1024, 1, null, "blocked-$index")
+                    requests += media.thumbnail(a, ThumbnailKey(256), 0) { _, result ->
+                        result.getOrNull()?.close()
+                    }
+                }
+            }
+            assertTrue("Both network reads must start before timing", started.await(3, TimeUnit.SECONDS))
+            val begin = System.nanoTime()
+            val image = awaitResult<PreparedImage> { callback ->
+                main { media.thumbnail(attachment(draft), ThumbnailKey(256), 1, localOnly = true) {
+                    _, result -> callback(result)
+                } }
+                Cancellation {}
+            }
+            val elapsed = (System.nanoTime() - begin) / 1_000_000.0
+            image.close()
+            println("KANDINSKY_LOCAL_BEHIND_NETWORK milliseconds=$elapsed")
+            assertTrue("Local pixels waited $elapsed ms behind network", elapsed < 150)
+        } finally {
+            release.countDown()
+            main { requests.forEach { it.cancel() }; media.close() }
+            h.close()
+        }
+    }
+
+    @Test
     fun corruptOriginalReleasesItsDecodeMemory() {
         checkRejectedOriginal(pressureDuringFetch = false)
     }

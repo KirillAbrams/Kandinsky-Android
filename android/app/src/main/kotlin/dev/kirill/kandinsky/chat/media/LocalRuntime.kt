@@ -23,6 +23,7 @@ class LocalRuntime(
             it.studioMedia = remote
             it.onStudioMediaEvicted = { media.releaseIdleImages() }
             media.remoteFile = remote::resolve
+            media.remoteCached = remote::cached
             media.remotePlayback = remote::playback
             media.pendingReferences =
                 dev.kirill.kandinsky.chat.network.NetworkMedia::pendingReferences

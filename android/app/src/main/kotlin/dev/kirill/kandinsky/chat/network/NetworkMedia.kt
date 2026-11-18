@@ -7,6 +7,7 @@ import dev.kirill.kandinsky.chat.storage.SQLiteStore
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class StudioMediaRemoval(val blob: String, val preview: String) {
     val key
@@ -26,6 +27,7 @@ class NetworkMedia(
     private val api: NetworkAPI,
     private val cacheLimitBytes: Long = 64L * 1024 * 1024,
 ) {
+    private val mediaDirectory = File(store.root.canonicalFile, "media")
     private val downloads = Any()
     private val pins = HashMap<String, Int>()
     private val pinGate = Any()
@@ -46,11 +48,10 @@ class NetworkMedia(
             if (revoked.size > 512) revoked.remove(revoked.first())
         }
         synchronized(downloads) {
-            val media = File(store.root.canonicalFile, "media")
             // Проверяем путь до удаления файла, чтобы ссылка не вывела нас за пределы папки
             // приложения.
             fun owned(relative: String): File {
-                val file = File(media, relative)
+                val file = File(mediaDirectory, relative)
                 check(file.canonicalFile == file.absoluteFile)
                 return file
             }
@@ -87,9 +88,10 @@ class NetworkMedia(
         token: MediaCancellation,
     ): Pair<File, String> {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        cached(attachment, preview, token)?.let { return it }
         val name = attachment.relativePath.removePrefix("remote/")
         requireAvailable(name)
-        var original = File(store.root, "media/" + attachment.relativePath)
+        var original = File(mediaDirectory, attachment.relativePath)
         if (attachment.relativePath.startsWith("remote/") && original.extension.isEmpty()) {
             val typed = File(original.path + "." + extension(attachment.mime))
             synchronized(downloads) {
@@ -103,7 +105,8 @@ class NetworkMedia(
             requireAvailable(name)
             if (original.isFile) {
                 original.setLastModified(System.currentTimeMillis())
-                return original to attachment.mime
+                return retainedCached(original, attachment.mime, token)
+                    ?: throw MediaException(MediaError.UNAVAILABLE)
             }
         }
         if (!attachment.relativePath.startsWith("remote/")) throw MediaException(MediaError.IO)
@@ -132,13 +135,14 @@ class NetworkMedia(
         if (preview && small == null && bytes > 256 * 1024)
             throw MediaException(MediaError.UNAVAILABLE)
         val usePreview = preview && small != null
-        val target = if (usePreview) File(store.root, "media/previews/$small") else original
+        val target = if (usePreview) File(mediaDirectory, "previews/$small") else original
         synchronized(downloads) {
             requireAvailable(name)
             if (token.isCancelled) throw MediaException(MediaError.CANCELLED)
             if (original.isFile) {
                 original.setLastModified(System.currentTimeMillis())
-                return original to attachment.mime
+                return retainedCached(original, attachment.mime, token)
+                    ?: throw MediaException(MediaError.UNAVAILABLE)
             }
             api.download(
                 if (usePreview) small!! else blob,
@@ -147,14 +151,57 @@ class NetworkMedia(
                 token,
             )
             prune(target)
+            return retainedCached(target, if (usePreview) "image/jpeg" else attachment.mime, token)
+                ?: throw MediaException(MediaError.UNAVAILABLE)
         }
-        return target to if (usePreview) "image/jpeg" else attachment.mime
+    }
+
+    // Местный кадр не ждёт посторонние загрузки. Файл закрепляется до конца декодирования.
+    fun cached(attachment: Attachment, preview: Boolean, token: MediaCancellation): Pair<File, String>? {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        if (token.isCancelled) throw MediaException(MediaError.CANCELLED)
+        requireAvailable(attachment.relativePath.removePrefix("remote/"))
+        var original = File(mediaDirectory, attachment.relativePath)
+        if (attachment.relativePath.startsWith("remote/") && original.extension.isEmpty()) {
+            val typed = File(original.path + "." + extension(attachment.mime))
+            if (typed.isFile) original = typed
+        }
+        retainedCached(original, attachment.mime, token)?.let { return it }
+        if (!preview || !attachment.relativePath.startsWith("remote/")) return null
+        val done = CountDownLatch(1)
+        var mapping: Result<String?>? = null
+        store.submit({ db ->
+            db.rawQuery("SELECT previewBlobID FROM net_media WHERE attachmentID=?",
+                arrayOf(attachment.id)).use {
+                if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null
+            }
+        }) { mapping = it; done.countDown() }
+        if (!done.await(10, TimeUnit.SECONDS) || token.isCancelled)
+            throw MediaException(MediaError.CANCELLED)
+        val blob = checkNotNull(mapping).getOrThrow() ?: return null
+        if (!Regex("[a-f0-9]{32}|[a-f0-9]{64}").matches(blob))
+            throw MediaException(MediaError.CORRUPT)
+        requireAvailable(attachment.relativePath.removePrefix("remote/"))
+        return retainedCached(File(mediaDirectory, "previews/$blob"), "image/jpeg", token)
+    }
+
+    private fun retainedCached(file: File, mime: String, token: MediaCancellation): Pair<File, String>? {
+        if (file.canonicalFile != file.absoluteFile ||
+            !file.absolutePath.startsWith(mediaDirectory.path + File.separator))
+            throw MediaException(MediaError.CORRUPT)
+        val release = pin(file)
+        if (!file.isFile) { release(); return null }
+        val released = AtomicBoolean(false)
+        token.onCancel { if (released.compareAndSet(false, true)) release() }
+        if (token.isCancelled) throw MediaException(MediaError.CANCELLED)
+        file.setLastModified(System.currentTimeMillis())
+        return file to mime
     }
 
     fun playback(attachment: Attachment, token: MediaCancellation): MediaPlaybackSource {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
         requireAvailable(attachment.relativePath.removePrefix("remote/"))
-        var file = File(store.root, "media/" + attachment.relativePath)
+        var file = File(mediaDirectory, attachment.relativePath)
         if (attachment.relativePath.startsWith("remote/") && file.extension.isEmpty()) {
             val typed = File(file.path + "." + extension(attachment.mime))
             synchronized(downloads) {
@@ -223,7 +270,7 @@ class NetworkMedia(
 
         val files =
             listOf("remote", "previews").flatMap {
-                File(store.root, "media/$it").listFiles()?.filter { f ->
+                File(mediaDirectory, it).listFiles()?.filter { f ->
                     f.isFile && !f.name.endsWith(".part")
                 } ?: emptyList()
             }
