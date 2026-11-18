@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "sourceChatId": 1352,
+  "sourceAssetId": "e64e6ea6-0525-570b-87f7-f7536ff680b5",
+  "sourceSHA256": "677125417deb19a9e662ba821caf026a5123554e0ca377a8e3770f323dab5646",
+  "sourceKind": "actual recorded human speech; no TTS or generated media",
+  "sourceId": "localized-narratives:open_images_test:006d78202b55d9e2:35",
+  "excerptSeconds": 6,
+  "processing": "Same realPCM for container/codec capability only; Opus30*1024bit/s; CAF/MP4/WebM remux usespacketcopy, no reencoding",
+  "files": [
+    {
+      "file": "codec-probe-human.wav",
+      "sha256": "22e651a5dee1f6ece7f8609a2db7066b443fc7e4ce1adcbde55afda339c89e50",
+      "bytes": 576078
+    },
+    {
+      "file": "codec-probe-human.ogg",
+      "sha256": "f2f3db7021f0d110cb0fc932ee716d03a653ea0577418924223cb74d494487f6",
+      "bytes": 21649
+    },
+    {
+      "file": "codec-probe-human.m4a",
+      "sha256": "b1a9cb03e95c48190424668288effe344f93bd234d6d16d40646e50e9e1a2520",
+      "bytes": 23026
+    },
+    {
+      "file": "codec-probe-human.webm",
+      "sha256": "a10d3c082d37fa2d6cdd0f2145a89597daad48a5a7c3907e82f0dc2161d48ea5",
+      "bytes": 23400
+    }
+  ],
+  "packetCopyResults": [
+    {
+      "container": "caf",
+      "file": "codec-probe-human.caf",
+      "exitCode": 176,
+      "bytes": 0
+    },
+    {
+      "container": "mp4",
+      "file": "codec-probe-human.m4a",
+      "exitCode": 0,
+      "bytes": 23026
+    },
+    {
+      "container": "webm",
+      "file": "codec-probe-human.webm",
+      "exitCode": 0,
+      "bytes": 23400
+    }
+  ]
+}

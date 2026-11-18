@@ -1,0 +1,4 @@
+<resources>
+    <item name="message_copy" type="id"/>
+    <item name="message_report" type="id"/>
+</resources>

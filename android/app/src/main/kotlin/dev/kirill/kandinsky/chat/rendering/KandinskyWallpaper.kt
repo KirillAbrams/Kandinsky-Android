@@ -1,0 +1,87 @@
+package dev.kirill.kandinsky.chat.rendering
+import android.content.Context
+import android.graphics.*
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import dev.kirill.kandinsky.chat.R
+import java.lang.ref.WeakReference
+
+object KandinskyAssets {
+    @Volatile var pattern:Bitmap?=null;private set
+    private var loading=false
+    private var latest:WeakReference<View>?=null
+    /**
+     * Запоминает слабую ссылку на последнее нуждающееся представление и повторно использует уже декодированные рисунки приложения
+     * При первой загрузке допускает только один фоновый поток, который подготавливает используемый рисунок фона
+     * После подготовки просит обновить последнее ещё подключённое к окну представление в главном потоке
+     */
+    @Synchronized fun load(context:Context,view:View) {
+        latest=WeakReference(view)
+        if(pattern!=null){view.postInvalidate();return}
+        if(loading)return
+        loading=true
+        val resources=context.applicationContext.resources
+        Thread({
+            pattern=BitmapFactory.decodeResource(resources,R.drawable.kandinsky_evolution)
+            synchronized(this){loading=false}
+            Handler(Looper.getMainLooper()).post { latest?.get()?.takeIf{it.isAttachedToWindow}?.invalidate() }
+        },"KandinskyArtwork").start()
+    }
+}
+class KandinskyWallpaper:AutoCloseable {
+ private data class Key(val width:Int,val height:Int,val scale:Float,val sampling:Float,val pattern:Bitmap?)
+ private val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+ private val main=Handler(Looper.getMainLooper())
+ private val worker=java.util.concurrent.ThreadPoolExecutor(1,1,0,java.util.concurrent.TimeUnit.MILLISECONDS,java.util.concurrent.ArrayBlockingQueue(1),{r->Thread(r,"Kandinsky-Wallpaper").apply{isDaemon=true}},java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
+ private var wanted:Key?=null;private var ready:Key?=null;private var raster:Bitmap?=null
+ private var sampling=1f;private var closed=false
+ var onReady:(()->Unit)?=null
+ // Ограничивает рисунок границами и выводит его с согласованной небольшой прозрачностью
+ private fun raw(c: Canvas, bounds: RectF, pattern: Bitmap?) {
+  val fill = Paint(Paint.FILTER_BITMAP_FLAG)
+  fill.color = Color.WHITE
+  c.drawRect(bounds, fill)
+  if (pattern == null) return
+  val ratio = maxOf(bounds.width() / pattern.width, bounds.height() / pattern.height)
+  val width = pattern.width * ratio
+  val height = pattern.height * ratio
+  val rect = RectF(bounds.centerX() - width / 2, bounds.centerY() - height / 2,
+                   bounds.centerX() + width / 2, bounds.centerY() + height / 2)
+  fill.alpha = 21
+  val saved = c.save()
+  c.clipRect(bounds)
+  c.drawBitmap(pattern, null, rect, fill)
+  c.restoreToCount(saved)
+ }
+ /**
+  * Использует готовую растровую копию фона при совпадении размеров, масштаба и исходных рисунков
+  * Пока новая копия не подготовлена, сразу рисует исходный фон и ставит только нужный новый вариант в ограниченную фоновую очередь
+  * При возврате в главный поток принимает результат только для актуального запроса, устаревший или закрытый результат освобождает
+  */
+ fun render(c:Canvas,bounds:RectF,scale:Float){
+  if(closed || bounds.width()<=0 || bounds.height()<=0)return
+  val key=Key(kotlin.math.ceil(bounds.width().toDouble()).toInt(),kotlin.math.ceil(bounds.height().toDouble()).toInt(),scale,sampling,KandinskyAssets.pattern)
+  val value=raster
+  if(ready==key && value!=null){c.drawBitmap(value,null,bounds,paint);return}
+  raw(c,bounds,key.pattern)
+  if(wanted==key)return;wanted=key
+  worker.execute{
+   val bitmap=Bitmap.createBitmap(maxOf(1,(key.width*key.sampling).toInt()),
+    maxOf(1,(key.height*key.sampling).toInt()),Bitmap.Config.ARGB_8888,false)
+   bitmap.eraseColor(Color.WHITE)
+   val canvas=Canvas(bitmap);canvas.scale(key.sampling,key.sampling);raw(canvas,RectF(0f,0f,key.width.toFloat(),key.height.toFloat()),key.pattern)
+   main.post{if(closed || wanted!=key)bitmap.recycle()else{raster=bitmap;ready=key;onReady?.invoke()}}
+  }
+ }
+ /**
+  * Снимает ссылки на восстанавливаемую готовую копию фона и её прежний ключ
+  * Следующую подготовку переводит к половине размеров по каждой стороне для уменьшения занятой памяти
+  */
+ fun trimMemory(){sampling=.5f;raster=null;ready=null;wanted=null}
+ /**
+  * Однократно отмечает фон закрытым, снимает обработчик готовности и ссылки на ожидаемый и готовый варианты
+  * Останавливает рабочую очередь, а поздний результат больше не сможет стать текущим рисунком
+  */
+ override fun close(){if(closed)return;closed=true;onReady=null;wanted=null;ready=null;raster=null;worker.shutdownNow()}
+}

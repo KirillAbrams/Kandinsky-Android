@@ -1,0 +1,46 @@
+{
+  "kind": "Container-only rotation test; no generated frames or audio",
+  "sourceBlobId": "990da02cd31e46cfb8fd630c293f3489",
+  "sourceSHA256": "eb4205f9447b9ac00c109d1f658359f2b6c111a44926d99820f2ad368f24a505",
+  "outputSHA256": "775d8f8b93ba7679cdbe9187f8b4d54001835644de80d60e818baf1009078c52",
+  "command": [
+    "/opt/homebrew/bin/ffmpeg",
+    "-nostdin",
+    "-v",
+    "error",
+    "-threads",
+    "2",
+    "-display_rotation",
+    "90",
+    "-i",
+    "fixtures/real-media/backend-990da02cd31e46cfb8fd630c293f3489.mp4",
+    "-map",
+    "0",
+    "-c",
+    "copy",
+    "fixtures/real-media/editor-rotation90.mp4"
+  ],
+  "probe": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "index": 0,
+        "codec_type": "video",
+        "width": 1280,
+        "height": 720,
+        "duration": "6.000000",
+        "side_data_list": [
+          {
+            "rotation": 90
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "codec_type": "audio",
+        "duration": "6.000000"
+      }
+    ]
+  }
+}

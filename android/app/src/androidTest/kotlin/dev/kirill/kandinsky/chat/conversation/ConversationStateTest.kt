@@ -1,0 +1,181 @@
+package dev.kirill.kandinsky.chat.conversation
+import dev.kirill.kandinsky.chat.support.TestFixtures
+import androidx.test.platform.app.InstrumentationRegistry
+import dev.kirill.kandinsky.chat.domain.*
+import dev.kirill.kandinsky.chat.support.*
+import org.junit.Test
+import org.junit.Assert.*
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+class ConversationStateTest {
+ private val instrumentation=InstrumentationRegistry.getInstrumentation()
+
+ @Test fun retrySurvivesLostReplyAndReopening() {
+     val harness = RepositoryHarness.open(File(instrumentation.targetContext.cacheDir, "retry-" + UUID.randomUUID()))
+     try {
+         val id = "11111111-2222-3333-4444-555555555555"
+         val state = ConversationState(harness.repo)
+         val slot = StudioGeneration.Slot(id, StudioGeneration.Stage.FAILED, null, null)
+         assertNull(state.beginSlotRetry(slot.copy(moderated = true)))
+         val key = state.beginSlotRetry(slot)
+         assertEquals("9c86e889-f9b0-862a-b44c-e97dd01a8b40", key.toString())
+         assertNull(state.beginSlotRetry(slot))
+         val reopened = ConversationState(harness.repo)
+         assertEquals(key, reopened.beginSlotRetry(slot))
+         reopened.finishSlotRetry(id)
+         assertNotEquals(key, reopened.beginSlotRetry(slot.copy(runId = key.toString())))
+     } finally {
+         harness.close()
+     }
+ }
+
+ /**
+  * Выполняет переданное действие синхронно на основном потоке приложения
+  * Вызывающий код использует его для состояния разговора и объектов медиа, привязанных к этому потоку
+  */
+ private fun main(action:()->Unit)=instrumentation.runOnMainSync(action)
+ /**
+  * Открывает заданный проверочный чат через состояние разговора на основном потоке
+  * Ожидает завершения асинхронного открытия вне основного потока через общий помощник
+  */
+ private fun open(state:ConversationState){awaitResult<Unit>{cb->main{state.open(2,cb)};Cancellation{}}}
+ /**
+  * Вызывает отправку текущего состояния разговора на основном потоке
+  * Ожидает единственный асинхронный результат, передавая его ошибку вызывающей проверке
+  */
+ private fun send(state:ConversationState){awaitResult<Unit>{cb->main{state.send(cb)};Cancellation{}}}
+ /**
+  * Готовит несколько выбранных фото и внедряет потерю ответа после сохранения части групповой отправки
+  * Независимо воспроизводит запись черновика и очистку файлов прежним клиентом
+  * После нового открытия исходники и номера намерений группы должны сохраниться
+  * Повтор отправки обязан закончить группу с прежним порядком и единственной подписью, сохранив новый текст старого клиента
+  */
+ @Test fun selectionSurvivesLegacyDraftRewriteAndLegacyRecovery(){
+  var h=RepositoryHarness.open(File(instrumentation.targetContext.cacheDir,"selection-legacy-"+UUID.randomUUID()))
+  val media=dev.kirill.kandinsky.chat.media.MediaStore(h.store,h.repo)
+  val original=TestFixtures.assets.open("media/photo-000.jpg").use{it.readBytes()}
+  val commands=(0 until 3).map{index->
+   val asset=awaitResult<AttachmentDraft>{cb->main{media.stageSelection({original.inputStream()},"image/jpeg",cb)};Cancellation{}}
+   SendCommand(UUID.randomUUID().toString(),2,MessageKind.PHOTO,caption=if(index==0)"Одна подпись"else "",attachments=listOf(asset))
+  }
+  var state=ConversationState(h.repo);open(state)
+  main{state.editDraft(Draft(text="До отката"))};h.faults.arm(RepoFault.AFTER_COMMIT_BEFORE_REPLY)
+  assertTrue(runCatching{awaitResult<Unit>{cb->main{state.sendMediaBatch(commands,cb)};Cancellation{}}}.isFailure)
+  main{state.close();media.close()}
+  val root=h.root
+  // Независимый образец записи прежним клиентом и очистки двух старых папок
+  awaitResult<Unit>{cb->h.store.submit({db->
+   val (value,revision)=db.rawQuery("SELECT attachmentDraft,revision FROM drafts WHERE chatId=2",null).use{c->c.moveToFirst();org.json.JSONObject(c.getString(0)) to c.getLong(1)}
+   val known=setOf("text","attachmentDrafts","replyToID","revision","operationID","pendingSend","pendingRevision")
+   val legacy=org.json.JSONObject();known.forEach{if(value.has(it))legacy.put(it,value.get(it))};legacy.put("text","Черновик старого клиента");legacy.put("revision",revision+1)
+   db.execSQL("UPDATE drafts SET text=?,attachmentDraft=?,revision=revision+1 WHERE chatId=2",arrayOf("Черновик старого клиента",legacy.toString()))
+   val references=mutableSetOf<String>()
+   db.rawQuery("SELECT relativePath FROM attachments",null).use{c->while(c.moveToNext())references+=c.getString(0)}
+   db.rawQuery("SELECT attachmentDraft FROM drafts WHERE attachmentDraft IS NOT NULL",null).use{c->while(c.moveToNext()){
+    val saved=org.json.JSONObject(c.getString(0));for(items in listOf(saved.optJSONArray("attachmentDrafts"),saved.optJSONObject("pendingSend")?.optJSONArray("attachments"))){if(items!=null)for(index in 0 until items.length())references+=items.getJSONObject(index).getString("relativePath")}
+   }}
+   for(name in listOf("staging","objects"))for(file in File(root,"media/$name").listFiles() ?: emptyArray()){
+    if(file.isFile && (name=="staging" || "objects/"+file.name !in references))check(file.delete())
+   };Unit
+  },cb)}
+  h=h.reopen();val restoredMedia=dev.kirill.kandinsky.chat.media.MediaStore(h.store,h.repo)
+  try{
+   awaitResult<Unit>{cb->main{restoredMedia.recover(cb)};Cancellation{}}
+   commands.forEach{command->val file=restoredMedia.fileURL(command.attachments[0].relativePath);assertTrue("Old cleanup cannot delete a pending selection original",file.isFile);assertArrayEquals(original,file.readBytes())}
+   state=ConversationState(h.repo);open(state)
+   assertEquals("Intent must survive a legacy rewrite of draft JSON",commands.map{it.operationID},state.draft.pendingMediaBatch?.map{it.operationID})
+   send(state);assertEquals("Черновик старого клиента",state.draft.text)
+   val rows=awaitResult<List<Triple<String,String,String>>>{cb->h.store.submit({db->db.rawQuery("SELECT m.kind,m.caption,o.token FROM messages m JOIN operations o ON o.messageId=m.id WHERE m.chatId=2 ORDER BY m.id",null).use{c->buildList{while(c.moveToNext())add(Triple(c.getString(0),c.getString(1),c.getString(2)))}}},cb)}
+   assertEquals(listOf("photo","photo","photo"),rows.map{it.first});assertEquals(listOf("Одна подпись","",""),rows.map{it.second});assertEquals(commands.map{it.operationID},rows.map{it.third})
+  }finally{main{state.close();restoredMedia.close()};h.close()}
+ }
+ /**
+  * Сохраняет намерение отправить несколько фото вместе с отдельным обычным черновиком
+  * Теряет ответ после сохранения, закрывает окружение и восстанавливает его с диска
+  * Исходники ещё не завершённой группы должны пережить восстановление
+  * Повтор завершает ровно три отправки с прежними номерами и подписью без очистки отдельного черновика
+  */
+ @Test fun mediaBatchSurvivesLostReplyAndRestartWithoutConsumingComposerDraft(){
+  var h=RepositoryHarness.open(File(instrumentation.targetContext.cacheDir,"media-batch-"+UUID.randomUUID()))
+  val media=dev.kirill.kandinsky.chat.media.MediaStore(h.store,h.repo)
+  val commands=(0 until 3).map{index->
+   val asset=awaitResult<AttachmentDraft>{cb->main{media.stage({TestFixtures.assets.open("media/photo-000.jpg")},"image/jpeg",cb)};Cancellation{}}
+   SendCommand(UUID.randomUUID().toString(),2,MessageKind.PHOTO,caption=if(index==0)"Подпись альбома" else "",attachments=listOf(asset))
+  }
+  awaitResult<Unit>{h.repo.saveDraft(2,Draft(text="Мой отдельный черновик"),it)}
+  awaitResult<Unit>{cb->h.store.submit({db->
+   val json=db.rawQuery("SELECT attachmentDraft FROM drafts WHERE chatId=2",null).use{it.moveToFirst();org.json.JSONObject(it.getString(0))}
+   json.put("pendingMediaBatch",org.json.JSONArray(commands.map{org.json.JSONObject(dev.kirill.kandinsky.chat.storage.ChatStorageCodec.commandString(it))}))
+   db.execSQL("UPDATE drafts SET attachmentDraft=? WHERE chatId=2",arrayOf(json.toString()))
+  },cb)}
+  var state=ConversationState(h.repo);open(state)
+  h.faults.arm(RepoFault.AFTER_COMMIT_BEFORE_REPLY);assertTrue(runCatching{send(state)}.isFailure)
+  assertEquals("Мой отдельный черновик",state.draft.text)
+  main{media.close();state.close()};h=h.reopen()
+  val resumedMedia=dev.kirill.kandinsky.chat.media.MediaStore(h.store,h.repo)
+  awaitResult<Unit>{cb->main{resumedMedia.recover(cb)};Cancellation{}}
+  commands.forEach{assertTrue("Pending batch owns every unsent source across recovery",resumedMedia.fileURL(it.attachments[0].relativePath).isFile)}
+  state=ConversationState(h.repo);open(state);send(state)
+  assertNull(state.lastError);assertEquals("Мой отдельный черновик",state.draft.text);assertEquals(3,h.messageCount(2))
+  val rows=awaitResult<List<Pair<String,String>>>{cb->h.store.submit({db->db.rawQuery("SELECT m.caption,o.token FROM messages m JOIN operations o ON o.messageId=m.id WHERE m.chatId=2 ORDER BY m.id",null).use{c->buildList{while(c.moveToNext())add(c.getString(0) to c.getString(1))}}},cb)}
+  assertEquals(listOf("Подпись альбома","",""),rows.map{it.first});assertEquals(commands.map{it.operationID},rows.map{it.second})
+  main{resumedMedia.close();state.close()};h.close()
+ }
+ /**
+  * Проверяет сохранение текста при ошибке до записи и сохранение того же намерения при потере ответа после записи
+  * После открытия заново повтор должен вернуть единственное сохранённое сообщение и очистить отправленный черновик
+  * Затем сохраняет новый черновик и положение чтения, проверяя их после ещё одного открытия
+  */
+ @Test fun committedSendClearsDraftAndRestartPreservesIt(){
+  var h=RepositoryHarness.open(File(instrumentation.targetContext.cacheDir,"state-"+UUID.randomUUID()))
+  var state=ConversationState(h.repo);open(state)
+  main{state.editDraft(Draft(text="Привет 👋"))};h.faults.arm(RepoFault.BEFORE_COMMIT)
+  runCatching{send(state)};assertEquals("Привет 👋",state.draft.text);assertNotNull(state.lastError)
+  val token=state.draft.operationID!!;h.faults.arm(RepoFault.AFTER_COMMIT_BEFORE_REPLY)
+  runCatching{send(state)};assertEquals(token,state.draft.operationID)
+  awaitResult<Unit>{cb->main{state.flush(cb)};Cancellation{}}
+  main{state.close()};h=h.reopen();state=ConversationState(h.repo);open(state)
+  assertEquals(token,state.draft.operationID);send(state)
+  assertEquals("",state.draft.text);assertNull(state.draft.operationID);assertEquals(1,h.messageCount(2))
+  assertEquals("Привет 👋",awaitResult<List<ChatSummary>>{h.repo.chats("",it)}.first().lastPreview)
+  main{state.editDraft(Draft(text="Новый черновик"));state.anchor=ReadingAnchor(messageID=1,fraction=0.4,followsBottom=false)}
+  awaitResult<Unit>{cb->main{state.flush(cb)};Cancellation{}}
+  main{state.close()};h=h.reopen();state=ConversationState(h.repo);open(state)
+  assertEquals("Новый черновик",state.draft.text);assertEquals(1L,state.anchor?.messageID);assertEquals(false,state.anchor?.followsBottom)
+  main{state.close()};h.close()
+ }
+ /**
+  * Начинает отправку одного текста и сразу заменяет поле новым черновиком
+  * Завершение прежней записи не должно очистить новый ввод
+  * После принудительного сохранения проверяет тот же новый текст в хранилище
+  */
+ @Test fun newestInputIsNotClearedByEarlierCommit(){
+  val h=RepositoryHarness.open(File(instrumentation.targetContext.cacheDir,"state-"+UUID.randomUUID()))
+  val state=ConversationState(h.repo);open(state)
+  val done=CountDownLatch(1)
+  main{state.editDraft(Draft(text="Первое"));state.send{assertTrue(it.isSuccess);done.countDown()};state.editDraft(Draft(text="Второе"))}
+  assertTrue(done.await(5,TimeUnit.SECONDS));assertEquals("Второе",state.draft.text)
+  awaitResult<Unit>{cb->main{state.flush(cb)};Cancellation{}}
+  assertEquals("Второе",awaitResult<Draft>{h.repo.draft(2,it)}.text)
+  main{state.close()};h.close()
+ }
+ /**
+  * Задерживает очередь базы перед чтением ранее сохранённого черновика
+  * Начинает открытие разговора и сразу закрывает его до ответа хранилища
+  * После снятия задержки старый черновик должен остаться в базе без замены пустым состоянием
+  */
+ @Test fun legacyDraftSurvivesCloseWhileOpenWaitsForSQLite(){
+  val h=RepositoryHarness.open(File(instrumentation.targetContext.cacheDir,"state-close-"+UUID.randomUUID()))
+  awaitResult<Unit>{h.repo.saveDraft(2,Draft(text="legacy draft",revision=0),it)}
+  val gate=CountDownLatch(1);val entered=CountDownLatch(1)
+  h.store.submit({entered.countDown();assertTrue(gate.await(3,TimeUnit.SECONDS))}){}
+  assertTrue(entered.await(2,TimeUnit.SECONDS))
+  val state=ConversationState(h.repo);val opened=CountDownLatch(1)
+  main{state.open(2){opened.countDown()};state.close()}
+  gate.countDown();assertTrue(opened.await(5,TimeUnit.SECONDS))
+  assertEquals("legacy draft",awaitResult<Draft>{h.repo.draft(2,it)}.text);h.close()
+ }
+
+}
