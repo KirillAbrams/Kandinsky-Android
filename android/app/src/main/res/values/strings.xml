@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Кандинский</string>
+    <string name="account_media_intro">Изображения и видео\nв одном чате</string>
+    <string name="account_continue">Продолжить · %1$s</string>
+    <string name="viewer_photo_title">Фото · %1$s</string>
+    <string name="viewer_video_title">Видео · %1$s</string>
+    <string name="generation_seed_range">Seed: число от %1$d до %2$d</string>
+    <string name="generation_prompt_count">%1$d/%2$d</string>
+    <string name="licenses_title">Лицензии</string>
+</resources>
