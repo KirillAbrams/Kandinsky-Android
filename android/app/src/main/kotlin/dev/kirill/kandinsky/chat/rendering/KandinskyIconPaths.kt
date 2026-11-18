@@ -1,3 +1,6 @@
+// Контуры значков переписки на андроиде готовы заранее. Их масштабируем под текущий
+// прямоугольник, чтобы на экранах разной плотности сохранялась форма.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -23,6 +26,8 @@ object KandinskyIconPaths {
     private val paths =
         IconID.entries.associateWith { icon ->
             Path().apply {
+                // Записываем ломаную через заданные пары точек. Каждая новая пара продолжает тот
+                // же контур.
                 fun line(vararg v: Float) {
                     moveTo(v[0], v[1])
                     for (i in 2 until v.size step 2) lineTo(v[i], v[i + 1])
@@ -124,6 +129,8 @@ object KandinskyIconPaths {
             }
         }
 
+    // Переносим начало рисунка к кнопке, масштабируем заготовку и выбираем заливку или штрих.
+    // Остальные элементы холста не получают преобразование этой кнопки.
     fun draw(c: Canvas, icon: IconID, rect: RectF, color: Int, width: Float = 1.8f) {
         val side = if (icon == IconID.COMPOSE) 26f else 24f
         c.withTranslation(rect.left, rect.top) {

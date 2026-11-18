@@ -1,9 +1,14 @@
+// Загружает доступные модели и переводит поля ответа в данные экрана настроек. Для разных режимов
+// сохраняет только применимые возможности.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
 import org.json.JSONObject
 
 internal class SyncModelCatalog(private val sync: NetworkSync) {
+    // Запрашивает модели вне потока экрана, разбирает ответ и возвращает итог в поток экрана.
+    // Отдельный режим увеличения разрешения не получает обычные параметры создания.
     fun studioModels(completion: (Result<List<StudioModel>>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -27,7 +32,11 @@ internal class SyncModelCatalog(private val sync: NetworkSync) {
         }
     }
 
+    // Собирает варианты качества, размеров, длительности и силы следования запросу. Если сервер
+    // не передал диапазон настройки, экран может её не предлагать.
     private fun studioCapabilities(value: JSONObject): StudioCapabilities {
+        // Разбирает одну группу настроек и сохраняет размеры для каждого формата кадра, если их
+        // прислал сервер. Так одинаковый выбор качества и размеров читается одним способом.
         fun choices(key: String): List<StudioChoice> {
             val array = value.getJSONArray(key)
             return List(array.length()) { index ->

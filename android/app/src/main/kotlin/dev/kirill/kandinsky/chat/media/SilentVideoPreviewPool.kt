@@ -1,3 +1,6 @@
+// Переиспользует тихие видео при прокрутке и ограничивает число открытых. При нехватке места
+// закрывает давно невидимое.
+
 package dev.kirill.kandinsky.chat.media
 
 // Ближайшие ролики остаются на паузе. Видимый ролик вытесняет самый давний невидимый.
@@ -9,6 +12,8 @@ class SilentVideoPreviewPool {
     private var triedPreparation = false
     private var limit = 2
 
+    // Запоминает видимые ролики, предел и ближайший источник подготовки. Переводит остальных в
+    // невидимое состояние и убирает избыток.
     fun beginFrame(
         visibleKeys: List<VideoPlaybackKey>,
         limit: Int,
@@ -29,6 +34,8 @@ class SilentVideoPreviewPool {
         while (entries.size > this.limit && evictPaused()) {}
     }
 
+    // Находит открытое видео или даёт место новому видимому. Невидимому разрешает раннюю
+    // подготовку, только когда рядом есть свободное место.
     fun preview(key: VideoPlaybackKey, create: () -> SilentVideoPreview): SilentVideoPreview? {
         val onScreen = key in visible
         if (!onScreen && (key != preparing || visible.size >= limit)) return null
@@ -51,6 +58,8 @@ class SilentVideoPreviewPool {
         }
     }
 
+    // Закрывает первую давнюю запись за пределами видимой области и снимает её с учёта. Так
+    // видимые ролики не теряют проигрыватель.
     private fun evictPaused(): Boolean {
         val key = order.firstOrNull { it !in visible } ?: return false
         order.remove(key)
@@ -58,6 +67,7 @@ class SilentVideoPreviewPool {
         return true
     }
 
+    // Снимает все ключи и закрывает каждый тихий просмотр. Старая лента больше не занимает место.
     fun clear() {
         val old = entries.values.toList()
         entries.clear()

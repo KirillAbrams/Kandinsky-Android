@@ -1,3 +1,6 @@
+// Принимает кадры с номером привязки и передаёт экрану последний допустимый. Отклонённые и
+// заменённые кадры закрываются, чтобы не копиться в памяти.
+
 package dev.kirill.kandinsky.chat.media.kernel
 
 internal class MediaSurfaceMailbox<T : AutoCloseable>(
@@ -16,6 +19,8 @@ internal class MediaSurfaceMailbox<T : AutoCloseable>(
     private var scheduled = false
     private var render: ((T?) -> Unit)? = render
 
+    // Назначает новый номер источника, убирает ожидающий кадр и по просьбе сохраняет показанный.
+    // Поздний кадр со старым номером больше не сможет его вытеснить.
     fun begin(preservingDisplay: Boolean = false): Long? {
         var old: T?
         val token: Long?
@@ -43,9 +48,8 @@ internal class MediaSurfaceMailbox<T : AutoCloseable>(
         return token
     }
 
-    // Заменённый или отклонённый кадр закрывает самостоятельно, поэтому владение передаётся даже
-    // при
-    // отказе.
+    // Проверяет номер источника и порядок кадра. Если новый кадр подходит, заменяет ожидающий,
+    // иначе закрывает сам новый. В обоих случаях лишний ресурс освобождается.
     fun offer(token: Long, serial: Long, frame: T): Boolean {
         val old: T?
         val accepted: Boolean
@@ -68,14 +72,20 @@ internal class MediaSurfaceMailbox<T : AutoCloseable>(
         return accepted
     }
 
+    // Сбрасывает картинку и текущую привязку, сохраняя возможность открыть другую. Это подходит
+    // для повторного использования элемента ленты.
     fun clear() {
         invalidate(terminal = false)
     }
 
+    // Завершает работу с кадрами и больше не принимает привязок. После очистки убирает и действие
+    // показа.
     override fun close() {
         invalidate(terminal = true)
     }
 
+    // Прерывает текущую привязку и переносит очистку картинки на запланированное обновление.
+    // Ожидающий кадр закрывается сразу.
     private fun invalidate(terminal: Boolean) {
         val old: T?
         val notify: Boolean
@@ -94,17 +104,23 @@ internal class MediaSurfaceMailbox<T : AutoCloseable>(
         if (notify) enqueueNotice()
     }
 
+    // Даёт назначить одно обновление, пока прежнее ещё ждёт. При большом потоке кадров экран
+    // получает последнюю версию.
     private fun markNotice(): Boolean {
         if (scheduled) return false
         scheduled = true
         return true
     }
 
+    // Ставит показ в очередь и снимает отметку назначения перед чтением кадра. Это позволяет
+    // следующему изменению снова запланировать показ.
     private fun enqueueNotice() = schedule {
         synchronized(gate) { scheduled = false }
         flush()
     }
 
+    // При изменении выбирает следующий кадр или очищает картинку, затем вызывает показ.
+    // Освобождает старый кадр даже при ошибке обновления.
     fun flush() {
         var old: T? = null
         try {

@@ -1,3 +1,7 @@
+// Просмотрщик на андроиде показывает отдельное фото или страницу галереи. Он управляет загрузкой
+// оригинала, оставляет уменьшенный кадр для соседей и возвращает сохранённый кадр видео. Масштаб
+// и касания принадлежат странице, а переходы между файлами ведёт галерея.
+
 package dev.kirill.kandinsky.chat.results
 
 import android.animation.ValueAnimator
@@ -46,6 +50,8 @@ class PhotoViewerController(
         private set
 
     val pageIsZoomed
+        // Передаём галерее, увеличена ли картинка. Пока масштаб больше обычного, горизонтальное
+        // движение должно перемещать фото внутри страницы.
         get() = image?.isZoomed == true
 
     private val main = Handler(Looper.getMainLooper())
@@ -61,13 +67,19 @@ class PhotoViewerController(
     private var captionView: TextView? = null
     private var captionShade: View? = null
 
+    // Вложенную страницу очищаем сразу, поскольку её окно принадлежит галерее. Для
+    // самостоятельного просмотра закрываем свой диалог, который снимет ресурсы после ухода.
     fun close() {
         if (embedded) cleanup() else dialog?.dismiss()
     }
 
+    // Назначаем постоянное имя кнопкам и подписи просмотрщика. Их можно найти с помощью средств
+    // доступности независимо от цвета и положения.
     private fun identity(view: View, id: String) {
         view.accessibilityDelegate =
             object : View.AccessibilityDelegate() {
+                // Добавляем постоянное имя после системного описания элемента. Остальные свойства
+                // кнопки и её действие остаются доступны.
                 override fun onInitializeAccessibilityNodeInfo(
                     host: View,
                     info: AccessibilityNodeInfo,
@@ -78,6 +90,8 @@ class PhotoViewerController(
             }
     }
 
+    // Открываем самостоятельное окно только один раз и связываем закрытие с уборкой. После показа
+    // начинаем подготовку оригинала, если файл не использует общий путь фотографии генерации.
     fun show() {
         if (dialog != null || embedded || closed) return
         val d = Dialog(activity, android.R.style.Theme_Material_NoActionBar_Fullscreen)
@@ -98,16 +112,23 @@ class PhotoViewerController(
         if (!sharedStudioPhoto) loadOriginal()
     }
 
-    // Создаёт её при первом обращении и отклоняет вызов для самостоятельной или закрытой страницы
+    // Возвращаем готовую область вложенной страницы либо собираем её при первом запросе. Для
+    // самостоятельного или уже закрытого просмотра такой вызов означает ошибку владельца.
     fun pageView(): View {
         check(embedded && !closed)
         return pageRoot ?: createRoot()
     }
 
+    // Просим слой страницы вернуть доступный удержанный кадр. Пока слой не создан, галерея может
+    // обойтись без отдельного изображения.
     fun retainedPreview(): PreparedImage? = image?.retainedPreview()
 
+    // Передаём странице просьбу показать сохранённый кадр. Галерея пользуется этим после переноса
+    // или снятия поверхности ролика.
     fun showLastVideoFrame() { image?.showLastVideoFrame() }
 
+    // Возвращаем отметку ручной отмены при повторном создании страницы. Готовим область, чтобы
+    // вместо автоматической загрузки появилась кнопка повтора.
     fun pauseOriginal() {
         if (!closed) {
             pageView()
@@ -115,6 +136,9 @@ class PhotoViewerController(
         }
     }
 
+    // У выбранной страницы показываем готовый оригинал, начинаем его загрузку или оставляем
+    // ручной повтор. Когда страница становится соседней, отменяем ненужную работу и снижаем
+    // размер картинки.
     fun setPageActive(value: Boolean) {
         if (closed || active == value) return
         active = value
@@ -133,6 +157,8 @@ class PhotoViewerController(
         }
     }
 
+    // Создаём слой изображения, кнопки хода и повтора, а при необходимости подпись. Применяем
+    // отступы системы к кнопке выхода и подписи, чтобы они не закрывались краями окна.
     private fun createRoot(): FrameLayout {
         val density = activity.resources.displayMetrics.density
         val root = FrameLayout(activity)
@@ -237,6 +263,9 @@ class PhotoViewerController(
         return root
     }
 
+    // Для текущей страницы просим оригинал из хранилища и отмечаем ход передачи. Номер попытки и
+    // исходная область защищают от ответа после ухода. У фотографии генерации повтор запускает её
+    // общий слой.
     private fun loadOriginal() {
         val root = pageRoot ?: return
         if (!active || closed) return
@@ -278,6 +307,8 @@ class PhotoViewerController(
             }
     }
 
+    // Отменяем текущую работу, сбрасываем ход передачи и делаем прежние ответы недействительными.
+    // Ручная отмена оставляет кнопку, которой пользователь разрешит следующую попытку.
     private fun cancelDownload(showRetry: Boolean) {
         generation++
         download?.cancel()
@@ -290,6 +321,8 @@ class PhotoViewerController(
         retry?.visibility = if (showRetry) View.VISIBLE else View.GONE
     }
 
+    // Заканчиваем загрузку и закрываем рисунок ровно один раз. Сбрасываем ссылки на кадры и
+    // кнопки, а отдельное окно дополнительно отдаёт простаивающие рисунки хранилищу.
     private fun cleanup() {
         if (closed) return
         closed = true
@@ -342,13 +375,20 @@ class PhotoViewerController(
                 invalidate()
             }
 
-        // Уведомление передаётся отложенно, когда владелец изображения уже установлен
+        // Проверяем, есть ли у слоя чёткий кадр. Галерея по этому признаку запоминает, что уже
+        // показывала этот файл подходящего качества.
         private fun hasSharpFrame(): Boolean = slot.hasSharpFrame
 
+        // Читаем состояние подготовки изображения в самом слое. Пока оно истинно, не отключаем
+        // ход работы по одному наличию оригинального файла.
         private fun slotLoading(): Boolean = slot.loading
 
+        // Проверяем ошибку подготовки кадра. Готовый файл и декодированное изображение могут
+        // иметь разное состояние, поэтому ошибка определяется отдельно.
         private fun slotFailed(): Boolean = slot.loadFailed
 
+        // Объявляем рисунок доступным для касания. Нажатие может скрыть подписи даже когда на
+        // странице нет отдельных кнопок.
         init {
             isClickable = true
         }
@@ -358,15 +398,25 @@ class PhotoViewerController(
         private var panX = 0f
         private var panY = 0f
         val isZoomed
+            // Проверяем фактический масштаб изображения с малым допуском. На обычном масштабе не
+            // удерживаем жест внутри страницы.
             get() = scale > 1.01f
 
+        // Берём удержанную копию кадра из слоя, чтобы повторно использовать её на другой
+        // поверхности без чтения файла.
         fun retainedPreview(): PreparedImage? = slot.preview()
 
+        // Заменяем видимый кадр последним сохранённым снимком конкретного видео, если он есть.
+        // Страница остаётся видимой после ухода проигрывателя.
         fun showLastVideoFrame() { slot.showSavedPlaybackFrame(playbackKey) }
 
         val needsRetry
+            // По ошибке слоя определяем, нужен ли повтор общего кадра. Тогда решение о кнопке не
+            // зависит от самостоятельной загрузки оригинала.
             get() = slot.loadFailed
 
+        // Обновляем слой фотографии генерации и повторно привязываем его к странице. Ей не нужно
+        // открывать отдельный путь загрузки обычного файла.
         fun retryStudioPhoto() {
             slot.refresh()
             bind()
@@ -380,12 +430,16 @@ class PhotoViewerController(
             ScaleGestureDetector(
                 activity,
                 object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    // Останавливаем прежнюю анимацию и отдаём жест увеличения странице. Для видео
+                    // масштабирование запрещено, чтобы не спорить с полноэкранным показом.
                     override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
                         animator?.cancel()
                         parent?.requestDisallowInterceptTouchEvent(true)
                         return !attachment.mime.startsWith("video/")
                     }
 
+                    // Умножаем текущий масштаб на изменение расстояния между пальцами. Точку под
+                    // жестом передаём в общий пересчёт, чтобы картинка не уходила из-под них.
                     override fun onScale(detector: ScaleGestureDetector): Boolean {
                         setScale(scale * detector.scaleFactor, detector.focusX, detector.focusY)
                         return true
@@ -399,12 +453,16 @@ class PhotoViewerController(
             GestureDetector(
                 activity,
                 object : GestureDetector.SimpleOnGestureListener() {
-                    // При увеличенном масштабе запрещает родителю перехватывать жест перемещения
+                    // Увеличенное фото удерживает начало жеста у себя. На обычном масштабе
+                    // галерея может забрать движение для перелистывания.
                     override fun onDown(e: MotionEvent): Boolean {
                         parent?.requestDisallowInterceptTouchEvent(isZoomed)
                         return true
                     }
 
+                    // Выполняем короткое нажатие сразу или после выхода из обработчика жестов.
+                    // Так подтверждение при отпускании и подтверждение по таймеру приводят к
+                    // одному действию.
                     override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                         // Быстрое нажатие подтверждается таймером, медленное может подтвердиться
                         // прямо при отпускании. В обоих случаях действие вызывается один раз.
@@ -413,6 +471,8 @@ class PhotoViewerController(
                         return true
                     }
 
+                    // Для фотографии плавно переходим между обычным и увеличенным видом вокруг
+                    // точки нажатия. У ролика этот жест не меняет масштаб.
                     override fun onDoubleTap(e: MotionEvent): Boolean {
                         if (attachment.mime.startsWith("video/")) return false
                         val start = scale
@@ -426,6 +486,8 @@ class PhotoViewerController(
                         return true
                     }
 
+                    // Во время увеличения перемещаем картинку в допустимых пределах. При обычном
+                    // размере следим за вертикальным уходом, чтобы предложить закрытие жестом.
                     override fun onScroll(
                         first: MotionEvent?,
                         current: MotionEvent,
@@ -448,19 +510,24 @@ class PhotoViewerController(
                 },
             )
 
-        // Повторно связывает изображение с доступным качеством и просит перерисовку
+        // Сохраняем уменьшенный кадр, выбираем новое качество слоя и запрашиваем отрисовку. Так
+        // после получения оригинала страница может поднять чёткость.
         fun reload() {
             retainStandbyPreview()
             bind()
             invalidate()
         }
 
+        // Повторно выбираем размер слоя после ухода со страницы и оставляем сохранённый
+        // уменьшенный кадр. Освобождённая память доступна следующему оригиналу.
         fun demote() {
             bind()
             // Освобождаем оригинал до загрузки крупного кадра на соседней странице.
             standbyPreview?.retained()?.let { slot.seed(it, allowDownscale = true) }
         }
 
+        // Ограничиваем масштаб и пересчитываем смещение вокруг точки жеста. Очищаем движение
+        // закрытия и обновляем озвучиваемое значение масштаба.
         private fun setScale(value: Float, focusX: Float, focusY: Float) {
             val next = value.coerceIn(1f, 4f)
             val ratio = next / scale
@@ -473,6 +540,8 @@ class PhotoViewerController(
             invalidate()
         }
 
+        // Оставляем смещение в пределах увеличенного изображения. Когда по оси рисунок меньше
+        // окна, фиксируем его по центру.
         private fun clampPan() {
             val x = max(0f, (fitted.width() * scale - width) / 2)
             val y = max(0f, (fitted.height() * scale - height) / 2)
@@ -480,6 +549,8 @@ class PhotoViewerController(
             panY = panY.coerceIn(-y, y)
         }
 
+        // Считаем прямоугольник изображения по фактическому окну и ориентации файла. Для
+        // изменившегося размера ограничиваем смещение и заново связываем слой.
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             val iw =
                 maxOf(
@@ -502,6 +573,8 @@ class PhotoViewerController(
             bind()
         }
 
+        // Берём маленький кадр из хранилища или текущего слоя и держим одну копию для возврата.
+        // Слишком крупный кадр закрываем сразу, чтобы соседям не достался расход оригинала.
         private fun retainStandbyPreview() {
             val limit = if (embedded) 384 else 1024
             val candidate =
@@ -515,6 +588,9 @@ class PhotoViewerController(
             standbyPreview = candidate
         }
 
+        // Выбираем размер подготовленного кадра по активности страницы и готовности файла.
+        // Готовое изображение, переданное лентой, используем один раз, прежде чем ждать
+        // собственную подготовку.
         private fun bind() {
             if (!closed && !fitted.isEmpty) {
                 originalBound = active && hasOriginal && (standbyPreview != null || slotFailed())
@@ -535,6 +611,8 @@ class PhotoViewerController(
             }
         }
 
+        // Применяем масштаб и смещение к рисунку, оставляя элементы управления на месте.
+        // Используем подходящий путь рисования для экрана либо программной поверхности.
         override fun onDraw(c: Canvas) {
             c.withTranslation(width / 2f + panX, height / 2f + panY + dismissY) {
                 c.scale(scale, scale)
@@ -547,6 +625,8 @@ class PhotoViewerController(
             }
         }
 
+        // Передаём одиночное касание галерее или переключаем подпись и кнопку отдельного
+        // просмотра. Обычный системный вызов нажатия при этом сохраняется.
         override fun performClick(): Boolean {
             val handledByView = super.performClick()
             if (embedded) {
@@ -562,6 +642,8 @@ class PhotoViewerController(
             return true
         }
 
+        // Разводим касания увеличения, одиночное нажатие и вертикальный выход. После отпускания
+        // закрываем окно при достаточном сдвиге, иначе плавно возвращаем изображение.
         override fun onTouchEvent(event: MotionEvent): Boolean {
             // При втором нажатии распознаватель сначала сообщает о двойном жесте
             // Прежнюю анимацию нужно снять до передачи нового касания
@@ -599,6 +681,8 @@ class PhotoViewerController(
             return true
         }
 
+        // Один раз останавливаем анимацию и отпускаем слой изображения. Удалённая страница больше
+        // не рисует кадры.
         fun close() {
             if (closed) return
             closed = true
@@ -607,6 +691,8 @@ class PhotoViewerController(
             slot.close()
         }
 
+        // Снимаем слой при уходе области из окна независимо от источника закрытия. Позднее
+        // обновление не должно рисовать в уже снятой странице.
         override fun onDetachedFromWindow() {
             close()
             super.onDetachedFromWindow()

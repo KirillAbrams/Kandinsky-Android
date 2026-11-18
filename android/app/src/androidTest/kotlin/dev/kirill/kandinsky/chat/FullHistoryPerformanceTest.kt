@@ -1,3 +1,6 @@
+// Измеряем прокрутку длинной истории от края до края, обратный путь и освобождение ресурсов после
+// выхода. Сохраняем происхождение жестов и связываем измерения с реальными кадрами окна.
+
 package dev.kirill.kandinsky.chat
 
 import android.content.Intent
@@ -18,6 +21,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FullHistoryPerformanceTest {
+    // Сохраняем два варианта срока кадра и проверяем поиск по исходному сроку. При смене
+    // системного выбора старый кадр не должен получить номер нового.
     @Test
     fun frameDataCorrelationKeepsTheOriginalDeadlineAfterResync() {
         org.junit.Assume.assumeTrue(Build.VERSION.SDK_INT >= 33)
@@ -33,6 +38,8 @@ class FullHistoryPerformanceTest {
         assertEquals(-1L, clock.idFor(119, 130))
     }
 
+    // Закрепляем книжное положение на время измерения и проверяем ориентацию перед запуском. В
+    // конце возвращаем прежний поворот и правило автоматического поворота.
     @Test
     fun traverseAndReturn() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -79,7 +86,8 @@ class FullHistoryPerformanceTest {
         }
     }
 
-    // Сохраняет ограниченные измерения ресурсов и наблюдает освобождение истории после закрытия.
+    // Находим тяжёлый чат в сохранённом аккаунте и замеряем путь по истории и обратно.
+    // Ограничиваем журнал замеров и наблюдаем освобождение сцены после выхода.
     private fun runTraversal() {
         val i = InstrumentationRegistry.getInstrumentation()
         val d = UiDevice.getInstance(i)
@@ -121,9 +129,17 @@ class FullHistoryPerformanceTest {
                 .declaredFields
                 .associateBy { it.name }
                 .also { it.values.forEach { f -> f.isAccessible = true } }
+        // Читаем выбранное внутреннее поле открытого экрана по заранее полученному описанию. Это
+        // даёт показания без новых входов в обычный код.
         fun field(name: String) = fields.getValue(name).get(checkNotNull(host))
+        // Получаем структуру, которая считает положение строк истории. По ней проверяем
+        // достижение края и объём загруженной истории.
         fun index() = field("index") as HistoryIndex
+        // Проверяем, принадлежит ли экран запущенному главному окну на переднем плане. Замер
+        // чужого или скрытого окна здесь применять нельзя.
         fun activityState(v: View) = (v.context as? MainActivity)?.isForeground == true
+        // Снимаем положение прокрутки, состояние сцены и показатели ресурсов. Состояние
+        // интерфейса читаем на основном потоке, чтобы не смешать данные соседних кадров.
         fun sample(): JSONObject {
             lateinit var result: JSONObject
             i.runOnMainSync {
@@ -238,6 +254,8 @@ class FullHistoryPerformanceTest {
             prior = checkNotNull(activity.window.callback)
             owned =
                 object : Window.Callback by prior {
+                    // Учитываем события сенсорного экрана, разделяя свои жесты и посторонние
+                    // касания. Затем передаём событие обычному обработчику окна.
                     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                         if (
                             event.source and InputDevice.SOURCE_TOUCHSCREEN ==
@@ -273,9 +291,13 @@ class FullHistoryPerformanceTest {
                 Handler(frameThread.looper),
             )
         }
+        // Ждём доступный элемент с заданной меткой до 15 секунд. Ошибка называет конкретную
+        // кнопку или поле, без которого нельзя продолжать замер.
         fun find(id: String) =
             d.wait(Until.findObject(By.res(id).enabled(true)), 15000) ?: error("Missing $id")
         var disabledBlurNodes = emptyList<Pair<RenderNode, Float>>()
+        // По отдельному параметру измерения временно выключаем размытие у найденных слоёв и
+        // запоминаем прежние значения. Это даёт сравнить стоимость эффекта на том же экране.
         fun controlBlur() {
             if (InstrumentationRegistry.getArguments().getString("blur") != "off") return
             i.runOnMainSync {
@@ -313,6 +335,8 @@ class FullHistoryPerformanceTest {
                 .toLong()
                 .coerceIn(0, 1500)
         var injectedGestures = 0
+        // Передаём плавный жест через систему и проверяем доставку его окончания в настоящее
+        // окно. Отклонённое или постороннее касание делает замер непригодным.
         fun fling(forward: Boolean) {
             val location = IntArray(2)
             var bounds = android.graphics.RectF()
@@ -384,6 +408,8 @@ class FullHistoryPerformanceTest {
             injectedGestures++
             if (gestureIdle > 0) SystemClock.sleep(gestureIdle)
         }
+        // Повторяем жесты в указанную сторону до края или предельного времени. Записываем
+        // начальное и конечное положение и требуем достижение края там, где это часть сценария.
         fun traverse(name: String, forward: Boolean, maxSeconds: Long, requiredEndpoint: Boolean) {
             phase.set(name)
             Trace.beginAsyncSection("Kandinsky.Full." + name, 2)
@@ -469,6 +495,8 @@ class FullHistoryPerformanceTest {
             while (SystemClock.uptimeMillis() < historyDeadline) {
                 var ready = false
                 i.runOnMainSync {
+                    // Обходим дочерние элементы окна и ищем экран истории. Первый поиск нужен,
+                    // чтобы дождаться загрузки подходящего чата перед замером.
                     fun locate(v: View): ChatScrollHost? {
                         if (v is ChatScrollHost) return v
                         if (v is ViewGroup)
@@ -484,6 +512,9 @@ class FullHistoryPerformanceTest {
                 SystemClock.sleep(20)
             }
             i.runOnMainSync {
+                // Повторно находим экран истории после открытия и привязываем к нему считывание
+                // показателей. Замер должен использовать текущий объект, даже если прежний экран
+                // уже заменён.
                 fun locate(v: View): ChatScrollHost? {
                     if (v is ChatScrollHost) return v
                     if (v is ViewGroup)
@@ -615,6 +646,8 @@ private class MeasuredFrameTimelineClock : Choreographer.VsyncCallback, AutoClos
     var bookkeepingNs = 0L
         private set
 
+    // На основном потоке подписываемся на сведения системы о новых кадрах. Повторный запуск
+    // оставляет одну подписку, чтобы не удвоить наблюдения.
     fun start() {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (active) return
@@ -623,6 +656,8 @@ private class MeasuredFrameTimelineClock : Choreographer.VsyncCallback, AutoClos
         choreographer!!.postVsyncCallback(this)
     }
 
+    // Для времени кадра сохраняем каждую предложенную пару срока и номера. Отдельно считаем
+    // длительность учёта, чтобы оценить нагрузку самого наблюдателя.
     override fun onVsync(data: Choreographer.FrameData) {
         if (!active) return
         val start = System.nanoTime()
@@ -639,8 +674,8 @@ private class MeasuredFrameTimelineClock : Choreographer.VsyncCallback, AutoClos
         choreographer?.postVsyncCallback(this)
     }
 
-    // Под защитой от одновременного доступа сохраняет варианты соответствия для одного времени
-    // кадра.
+    // Под защитой кладём варианты кадра по его времени и оставляем не больше 2048 записей. Старые
+    // исключаем, чтобы длительный замер не копил память без предела.
     fun remember(time: Long, candidates: LongArray) {
         synchronized(lock) {
             ids.put(time, candidates)
@@ -648,6 +683,8 @@ private class MeasuredFrameTimelineClock : Choreographer.VsyncCallback, AutoClos
         }
     }
 
+    // Ищем номер по точному времени кадра и сроку. При отсутствии пары возвращаем признак
+    // пропуска, вместо того чтобы соединить показания разных кадров.
     fun idFor(time: Long, deadline: Long): Long =
         synchronized(lock) {
             val candidates = ids[time] ?: return@synchronized -1L
@@ -656,6 +693,8 @@ private class MeasuredFrameTimelineClock : Choreographer.VsyncCallback, AutoClos
             -1L
         }
 
+    // На основном потоке выключаем подписку и удаляем ожидание следующего кадра. Закрытый замер
+    // больше не должен собирать события.
     override fun close() {
         check(Looper.myLooper() == Looper.getMainLooper())
         active = false

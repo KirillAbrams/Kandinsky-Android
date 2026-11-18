@@ -1,3 +1,6 @@
+// Запрашивает быстрый режим экрана Андроида на время активной прокрутки. Фактическую частоту
+// выбирает система с учётом состояния устройства.
+
 package dev.kirill.kandinsky.chat.diagnostics
 
 import android.view.Window
@@ -7,6 +10,9 @@ class ActiveDisplayPolicy(private val window: Window) : AutoCloseable {
     private var ownedMode: Int? = null
     private var previous = 0
 
+    // Среди режимов текущего размера выбирает самый частый, запоминает прежний запрос и
+    // восстанавливает его после движения. Если другой владелец уже изменил настройку окна, не
+    // затирает её.
     fun setActive(active: Boolean) {
         if (active == (ownedMode != null)) return
         val attributes = window.attributes
@@ -33,6 +39,8 @@ class ActiveDisplayPolicy(private val window: Window) : AutoCloseable {
         }
     }
 
+    // Снимает собственный запрос частоты через обычное завершение активности. Окно возвращается к
+    // прежнему режиму, когда настройка ещё принадлежит этому объекту.
     override fun close() {
         setActive(false)
     }

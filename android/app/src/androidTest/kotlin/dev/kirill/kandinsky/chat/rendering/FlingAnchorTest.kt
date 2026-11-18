@@ -1,3 +1,6 @@
+// Проверяем, что добавление старых строк выше экрана сохраняет видимое сообщение во время
+// настоящей инерции.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
@@ -19,8 +22,13 @@ class FlingAnchorTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Выполняем переданное действие на основном потоке телефона. Чтение или изменение сцены с
+    // другого потока могло бы дать неверный замер.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Дожидаемся готового текста и запускаем жест в настоящем окне. Добавляем десять строк сверху
+    // и проверяем, что видимое сообщение уехало только на небольшое расстояние от самой
+    // прокрутки.
     @Test
     fun prependWhileActualNativeFlingIsActiveKeepsVisibleMessage() {
         val device = UiDevice.getInstance(i)

@@ -1,3 +1,6 @@
+// Выполняет копирование и удаление выбранной строки Андроида. Ограничивает поиск открытой
+// историей и передаёт итоговое изменение экрана.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -13,6 +16,8 @@ class MessageActions(
 ) {
     var onDelta: ((MessageDelta) -> Unit)? = null
 
+    // Находит ключ строки в выбранном чате и читает порцию вокруг него. Отмена останавливает
+    // ожидающее чтение и не выдаёт результат ушедшему экрану.
     private fun message(id: MessageID, callback: (Result<Message>) -> Unit): Cancellation {
         val cancelled = AtomicBoolean(false)
         val current = AtomicReference<Cancellation?>()
@@ -49,6 +54,8 @@ class MessageActions(
         }
     }
 
+    // Берёт текст найденного сообщения, а при пустом тексте его подпись. Действие копирования
+    // вызывается только после успешного чтения.
     fun copy(id: MessageID, callback: (Result<String>) -> Unit): Cancellation =
         message(id) { result ->
             callback(
@@ -60,6 +67,8 @@ class MessageActions(
             )
         }
 
+    // Проверяет строку, удаляет её и сохраняет правку черновика, если он ссылался на неё. Только
+    // затем сообщает экрану об успешной операции.
     fun delete(id: MessageID, callback: (Result<MessageDelta>) -> Unit): Cancellation =
         message(id) { result ->
             result.fold(

@@ -1,8 +1,14 @@
+// При удалении сообщения переносим место чтения к соседней записи. Пересчитываем его по списку
+// строк до удаления, пока можно найти старое положение.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
 
 object ReadingAnchorResolver {
+    // Меняем только точку, привязанную к удалённой строке. Ищем первую оставшуюся ниже, затем
+    // выше. Задаём новый номер без старого смещения внутри текста, которое относилось к другому
+    // сообщению.
     fun afterRemoving(
         anchor: ReadingAnchor,
         rows: List<IndexedRow>,

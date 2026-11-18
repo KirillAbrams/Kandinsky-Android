@@ -1,9 +1,13 @@
+// Проверяет ограниченное хранилище числовых замеров Андроида и порядок последних значений.
+
 package dev.kirill.kandinsky.chat.diagnostics
 
 import org.junit.Assert.*
 import org.junit.Test
 
 class MetricsTest {
+    // Записывает десять значений в буфер на четыре места. Проверяет общий счёт, середину
+    // оставшихся значений и порядок последних четырёх.
     @Test
     fun boundedNumbersKeepOnlyTheConfiguredWindow() {
         val r = MetricsRecorder(4)

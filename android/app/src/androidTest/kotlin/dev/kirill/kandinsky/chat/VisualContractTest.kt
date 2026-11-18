@@ -1,3 +1,6 @@
+// Проверяем сохранённые свойства внешнего вида и состав приложения, включая значки, лицензию и
+// отсутствие файлов тестовой истории в выпуске.
+
 package dev.kirill.kandinsky.chat
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -8,6 +11,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class VisualContractTest {
+    // Создаём прежнее звуковое вложение и проверяем подпись, геометрию и цвет рисунка. Учёт
+    // данных старой записи сохраняется без показа прежних голосовых кнопок.
     @Test
     fun storedAudioKeepsCaptionWithoutVoiceControls() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
@@ -76,6 +81,8 @@ class VisualContractTest {
         }
     }
 
+    // Проверяем размеры значка скрепки и текст его лицензии среди ресурсов приложения. Случайное
+    // исключение значка или обязательного текста останавливает проверку.
     @Test
     fun drawerPaperclipAndItsLicenseAreBundled() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -90,6 +97,8 @@ class VisualContractTest {
         assertTrue(license.contains("Tailwind Labs"))
     }
 
+    // Загружаем значок приложения и изображения рабочих кнопок. Проверка обнаруживает
+    // отсутствующий рисунок или файл, который нельзя отобразить.
     @Test
     fun generationArtworkRemainsInApplication() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -126,8 +135,8 @@ class VisualContractTest {
         }
     }
 
-    // Подготовленная история не должна находиться в обычном приложении, но остаётся доступной
-    // проверкам.
+    // Ищем опись истории в обоих наборах и читаем пример фото из тестового. Рабочий выпуск не
+    // должен нести эту подборку.
     @Test
     fun fixtureFilesBelongOnlyToTestPackage() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -137,9 +146,13 @@ class VisualContractTest {
         assertTrue(assets.open("media/photo-000.jpg").use { it.readBytes() }.isNotEmpty())
     }
 
+    // Рисуем значки до и после значка меню и сравниваем их пиксели. Это ловит смену заливки или
+    // пера, которая случайно осталась в общей кисти.
     @Test
     fun iconPaintStyleDoesNotDependOnPreviousGlyph() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            // Рисуем один значок в маленькую картинку и возвращаем массив пикселей. Сравнение
+            // результата выявляет изменение, которого не видно по имени или размеру значка.
             fun snapshot(icon: dev.kirill.kandinsky.chat.rendering.IconID): IntArray {
                 val image =
                     android.graphics.Bitmap.createBitmap(

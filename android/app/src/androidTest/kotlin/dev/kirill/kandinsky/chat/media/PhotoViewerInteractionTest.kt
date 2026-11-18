@@ -1,3 +1,6 @@
+// Проверки просмотра вложений на андроиде через видимое окно и настоящие жесты. Они сверяют
+// изображения, подписи, размер, перелистывание и возврат проигрывателя после закрытия.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -19,7 +22,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoViewerInteractionTest {
-    // Одного окна недостаточно: сохранённый аккаунт ещё открывается и может заменить его содержимое.
+    // Ждём доступное поле переписки или форму входа, пока приложение восстанавливает стартовый
+    // экран. Одно появление окна ещё не означает, что оно готово к проверке.
     private fun awaitApplicationContent(device: UiDevice) {
         val deadline = SystemClock.uptimeMillis() + 30_000
         while (SystemClock.uptimeMillis() < deadline) {
@@ -32,6 +36,8 @@ class PhotoViewerInteractionTest {
         fail("The native conversation or account screen must finish opening before the viewer test")
     }
 
+    // Листаем большие фото и измеряем готовые рисунки страниц. Неактивные изображения занимают
+    // меньше памяти, чтобы следующий оригинал поместился.
     @Test
     fun pagingLargeOriginalsReleasesInactiveResolutionBeforeTheNextDecode() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -52,6 +58,8 @@ class PhotoViewerInteractionTest {
         val h = RepositoryHarness.open(File(context.cacheDir, "gallery-large-" + UUID.randomUUID()))
         lateinit var media: MediaStore
         val pages = mutableListOf<PhotoViewerController>()
+        // Ждём заданного состояния страницы в потоке экрана. Ограниченное ожидание даёт фоновому
+        // чтению закончиться и показывает этап при ошибке.
         fun state(label: String, predicate: () -> Boolean) {
             val end = SystemClock.uptimeMillis() + 5000
             while (SystemClock.uptimeMillis() < end) {
@@ -132,6 +140,8 @@ class PhotoViewerInteractionTest {
                     )
                 }
             }
+            // Берём ширину рисунка конкретной страницы и закрываем полученную копию. Размер
+            // подтверждает, где оригинал, а где облегчённый сосед.
             fun width(index: Int): Int {
                 val image = pages[index].retainedPreview()
                 return try {
@@ -188,6 +198,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Готовим три соседних рисунка и отменяем чтение текущего оригинала. Свайп и обновление
+    // истории не должны сдвинуть страницу или потерять соседние кадры.
     @Test
     fun adjacentPreviewsSurviveCancellingOnlyTheSelectedOriginal() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -213,6 +225,8 @@ class PhotoViewerInteractionTest {
         var viewer: MediaGalleryController? = null
         val originals = java.util.concurrent.atomic.AtomicInteger()
         val cancelled = java.util.concurrent.atomic.AtomicInteger()
+        // Проверяем очередное условие галереи из потока экрана до установленного срока. Сообщаем
+        // об ошибке, если состояние так и не пришло.
         fun state(label: String, predicate: () -> Boolean) {
             val end = SystemClock.uptimeMillis() + 5000
             while (SystemClock.uptimeMillis() < end) {
@@ -223,6 +237,8 @@ class PhotoViewerInteractionTest {
             }
             fail(label)
         }
+        // Собираем вложенные виды галереи. По ним можно найти страницы и кнопки, не завися от
+        // глубины их размещения.
         fun descendants(view: View): List<View> =
             if (view is ViewGroup)
                 (0 until view.childCount).flatMap {
@@ -334,6 +350,8 @@ class PhotoViewerInteractionTest {
                         it.javaClass.simpleName == "Pager"
                     }
             }
+            // Рисуем содержимое страницы и ищем видимые точки. Это проверяет настоящий рисунок,
+            // поскольку наличие контейнера ещё не означает наличие изображения.
             fun hasPixels(page: View): Boolean {
                 val content = (page as ViewGroup).getChildAt(0)
                 if (content.width == 0 || content.height == 0) return false
@@ -416,6 +434,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Открываем фото и перелистываем на видео и следующее фото. Сверяем одно непрозрачное окно,
+    // одну поверхность, сохранённый кадр ролика и возврат к месту чтения.
     @Test
     fun photoVideoPhotoPagesReuseOneOpaqueWindowAndOnePlayer() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -460,6 +480,8 @@ class PhotoViewerInteractionTest {
                     .map { files.getJSONObject(it) }
                     .first { it.getString("mime") == "image/jpeg" }
                     .getString("fileName")
+            // Подготавливаем указанный файл с нужным видом во временном хранилище. Так фото и
+            // видео проходят обычный путь приложения.
             fun stage(path: String, mime: String) =
                 awaitResult<AttachmentDraft> { cb ->
                     i.runOnMainSync {
@@ -547,6 +569,8 @@ class PhotoViewerInteractionTest {
                 device.wait(Until.hasObject(By.res("viewer.pages")), 5000),
             )
             assertTrue(device.hasObject(By.text(first.caption)))
+            // Проводим пальцем от правого края к левому через середину галереи. Удерживаем
+            // одинаковую длину и число шагов для сравнения переходов.
             fun swipeNext() {
                 device.swipe(
                     device.displayWidth * 4 / 5,
@@ -556,6 +580,8 @@ class PhotoViewerInteractionTest {
                     12,
                 )
             }
+            // Выполняем обратный жест по той же высоте и длине. Это проверяет возврат к ранее
+            // показанному вложению.
             fun swipeBack() {
                 device.swipe(
                     device.displayWidth / 5,
@@ -565,6 +591,8 @@ class PhotoViewerInteractionTest {
                     12,
                 )
             }
+            // Повторяем проверку проигрывателя до срока из потока экрана. Подпись помогает
+            // отличить ожидание первого кадра от ожидания паузы.
             fun waitForPlayer(message: String, predicate: () -> Boolean) {
                 val deadline = SystemClock.uptimeMillis() + 5_000
                 var matches = false
@@ -592,6 +620,8 @@ class PhotoViewerInteractionTest {
                 assertEquals(1, player.activePlayerCount)
                 assertTrue(WindowInspector.getGlobalWindowViews().contains(galleryWindow))
             }
+            // Находим нужную поверхность среди вложенных видов окна. Видимые подписи и рисунок
+            // затем сверяем с состоянием общего проигрывателя.
             fun descendants(view: View): List<View> =
                 if (view is ViewGroup) (0 until view.childCount).flatMap {
                     listOf(view.getChildAt(it)) + descendants(view.getChildAt(it))
@@ -756,6 +786,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Открываем фото и проверяем чёрный фон в верхней области экрана, затем двигаем изображение.
+    // Переписка не должна проступить у выреза или при перетаскивании.
     @Test
     fun galleryBackingCoversTheDisplayCutoutAndStaysBlackDuringDrag() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -865,6 +897,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Нажимаем фото в истории и ждём отдельное окно. В нём должна сохраниться подпись исходного
+    // сообщения.
     @Test
     fun photoTapPreservesTheCaptionInTheOriginalViewer() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -957,9 +991,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
-    // После закрытия в чат не должен возвращаться ручной проигрыватель и не должно происходить
-    // удаление
-    // результата.
+    // Открываем два результата и проверяем автоматический показ без ручных кнопок. При выходе в
+    // чате не остаётся проигрывателя, а скрытое действие загрузки не срабатывает.
     @Test
     fun studioVideoAutoplaysWithoutTransportAndClosesWithoutAnInlinePlayer() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -991,6 +1024,8 @@ class PhotoViewerInteractionTest {
             surface = InlinePlayerSurface(activity, player)
         }
         try {
+            // Готовим местный видеоматериал через обычную подготовку вложения. Несколько имён
+            // дают раздельные результаты для листания.
             fun stage(name: String) =
                 awaitResult<AttachmentDraft> { cb ->
                     i.runOnMainSync {
@@ -1020,6 +1055,8 @@ class PhotoViewerInteractionTest {
                         it.createAccessibilityNodeInfo().viewIdResourceName == "player.pause"
                 }
             }
+            // Ждём наступления этапа воспроизведения или закрытия и читаем состояние в потоке
+            // экрана. При промахе видно, какое наблюдение не подтвердилось.
             fun waitFor(description: String, check: () -> Boolean) {
                 val end = SystemClock.uptimeMillis() + 8000
                 do {
@@ -1112,6 +1149,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Открываем видео касанием, проверяем подпись, перематываем и ставим на паузу. После возврата
+    // в ленту сохраняются тот же проигрыватель и позиция без нового запуска.
     @Test
     fun videoTapOpensFullScreenWithCaptionAndReturnsTheSamePausedNativeOutput() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -1223,6 +1262,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Открываем выбранное движущееся изображение как исходную ссылку. Проверяем видимые точки и
+    // одинаковые кадры, а проигрыватель для него не выделяется.
     @Test
     fun gifReferenceDisplaysItsStaticOriginalWithoutAMovingDecoder() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -1246,6 +1287,8 @@ class PhotoViewerInteractionTest {
             media = MediaStore(h.store)
             activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        // Ждём готовности видимого оригинала или освобождения в пределах времени. Это отделяет
+        // работу фоновой загрузки от измерения настоящего кадра.
         fun awaitState(label: String, check: () -> Boolean) {
             val end = SystemClock.uptimeMillis() + 5000
             while (SystemClock.uptimeMillis() < end) {
@@ -1329,6 +1372,8 @@ class PhotoViewerInteractionTest {
         }
     }
 
+    // Увеличиваем фото двойным нажатием, двигаем его и сравниваем видимые точки. Затем закрываем
+    // просмотр, чтобы проверить возврат владения.
     @Test
     fun doubleTapZoomPanAndCloseUseTheOriginalSurface() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -1393,7 +1438,11 @@ class PhotoViewerInteractionTest {
             }
             device.waitForIdle(500)
             Thread.sleep(300)
+            // Получаем снимок видимого экрана с помощью системы проверки. По нему измеряем
+            // размеры и сдвиг настоящего изображения.
             fun capture(): Bitmap = checkNotNull(i.uiAutomation.takeScreenshot())
+            // Ищем ожидаемые цветные точки вдоль вертикальной линии и возвращаем высоту занятого
+            // участка. Так проверяем видимый масштаб фото.
             fun coloredHeight(image: Bitmap, x: Int): Int {
                 val ys =
                     (0 until image.height).filter { y ->

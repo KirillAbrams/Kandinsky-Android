@@ -1,3 +1,6 @@
+// Обновляет сообщения и очередь по ответам о принятии и отказе. Эти изменения сохраняются вместе,
+// чтобы после перезапуска не осталось противоречивых сведений.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -6,6 +9,8 @@ import dev.kirill.kandinsky.chat.storage.*
 import java.util.Locale
 import org.json.JSONObject
 
+// Сверяет номер операции и владельца, затем добавляет местной строке номер и порядок сервера.
+// Убирает принятую отправку в той же записи, сохраняя одно сообщение вместо нового.
 internal fun NetworkStore.confirmSentMessages(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
     NetworkStore.transaction(db) {
         val touched = linkedMapOf<Long, MutableSet<Long>>()
@@ -45,6 +50,8 @@ internal fun NetworkStore.confirmSentMessages(db: SQLiteDatabase, json: JSONObje
         deltas(db, touched, emptyMap(), MessageChangeReason.SYNC)
     }
 
+// Отмечает ограниченную порцию команд отклонённой, обновляет их сообщения и убирает связанные
+// удаления. Экран получает точный список строк, у которых появилась ошибка.
 internal fun NetworkStore.recordSendFailure(db: SQLiteDatabase, ids: List<String>, code: String): List<MessageDelta> =
     NetworkStore.transaction(db) {
         if (ids.isEmpty()) return@transaction emptyList()

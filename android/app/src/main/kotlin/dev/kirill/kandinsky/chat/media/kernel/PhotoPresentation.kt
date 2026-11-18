@@ -1,3 +1,6 @@
+// Вычисляет поворот, отражение, масштаб и сдвиг фотографии для показа. Так поворот не требует
+// создавать второй набор пикселей.
+
 package dev.kirill.kandinsky.chat.media.kernel
 
 import kotlin.math.max
@@ -12,6 +15,8 @@ internal data class PhotoPresentation(
     val ty: Double,
 ) {
     companion object {
+        // Принимает допустимые размеры и одну из восьми ориентаций. Масштабирует по большей
+        // стороне области и ставит изображение в центр, чтобы оно заполнило рамку.
         fun filling(
             rawWidth: Int,
             rawHeight: Int,

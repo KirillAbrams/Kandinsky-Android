@@ -1,3 +1,7 @@
+// Подготовка кадра ленты на андроиде читает нужные строки, собирает их рисунки и задаёт сцене,
+// какие файлы видны. Измерения и изменение позиции применяются вместе, чтобы текст не сдвигался
+// между касанием и кадром.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -16,9 +20,8 @@ internal data class PreparedChatRowWindow(
     data class Row(val message: Message, val layout: PreparedText, val x: Float, val top: Double)
 }
 
-// Учитывает шрифт и масштаб, чтобы сохранённая разметка использовалась только при совпадении
-// условий
-// показа.
+// Учитываем редакцию, шрифт, плотность и свободную ширину, а для вложения ещё пропорции с
+// поворотом. Готовый рисунок применяем только к совпавшим условиям.
 internal fun ChatScrollHost.layoutKey(row: Message): TextLayoutKey {
     val viewport = if (layoutWidth > 0) layoutWidth else width
     val visual =
@@ -72,6 +75,8 @@ internal fun ChatScrollHost.layoutKey(row: Message): TextLayoutKey {
     )
 }
 
+// Решаем, от какой стороны вести строку, и оставляем её поля по виду сообщения. Карточки и кнопки
+// результата выравниваются одинаково с остальной лентой.
 internal fun ChatScrollHost.rowLeft(row: Message, prepared: PreparedText): Float {
     prepared.generationCard?.let {
         return (if (it.isBatch || it.generation.isActive) 10 else 6) * d
@@ -83,6 +88,9 @@ internal fun ChatScrollHost.rowLeft(row: Message, prepared: PreparedText): Float
     else (if (media) 6 else 18) * d
 }
 
+// Повторно используем полное окно, пока совпадает диапазон и версии размеров. Запрашиваем
+// ближайшие недостающие сообщения и ставим видимый расчёт первым. Дальние расчёты ограничиваем,
+// чтобы не задержать следующий жест.
 private fun ChatScrollHost.preparedRows(
     window: IntRange,
     current: IntRange,
@@ -148,6 +156,8 @@ private fun ChatScrollHost.preparedRows(
     return ready
 }
 
+// Передаём строку фоновому счётчику размеров только один раз на ключ. Принимаем кадр по текущему
+// номеру сцены и откладываем его высоту до согласования ленты.
 private fun ChatScrollHost.prepareRowLayout(row: Message, key: TextLayoutKey) {
     if (key in inFlight) return
     val ticket = scene.ticket
@@ -161,6 +171,8 @@ private fun ChatScrollHost.prepareRowLayout(row: Message, key: TextLayoutKey) {
     }
 }
 
+// Применяем накопленные измерения только для того же сообщения и ключа. Пересчитываем точку один
+// раз. Во время прокрутки оставляем строку под пальцем вместо перехода в конец.
 private fun ChatScrollHost.applyPreparedHeights() {
     if (pendingHeights.isEmpty()) return
     var anchor = readingAnchor()
@@ -178,6 +190,9 @@ private fun ChatScrollHost.applyPreparedHeights() {
     if (changed) setGeometry(anchor)
 }
 
+// Сначала поправляем размеры, затем собираем видимую сцену и при включённой диагностике
+// записываем время и объём. После этого запрашиваем рисунок и сообщаем открытию, готов ли первый
+// кадр.
 internal fun ChatScrollHost.renderVisibleRows() {
     if (width <= 0 || height <= 0 || closed) return
     applyPreparedHeights()
@@ -208,6 +223,9 @@ internal fun ChatScrollHost.renderVisibleRows() {
     publishInitialFrame(fragments)
 }
 
+// Выбираем видимые и соседние строки по текущему смещению и скорости. Передаём фрагменты сцене,
+// совмещаем проигрыватель и обновляем список озвучиваемых действий. Частые уведомления
+// доступности объединяем, чтобы прокрутка не отправляла одно событие на каждый кадр.
 private fun ChatScrollHost.applyVisibleScene(): List<SceneFragment> {
     mediaPreparation.observe(offset, android.os.SystemClock.uptimeMillis() / 1000.0,
         height.toDouble(), d.toDouble())

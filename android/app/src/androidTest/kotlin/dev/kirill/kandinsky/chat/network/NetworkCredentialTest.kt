@@ -1,3 +1,6 @@
+// Проверяет защиту ключей входа, перенос прежних записей и удаление данных отдельного владельца.
+// Местные проверки выделяют отдельные папки и системные имена ключей.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.ContextWrapper
@@ -15,6 +18,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NetworkCredentialTest {
+    // При явном разрешении проверяет запрет открытого соединения и обращается без ключа к
+    // действующему серверу. Ожидаемый отказ подтверждает защищённое соединение и проверку входа.
     @Test
     fun releaseClientReachesProtectedRouteOverTls() {
         org.junit.Assume.assumeTrue(
@@ -35,6 +40,8 @@ class NetworkCredentialTest {
         }
     }
 
+    // Создаёт файлы двух владельцев, завершает удаление одного и сверяет папки и список профилей.
+    // История, черновик и файлы для передачи второго владельца должны остаться.
     @Test
     fun erasureRemovesOnlyTheOwnersHistoryDraftAndSharedFiles() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
@@ -42,15 +49,25 @@ class NetworkCredentialTest {
         val namespace = base.packageName + ".qa." + UUID.randomUUID()
         val context =
             object : ContextWrapper(base) {
+                // Возвращает отдельное имя проверочного приложения, чтобы системный ключ не
+                // совпал с настоящим.
                 override fun getPackageName() = namespace
 
+                // Добавляет отдельное имя к настройкам теста. Очистка выбора чата не затронет
+                // настройки пользователя.
                 override fun getSharedPreferences(name: String, mode: Int) =
                     base.getSharedPreferences("$namespace.$name", mode)
 
+                // Возвращает временную папку для истории и черновиков. Проверка удаления работает
+                // только в ней.
                 override fun getFilesDir() = File(sandbox, "files").apply { mkdirs() }
 
+                // Возвращает отдельную папку для копий на отправку. Без неё тест мог бы проверить
+                // или очистить настоящий файл.
                 override fun getCacheDir() = File(sandbox, "cache").apply { mkdirs() }
 
+                // Выделяет отдельную папку для записей ключей. Тест удалит её только по
+                // завершении своей проверки.
                 override fun getNoBackupFilesDir() = File(sandbox, "credentials").apply { mkdirs() }
             }
         val credentials = NetworkCredentials(context)
@@ -80,7 +97,8 @@ class NetworkCredentialTest {
         }
     }
 
-    // Архив начинается только с резервного файла, чтобы повторить незавершённую замену записи.
+    // Готовит прежний активный вход и архив только в виде резервной копии. Проверяет неизменность
+    // байтов и системного ключа после обновления и повторного открытия.
     @Test
     fun previousEncryptedRecordsMoveWithoutChangingAccountOrKey() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
@@ -90,10 +108,16 @@ class NetworkCredentialTest {
         val alias = namespace + ".previous.session.v1"
         val context =
             object : ContextWrapper(base) {
+                // Возвращает папку со старыми файлами для обновления. Новое хранилище должно
+                // найти именно эти записи.
                 override fun getNoBackupFilesDir() = root
 
+                // Возвращает имя, от которого образован прежний ключ. Это позволяет проверить
+                // перенос в том же пространстве имён.
                 override fun getPackageName() = namespace
 
+                // Направляет настройки обновляемого аккаунта в отдельное пространство. Реальный
+                // выбор чата не участвует в проверке.
                 override fun getSharedPreferences(name: String, mode: Int) =
                     base.getSharedPreferences("$namespace.$name", mode)
             }
@@ -121,6 +145,9 @@ class NetworkCredentialTest {
                     .put("expiresAtMs", 123456789L)
                     .put("username", "saved")
             val second = JSONObject(session.toString()).put("userId", 43).put("username", "second")
+            // Шифрует условный профиль прежним системным ключом, добавляя номер формата и
+            // начальные байты шифрования. Получается файл, который должен прочитать обновлённый
+            // код.
             fun encrypted(text: String): ByteArray {
                 val cipher =
                     Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
@@ -153,6 +180,8 @@ class NetworkCredentialTest {
         }
     }
 
+    // Меняет активный аккаунт, превышает предел сохранённых входов и портит один байт архива.
+    // Сверяет шифрование и проверяет, что ошибка архива не уничтожает действующий вход.
     @Test
     fun switchingRetainsOldSessionEncryptsAndBoundsAccounts() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
@@ -160,10 +189,16 @@ class NetworkCredentialTest {
         val namespace = base.packageName + ".qa." + UUID.randomUUID()
         val context =
             object : ContextWrapper(base) {
+                // Возвращает место для проверочных шифрованных записей. Файлы можно прочитать и
+                // повредить без доступа к реальным ключам входа.
                 override fun getNoBackupFilesDir() = root
 
+                // Назначает отдельное имя для проверочного системного ключа. В конце тест удалит
+                // именно этот ключ.
                 override fun getPackageName() = namespace
 
+                // Выделяет настройки выбора чата для этой проверки. Другие аккаунты из них не
+                // читаются и не убираются.
                 override fun getSharedPreferences(name: String, mode: Int) =
                     base.getSharedPreferences("$namespace.$name", mode)
             }

@@ -1,3 +1,6 @@
+// Показывает панель команд Андроида поверх чата. Поддерживает длинный список, собственные значки
+// и закрытие до запуска действия.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Activity
@@ -26,13 +29,15 @@ class KandinskyActionSheet(activity: Activity, title: String?, items: List<Kandi
             private val origin = IntArray(2)
             private val bounds = RectF()
 
+            // Сохраняет новые границы панели для отрисовки подложки. После изменения размеров фон
+            // не будет использовать старую рамку.
             override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
                 super.onSizeChanged(w, h, oldw, oldh)
                 bounds.set(0f, 0f, w.toFloat(), h.toFloat())
             }
 
-            // Сопоставляет положения окна и панели на экране, чтобы за размытием оставался нужный
-            // участок.
+            // Сверяет положение панели и главного окна и рисует соответствующий участок подложки.
+            // Без поправки размытие оказалось бы сдвинуто.
             override fun onDraw(canvas: Canvas) {
                 getLocationOnScreen(position)
                 activity.window.decorView.getLocationOnScreen(origin)
@@ -47,6 +52,8 @@ class KandinskyActionSheet(activity: Activity, title: String?, items: List<Kandi
             }
         }
 
+    // Создаёт размытый фон, заголовок, список действий и отмену внутри прокрутки. Сначала
+    // закрывает панель, затем выполняет выбранное действие.
     init {
         window?.setBackgroundDrawableResource(android.R.color.transparent)
         panel.orientation = LinearLayout.VERTICAL
@@ -55,6 +62,8 @@ class KandinskyActionSheet(activity: Activity, title: String?, items: List<Kandi
         panel.clipToOutline = true
         panel.outlineProvider =
             object : ViewOutlineProvider() {
+                // Даёт системе границу с закруглениями для обрезки. Содержимое списка не должно
+                // выходить за скруглённые углы.
                 override fun getOutline(view: View, outline: Outline) {
                     outline.setRoundRect(0, 0, view.width, view.height, 24 * d)
                 }
@@ -100,6 +109,8 @@ class KandinskyActionSheet(activity: Activity, title: String?, items: List<Kandi
                     }
                     accessibilityDelegate =
                         object : View.AccessibilityDelegate() {
+                            // Описывает текстовую строку как кнопку и добавляет устойчивое имя.
+                            // Служба доступности узнаёт действие и может найти его среди других.
                             override fun onInitializeAccessibilityNodeInfo(
                                 host: View,
                                 info: android.view.accessibility.AccessibilityNodeInfo,
@@ -138,6 +149,8 @@ class KandinskyActionSheet(activity: Activity, title: String?, items: List<Kandi
         }
     }
 
+    // Уточняет ширину окна и ограничивает его высоту после измерения панели. Высокий список
+    // остаётся внутри экрана и прокручивается.
     override fun onStart() {
         super.onStart()
         window?.setLayout(
@@ -164,14 +177,20 @@ private class ActionGlyph(private val symbol: String, private val color: Int, d:
             strokeJoin = Paint.Join.ROUND
         }
 
+    // Устанавливает размер значка по плотности экрана. Одна форма не будет выглядеть случайно
+    // мелкой на плотном дисплее.
     init {
         setBounds(0, 0, (23 * d).toInt(), (23 * d).toInt())
     }
 
+    // Масштабирует рисунок в заданные границы и выбирает линии по названию действия. Копирование,
+    // удаление и другие команды получают свои знаки.
     override fun draw(c: Canvas) {
         c.withTranslation(bounds.left.toFloat(), bounds.top.toFloat()) {
             c.scale(bounds.width() / 24f, bounds.height() / 24f)
             paint.color = color
+            // Соединяет переданные точки одним путём и рисует его текущей кистью. Это удерживает
+            // одну толщину и соединения на всех линиях значка.
             fun line(vararg p: Float) {
                 val path = Path()
                 path.moveTo(p[0], p[1])
@@ -304,13 +323,18 @@ private class ActionGlyph(private val symbol: String, private val color: Int, d:
         }
     }
 
+    // Устанавливает прозрачность кисти для системных изменений видимости. Рисунок реагирует так
+    // же, как соседние элементы.
     override fun setAlpha(alpha: Int) {
         paint.alpha = alpha
     }
 
+    // Передаёт фильтр цвета кисти. При необходимости окно может изменить оттенок значка штатным
+    // способом.
     override fun setColorFilter(filter: ColorFilter?) {
         paint.colorFilter = filter
     }
 
+    // Сообщает, что у значка есть прозрачные области. Система сохраняет фон панели вокруг линий.
     @Deprecated("Deprecated in Java") override fun getOpacity() = PixelFormat.TRANSLUCENT
 }

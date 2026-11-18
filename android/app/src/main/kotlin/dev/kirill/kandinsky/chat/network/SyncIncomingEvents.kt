@@ -1,3 +1,6 @@
+// Принимает события канала и передаёт их обработчикам, удерживая очередь порций. Порядок важен,
+// чтобы отметка не перескочила через ещё не записанные сообщения.
+
 package dev.kirill.kandinsky.chat.network
 
 import org.json.JSONObject
@@ -6,6 +9,8 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
     private val eventQueue = java.util.ArrayDeque<JSONObject>()
     private var applyingEvents = false
 
+    // Выбирает действие по виду входящего сообщения. Порции истории кладёт в ограниченную
+    // очередь, а подтверждение или отказ передаёт обработчику своей команды.
     fun receive(value: JSONObject) {
         when (value.getString("type")) {
             "kandinsky.catalog.changed" -> sync.refreshStudioDirectory()
@@ -23,6 +28,8 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
         }
     }
 
+    // Проверяет отзыв аккаунта, возможность повтора и совпадение с текущей отправкой. Такой выбор
+    // не превращает временный отказ всей связи в ошибку отдельного сообщения.
     private fun handleError(value: JSONObject) {
         val code = value.getString("code")
         val request = value.optString("requestId")
@@ -34,19 +41,25 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
         }
     }
 
+    // Очищает очередь и признак её записи при смене соединения. Новый канал не должен ждать
+    // порции, оставшиеся от старого.
     fun reset() {
         eventQueue.clear()
         applyingEvents = false
     }
 
-    // Записываем порции событий по очереди, чтобы следующая порция не попала в базу раньше
-    // предыдущей.
+    // Берёт только первую порцию и перед записью проверяет наличие карточек. Сверяет номер
+    // канала, чтобы результаты параллельного чтения не применились после переподключения в чужой
+    // последовательности.
     private fun drainEvents() {
         if (applyingEvents || eventQueue.isEmpty()) return
         applyingEvents = true
         val value = eventQueue.first
         val connectionID = sync.connectionEpoch
         var fetchedUnknownChats = false
+        // Записывает порцию и передаёт её изменения экрану только для того же канала. После
+        // успеха убирает первую порцию и запускает следующую, иначе отметка могла бы быть
+        // сдвинута раньше записи.
         fun apply() {
             sync.database({ db -> sync.cache.directoryEvents(db, value) }) { result ->
                 if (connectionID == sync.connectionEpoch)

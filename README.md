@@ -37,6 +37,8 @@
 | [test](android/app/src/test) | Проверки, которые идут без телефона |
 | [androidTest](android/app/src/androidTest) и [fixtures](fixtures) | Проверки на устройстве и тестовые материалы |
 
+[Запуск на Маке и Линуксе](android/gradlew) и [запуск на Виндовс](android/gradlew.bat) передают команду [загрузчику сборки](android/gradle/wrapper/gradle-wrapper.jar). [Параметры загрузчика](android/gradle/wrapper/gradle-wrapper.properties) фиксируют один архив и его контрольную сумму, чтобы разработчик и проверяющий использовали одну версию.
+
 ## Проверки и выпуск
 
 Из корня скачанного проекта выполни
@@ -52,9 +54,51 @@
 
 Параметры подписи перечислены в [настройках сборки](android/app/build.gradle.kts)
 
+## Материалы для проверок
+
+В [перечне файлов](fixtures/real-media/manifest.json) есть авторы, источники, условия использования и контрольные суммы
+
+[Малая копия файла](fixtures/real-media/cached-preview-source.json) описана отдельно
+
+- [Описание большого набора](fixtures/manifest.json) перечисляет каждый файл, его вид, размер и контрольную сумму. По нему проверка замечает подмену или потерю вложения.
+- [Исходная тестовая история](fixtures/seed-v1.json) задаёт десять тысяч сообщений, их порядок, подписи и ссылки на файлы.
+- [Снимки, ролики и звуковые файлы для проверок](fixtures/media) используются при местной проверке чтения истории. Каждый файл описан в перечне большого набора.
+- [Малые копии и форма звука](fixtures/media-previews-v1.json) заполняют местный справочник для показа перед открытием оригинала.
+- [Ожидаемые результаты операций с историей](fixtures/oracles/history-operations-v1.json) позволяют сверить порядок строк на обеих платформах с заранее рассчитанным ответом.
+- [Подборка для проверки места на диске](fixtures/real-media/cache-working-set.json) задаёт исходники для проверки уборки и предела хранения.
+- [Очень маленькие копии для проверок](fixtures/real-media/tiny-preview-probe.json) дают исходные данные для сравнения раскодирования и повторного показа.
+- [Образцы для проверки текста](fixtures/real-media/text-raster-samples.json) помогают сопоставить границы текста и его изображение при отрисовке ленты.
+- [Перечень движущихся картинок](fixtures/catalogue-media/catalogue.json) описывает три файла рядом. Они позволяют проверить, как окно просмотра работает с таким вложением.
+
+## Значки приложения
+
+Имя файла связывает значок с кнопкой или оформлением. [Разрешение на использование значков](android/app/src/main/res/raw/heroicons_license.txt) входит в приложение.
+
+| Назначение | Файл или папка |
+| --- | --- |
+| Значок установленного приложения | [Значок](android/app/src/main/res/mipmap-anydpi/kandinsky_launcher.xml) |
+| Снять фото | [Камера](android/app/src/main/res/drawable-nodpi/kandinsky_attachment_camera.png) |
+| Выбрать снимок для запроса | [Снимок](android/app/src/main/res/drawable-nodpi/kandinsky_attachment_photo.png) |
+| Начать новый чат | [Добавить](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_add.png) |
+| Открыть архив | [Архив](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_archive.png) |
+| Вернуться из архива | [Назад](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_back.png) |
+| Выйти из аккаунта | [Выход](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_logout.png) |
+| Открыть действия чата или аккаунта | [Действия](android/app/src/main/res/drawable/kandinsky_drawer_more.xml) |
+| Найти чат по названию | [Поиск](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_search.png) |
+| Узор за сообщениями в чате | [Знак](android/app/src/main/res/drawable-nodpi/kandinsky_evolution.png) |
+| Развернуть просмотр | [Развернуть](android/app/src/main/res/drawable-nodpi/kandinsky_result_expand.png) |
+| Повторить генерацию | [Повтор](android/app/src/main/res/drawable-nodpi/kandinsky_generation_refresh.png) |
+| Отметить выбранную модель | [Отметка](android/app/src/main/res/drawable-nodpi/kandinsky_model_check.png) |
+| Обозначить модель видео | [Видео](android/app/src/main/res/drawable-nodpi/kandinsky_model_video.png) |
+| Открыть недавний ролик | [Ролик](android/app/src/main/res/drawable-nodpi/kandinsky_recent_video.png) |
+| Сохранить результат | [Сохранить](android/app/src/main/res/drawable-nodpi/kandinsky_result_save.png) |
+| Передать результат другому приложению | [Поделиться](android/app/src/main/res/drawable-nodpi/kandinsky_result_share.png) |
+| Вернуться из полного просмотра загруженного видео | [Закрыть просмотр](android/app/src/main/res/drawable-nodpi/kandinsky_upload_close.png) |
+| Отметить закреплённый чат | [Скрепка](android/app/src/main/res/drawable/heroicons_paper_clip.xml) |
+
 ## Связанные части проекта
 
 - [Сервер Кандинского](https://github.com/KirillAbrams/Kandinsky-Backend)
 - [Приложение для айфона](https://github.com/KirillAbrams/Kandinsky-iOS)
 
-Общий снимок исходников проекта **6572430db4f48ca89ebcf9ba0b1330f9808786ff**
+Общий снимок исходников проекта [057b0f7](https://github.com/KirillAbrams/Kandinsky/commit/057b0f78beed79a138f764d084b9ce29b8699ccd)

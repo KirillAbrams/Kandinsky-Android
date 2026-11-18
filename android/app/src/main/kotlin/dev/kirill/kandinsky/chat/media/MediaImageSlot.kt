@@ -1,3 +1,6 @@
+// Выводит кадр одного вложения, выбирает порядок качества и показывает действия загрузки. При
+// смене строки снимает прежние запросы.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.*
@@ -27,6 +30,7 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     private var transferStarted = false
     private var progress = 0.0
     val loadFailed
+        // Возвращает признак отказа загрузки для экрана. Ошибочный кадр может предложить повтор.
         get() = failed
 
     var showsControls = true
@@ -39,6 +43,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     private var studioPhotoDelivery = false
     private var studioPhotoMaxPixel: Int? = null
     val awaitingStudioPhoto
+        // Определяет, нужна ли ещё чёткая копия результата. Маленькая размытая картинка ещё не
+        // завершает ожидание фото.
         get() = studioPhotoDelivery && (!ready || displayed?.isTinyPreview == true) && !failed
 
     private val controlPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -49,7 +55,9 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     private val contentBounds = RectF()
     private var offsetX = 0f
     private var offsetY = 0f
+    // Переводит левую границу из местной рамки в положение на экране. Дробный сдвиг не меняет размер кадра.
     private val screenLeft get() = contentBounds.left + offsetX
+    // Переводит верхнюю границу из местной рамки в положение на экране. Рисунок движется вместе со строкой.
     private val screenTop get() = contentBounds.top + offsetY
     private var circular = false
     private var cornerRadius = 12f
@@ -64,6 +72,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         MediaSurfaceMailbox<PreparedImage>(schedule = { main.post(it) }, render = { publish(it) })
     private val invalidation = store.registerInvalidation { clear() }
 
+    // Обновляет рамку отдельно от дробного сдвига и сохраняет подходящую картинку для того же
+    // файла. Сначала пытается вернуть кадр просмотра, затем ищет обычную миниатюру.
     fun bind(
         attachment: Attachment,
         rect: RectF,
@@ -176,6 +186,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         loadThumbnail(attachment, thumbnail, token, localOnly)
     }
 
+    // Проверяет готовую копию и при необходимости запрашивает файл, следя за ходом и отменой.
+    // Поздний ответ не рисуется поверх другого вложения.
     private fun loadThumbnail(
         attachment: Attachment,
         thumbnail: ThumbnailKey,
@@ -234,9 +246,13 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     }
 
     private val canPresentTinyPreview: Boolean
+        // Проверяет, разрешено ли показывать малую картинку. После показа в галерее не возвращает
+        // размытую копию тому же файлу.
         get() = canShowTinyPreview &&
             (!galleryPreview || attachment?.let { !store.wasShownInGallery(it) } == true)
 
+    // Выдаёт из памяти или готовит размытое изображение, пока нет другого кадра и не ждём
+    // сохранённый. Поздний запрещённый кадр сразу закрывается.
     private fun showTinyPreviewIfNeeded() {
         if (!canPresentTinyPreview || ready || playbackFrameRequest != null || tinyRequest != null) return
         val asset = attachment ?: return
@@ -252,6 +268,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         }
     }
 
+    // Сбрасывает старую запись рисунка, назначает полученное изображение и обновляет экран.
+    // Готовность вычисляется заново для новой картинки.
     private fun publish(value: PreparedImage?) {
         native.discardDisplayList()
         displayed = null
@@ -261,6 +279,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         invalidate()
     }
 
+    // Строит границу изображения по местному размеру и радиусам. Граница не меняется от дробного
+    // смещения строки.
     private fun clipPath(): Path {
         val r = if (circular) minOf(contentBounds.width(), contentBounds.height()) / 2 else cornerRadius
         val b = if (bottomSquare) minOf(r, 4 * density) else r
@@ -277,6 +297,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
     private val photoMatrixValues = FloatArray(9)
     private val photoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
+    // Ограничивает область, рисует подложку и заполняет рамку изображением с правильным
+    // масштабом. Возвращает признак, что пиксели действительно показаны.
     private fun drawPhoto(canvas: Canvas): Boolean {
         canvas.clipPath(clipPath())
         if (kind != MessageKind.STICKER && (studioPhotoDelivery || attachment?.tinyPreview == null))
@@ -302,6 +324,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         return true
     }
 
+    // Записывает картинку и кнопки в готовый рисунок слоя. Дальше прокрутка может двигать этот
+    // рисунок вместо повторного построения.
     private fun record() {
         native.discardDisplayList()
         val c =
@@ -317,6 +341,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         }
     }
 
+    // Рисует картинку и кнопки обычным способом, если слой попал в видимую область. Пропускает
+    // закрытый элемент и лишнюю отрисовку за рамкой.
     fun drawSoftware(c: Canvas) {
         val x = screenLeft
         val y = screenTop
@@ -330,21 +356,31 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         }
     }
 
+    // Выводит сохранённый рисунок слоя и готовит его, только если записи ещё нет. Изменение
+    // положения само по себе не читает изображение заново.
     fun draw(c: Canvas) {
         if (!native.hasDisplayList()) record()
         c.drawRenderNode(native)
     }
 
     val hasSharpFrame
+        // Проверяет, что показана готовая чёткая копия. Размытая миниатюра этому условию не
+        // подходит.
         get() = ready && displayed?.isTinyPreview == false
 
     private val hasUsablePhoto
+        // Узнаёт готовое фото, которое уже можно открыть. Скрывает поверх него лишнее управление
+        // передачей.
         get() = kind == MessageKind.PHOTO && hasSharpFrame
 
     private val hasTransferControl
+        // Определяет, нужен ли знак в ходе текущей загрузки. Готовое фото и отдельное ожидание
+        // результата показывают другие действия.
         get() = loading && !hasUsablePhoto && !studioPhotoDelivery &&
             (progress > 0 || (showLoadingControl && (kind == null || transferStarted)))
 
+    // Возвращает границы и действие кнопки в координатах экрана. Если управление скрыто или кадр
+    // уже годится, кнопки нет.
     fun loadAction(): Pair<RectF, String>? {
         if (!showsControls || hasUsablePhoto || !failed && !hasTransferControl) return null
         val x = contentBounds.centerX() + offsetX
@@ -354,6 +390,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
             if (loading) "Отменить загрузку" else "Повторить загрузку"
     }
 
+    // Проверяет попадание в кнопку и отменяет текущий запрос или создаёт повтор. Для повтора
+    // сохраняет рамку и вид картинки.
     fun performLoadAction(x: Float, y: Float): Boolean {
         val action = loadAction() ?: return false
         if (closed || !action.first.contains(x, y)) return false
@@ -389,6 +427,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         return true
     }
 
+    // Рисует запуск готового ролика, отмену передачи или повтор после ошибки. Остальные состояния
+    // не закрывает лишней кнопкой.
     private fun drawControl(c: Canvas) {
         if (!showsControls || hasUsablePhoto || loading && !hasTransferControl) return
         if (!loading && !failed) {
@@ -440,13 +480,19 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         }
     }
 
+    // Просит сделать раннее чтение для готового кадра видео, если оно ещё не назначено. Несколько
+    // проходов ленты не создают дубли.
     fun prepareOriginalVideo(attachment: Attachment) {
         if (ready && !loading && !failed && videoPreparation == null)
             videoPreparation = store.prepareStudioVideo(attachment)
     }
 
+    // Даёт соседнему экрану своё удержание текущей картинки. Оба владельца могут закончить показ
+    // в разное время.
     fun preview(): PreparedImage? = displayed?.retained()
 
+    // Ищет кадр именно для ожидаемого ключа видео. Если те же пиксели уже видны, не меняет
+    // картинку и снимает лишнее удержание.
     fun showSavedPlaybackFrame(expectedKey: VideoPlaybackKey? = null): Boolean {
         if (closed) return false
         val key = playbackFrameKey ?: return false
@@ -457,6 +503,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         return true
     }
 
+    // Останавливает загрузку обычных картинок и ставит чёткий кадр выше по номеру. Медленная
+    // миниатюра уже не сможет заменить готовое видео.
     fun seedPlaybackFrame(image: PreparedImage) {
         val token = binding
         if (closed || token == null || image.bitmap == null) { image.close(); return }
@@ -476,6 +524,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         mailbox.flush()
     }
 
+    // Проверяет привязку, размер и допустимость картинки перед выдачей. Без разрешения меньший
+    // кадр не ухудшает уже показанный.
     fun seed(image: PreparedImage, allowDownscale: Boolean = false) {
         if (playbackFrameRequest != null || image.isTinyPreview && !canPresentTinyPreview) {
             image.close()
@@ -504,6 +554,8 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         mailbox.flush()
     }
 
+    // Отменяет ожидающие чтения и сбрасывает прежнюю привязку для следующего запроса. Поздний
+    // ответ отбрасывается по номеру.
     fun refresh() {
         loadAttempt++
         tinyRequest?.cancel()
@@ -519,15 +571,15 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         failed = false
     }
 
-    // Сразу применяет очистку в потоке экрана, чтобы прежняя системная ссылка не оставалась до
-    // уведомления.
+    // Снимает работу и сразу очищает показ. Старый рисунок не ждёт отдельного обновления экрана.
     fun clear() {
         refresh()
         mailbox.clear()
         mailbox.flush()
     }
 
-    // Удаляет наблюдение хранилища, чтобы сброс медиа больше не обращался к закрытому владельцу.
+    // Запрещает новые запросы, снимает подписку и выбрасывает записанный рисунок. После закрытия
+    // ячейка не держит пиксели.
     override fun close() {
         if (closed) return
         closed = true

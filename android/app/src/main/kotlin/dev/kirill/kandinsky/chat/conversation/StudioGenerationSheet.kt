@@ -1,3 +1,7 @@
+// Нижняя панель на андроиде собирает список моделей, выбор файлов и параметры генерации.
+// Ограничения приходят от модели, а форма приводит старый черновик к доступным значениям и
+// проверяет числовой ключ перед сохранением.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Dialog
@@ -65,6 +69,8 @@ internal class StudioGenerationSheet(
     private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
+    // Создаём диалог с затемнением, верхней ручкой и прокручиваемой областью. Жест вниз действует
+    // на ручку, чтобы внутри длинной формы можно было прокручивать поля.
     init {
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         dialog.setCanceledOnTouchOutside(true)
@@ -99,6 +105,9 @@ internal class StudioGenerationSheet(
         root.addView(grip, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         val scroll =
             object : ScrollView(context) {
+                // Ограничиваем высоту прокрутки долей окна и доступной высотой от системы.
+                // Настройкам отдаём больше места, а коротким спискам оставляем формат нижней
+                // панели.
                 override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                     val screen =
                         if (Build.VERSION.SDK_INT >= 30) {
@@ -128,6 +137,8 @@ internal class StudioGenerationSheet(
         dialog.setContentView(root)
     }
 
+    // Показываем пункт каждой модели, передавая описание и отметку текущего выбора. Если список
+    // пуст, сообщаем об ошибке прямо в открытом окне.
     fun showModels(models: List<StudioModel>, onSelect: (StudioModel) -> Unit) {
         body.setPadding(dp(12), 0, dp(12), dp(24))
         body.addView(
@@ -156,6 +167,8 @@ internal class StudioGenerationSheet(
         show()
     }
 
+    // Показываем входы в галерею, камеру и выбор видео. Подпись поясняет предел видео до открытия
+    // системного выбора, а вызвавший экран получает выбранный источник.
     fun showAttachments(onSelect: (AttachmentSource) -> Unit) {
         (root.background as GradientDrawable).setColor(KandinskyPalette.studioSheet)
         addTile(
@@ -178,6 +191,8 @@ internal class StudioGenerationSheet(
         show()
     }
 
+    // Добавляем не более пяти последних ссылок на файлы в уже открытый диалог. Если окно успели
+    // закрыть или файлов нет, список не меняем.
     fun appendRecentUploads(uploads: List<StudioUpload>, onSelect: (StudioUpload) -> Unit) {
         if (!dialog.isShowing || uploads.isEmpty()) return
         val divider = FrameLayout(context)
@@ -200,6 +215,8 @@ internal class StudioGenerationSheet(
         }
     }
 
+    // Собираем один пункт меню с подписью, значком и признаком выбора. При нажатии сначала
+    // закрываем окно, затем передаём действие, чтобы новое окно не оказалось под старым.
     private fun addTile(
         title: String,
         subtitle: String,
@@ -218,6 +235,9 @@ internal class StudioGenerationSheet(
                 isSelected = selected
                 accessibilityDelegate =
                     object : View.AccessibilityDelegate() {
+                        // Объявляем строку кнопкой для системы доступности. У недавнего файла
+                        // добавляем постоянное имя, чтобы его можно было найти независимо от
+                        // позиции в списке.
                         override fun onInitializeAccessibilityNodeInfo(
                             host: View,
                             info: AccessibilityNodeInfo,
@@ -274,6 +294,9 @@ internal class StudioGenerationSheet(
         body.addView(row)
     }
 
+    // Приводим качество, размер, пропорции, время и число результатов к возможностям модели.
+    // Меняем подписи размеров вместе с форматом. При подтверждении проверяем числовой ключ и
+    // передаём только поддерживаемые дополнительные поля.
     fun showSettings(
         available: StudioCapabilities,
         onCountChange: (Int) -> Unit,
@@ -375,6 +398,9 @@ internal class StudioGenerationSheet(
                     progress = if (step > 0) ((value - guidance.min) / step).roundToInt() else 0
                     setOnSeekBarChangeListener(
                         object : SeekBar.OnSeekBarChangeListener {
+                            // На действие пользователя переводим ступень ползунка в вес
+                            // следования описанию и обновляем подпись. Программная установка
+                            // начальной ступени не переписывает выбор.
                             override fun onProgressChanged(
                                 bar: SeekBar,
                                 progress: Int,
@@ -386,8 +412,12 @@ internal class StudioGenerationSheet(
                                 label.text = guidanceLabel(next)
                             }
 
+                            // Начало перетаскивания не меняет настройки отдельно. Значение
+                            // запишется при первом фактическом изменении положения.
                             override fun onStartTrackingTouch(bar: SeekBar) = Unit
 
+                            // Конец жеста не отправляет форму. Последняя ступень уже записана, и
+                            // остальные настройки ждут кнопки подтверждения.
                             override fun onStopTrackingTouch(bar: SeekBar) = Unit
                         }
                     )
@@ -455,6 +485,8 @@ internal class StudioGenerationSheet(
         show()
     }
 
+    // Добавляем заголовок и кнопки одного параметра. При выборе выделяем только один вариант и
+    // возвращаем его ключ, а созданные кнопки можно обновить при смене формата.
     private fun section(
         title: String,
         values: List<Pair<String, String>>,
@@ -495,6 +527,8 @@ internal class StudioGenerationSheet(
     }
 
     private inner class OptionRow : ViewGroup(context) {
+        // Измеряем ширину каждого варианта и считаем, сколько рядов они займут. Слишком длинная
+        // кнопка ограничена шириной панели, поэтому соседний раздел получает правильное место.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val width = MeasureSpec.getSize(widthMeasureSpec)
             val height = dp(48)
@@ -516,6 +550,8 @@ internal class StudioGenerationSheet(
             setMeasuredDimension(width, rows * height)
         }
 
+        // Повторяем перенос кнопок по измеренной ширине и выставляем их прямоугольники. Раскладка
+        // совпадает с высотой, которую форма получила при измерении.
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             val height = dp(48)
             var x = 0
@@ -531,6 +567,8 @@ internal class StudioGenerationSheet(
             }
         }
 
+        // Оставляем кнопке ширину по подписи и задаём высоту прикосновения ряда. Варианты могут
+        // иметь разную ширину, оставаясь на одной линии.
         override fun generateDefaultLayoutParams() = LayoutParams(WRAP_CONTENT, dp(48))
     }
 
@@ -593,11 +631,17 @@ internal class StudioGenerationSheet(
             }
 
         val value: String
+            // Читаем текущее содержимое системного поля без дополнительного преобразования. При
+            // подтверждении именно это значение обрезается по краям и проверяется формой.
             get() = editor.text.toString()
 
         private val floating: Boolean
+            // Поднимаем подпись, когда поле в фокусе или уже заполнено. Поднятая подпись
+            // оставляет видимым введённый текст после закрытия клавиатуры.
             get() = editor.hasFocus() || value.isNotEmpty()
 
+        // Помещаем редактор, подпись и при необходимости счётчик в плашку. Клавиатуру показываем
+        // после получения фокуса окна, чтобы первое нажатие не потерялось.
         init {
             addView(plate, LayoutParams(MATCH_PARENT, dp(60)))
             plate.addView(editor, LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -620,6 +664,8 @@ internal class StudioGenerationSheet(
             }
             editor.addTextChangedListener(
                 object : TextWatcher {
+                    // Оставляем обязательный вызов без действия. Вид поля обновляем после замены,
+                    // когда можно посчитать новое содержимое.
                     override fun beforeTextChanged(
                         text: CharSequence?,
                         start: Int,
@@ -627,6 +673,8 @@ internal class StudioGenerationSheet(
                         after: Int,
                     ) = Unit
 
+                    // Середина изменения не требует отдельного пересчёта. Иначе за одно изменение
+                    // пришлось бы дважды измерять подпись и высоту.
                     override fun onTextChanged(
                         text: CharSequence?,
                         start: Int,
@@ -634,6 +682,8 @@ internal class StudioGenerationSheet(
                         count: Int,
                     ) = Unit
 
+                    // После изменения показываем новый счётчик и запрашиваем расчёт высоты. Это
+                    // учитывает и ввод, и вставку через системное меню.
                     override fun afterTextChanged(text: Editable?) {
                         refresh()
                     }
@@ -642,6 +692,8 @@ internal class StudioGenerationSheet(
             refresh()
         }
 
+        // Рассчитываем высоту многострочного поля по переносу текста, оставляя от одной до трёх
+        // строк. Размещаем подпись и счётчик за пределами текста, чтобы они не перекрывали набор.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val width = MeasureSpec.getSize(widthMeasureSpec)
             val lines =
@@ -683,6 +735,8 @@ internal class StudioGenerationSheet(
             )
         }
 
+        // Меняем положение подписи, отступы редактора и подсказку по текущему фокусу. У
+        // исключений показываем число введённых символов и сообщаем форме о новой раскладке.
         private fun refresh() {
             val raised = floating
             caption.textSize = if (raised) 12f else 16f
@@ -701,6 +755,8 @@ internal class StudioGenerationSheet(
             requestLayout()
         }
 
+        // Считаем воспринимаемые символы по их границам. Один составной знак может содержать
+        // несколько частей, но занимает одно место в счётчике.
         private fun length(value: String): Int {
             iterator.setText(value)
             iterator.first()
@@ -709,6 +765,8 @@ internal class StudioGenerationSheet(
             return count
         }
 
+        // Находим границу допустимого начала вставляемой строки. Обрезка на такой границе
+        // сохраняет целыми составные буквы и значки.
         private fun prefixAtLimit(value: String, limit: Int): Int {
             iterator.setText(value)
             iterator.first()
@@ -725,11 +783,15 @@ internal class StudioGenerationSheet(
         private val inactive = Color.rgb(222, 228, 223)
         private val activeTick = Color.rgb(132, 238, 207)
 
+        // Оставляем системную механику ползунка и задаём отступы под ручку. Собственный рисунок
+        // заменяет стандартный фон, сохраняя обработку касания.
         init {
             setPadding(dp(26), 0, dp(26), 0)
             background = null
         }
 
+        // По текущей ступени рисуем дорожку, деления и ручку. При нулевой ширине или пустом
+        // диапазоне ничего не рисуем, поскольку положения для ручки ещё нет.
         override fun onDraw(canvas: Canvas) {
             val left = paddingLeft.toFloat()
             val right = (width - paddingRight).toFloat()
@@ -768,6 +830,8 @@ internal class StudioGenerationSheet(
         }
     }
 
+    // Оформляем выбранный вариант фоном и галочкой, остальные обводкой. Когда состояние прежнее,
+    // переиспользуем уже созданный фон, избегая повторного создания рисунка.
     private fun styleChip(view: TextView, active: Boolean) {
         if (view.background != null && view.isSelected == active) return
         view.isSelected = active
@@ -792,6 +856,8 @@ internal class StudioGenerationSheet(
         view.setCompoundDrawablesRelative(check, null, null, null)
     }
 
+    // Возвращаем стрелку вверх или вниз в зависимости от положения дополнительных полей. Цвет и
+    // направление показывают, раскрыты ли они.
     private fun chevron(up: Boolean): Drawable {
         val points =
             if (up) floatArrayOf(7f, 14f, 12f, 9f, 17f, 14f)
@@ -804,6 +870,8 @@ internal class StudioGenerationSheet(
         )
     }
 
+    // Собираем переиспользуемую ломаную заданного цвета и толщины. Её размер задаётся отдельно от
+    // точек, чтобы значок масштабировался вместе с экраном.
     private fun glyph(size: Int, color: Int, stroke: Float, points: FloatArray): Drawable {
         return object : Drawable() {
                 private val line =
@@ -819,6 +887,9 @@ internal class StudioGenerationSheet(
                         strokeWidth = stroke
                     }
 
+                // Переносим начало координат к границе значка и масштабируем линию до
+                // фактического размера. Остальное содержимое сохраняет свои координаты после
+                // выхода из преобразования.
                 override fun draw(canvas: Canvas) {
                     canvas.withTranslation(bounds.left.toFloat(), bounds.top.toFloat()) {
                         canvas.scale(bounds.width().toFloat() / size, bounds.height().toFloat() / size)
@@ -826,34 +897,47 @@ internal class StudioGenerationSheet(
                     }
                 }
 
+                // Применяем системную прозрачность к кисти контура. Значок может тускнеть вместе
+                // с владельцем без смены формы.
                 override fun setAlpha(alpha: Int) {
                     paint.alpha = alpha
                 }
 
+                // Передаём кисти фильтр цвета, если его устанавливает система. Такой вызов нужен
+                // для обычного поведения рисунка внутри элементов интерфейса.
                 override fun setColorFilter(filter: ColorFilter?) {
                     paint.colorFilter = filter
                 }
 
-                // Контур не заполняет всю выделенную прямоугольную область
+                // Сообщаем, что линия оставляет прозрачные участки в прямоугольнике. Система
+                // продолжает рисовать фон под значком.
                 @Deprecated("Android drawable transparency")
                 override fun getOpacity() = PixelFormat.TRANSLUCENT
             }
             .apply { setBounds(0, 0, dp(size), dp(size)) }
     }
 
+    // Готовим подпись веса с одним знаком после запятой. Постоянный формат позволяет подписи
+    // оставаться одинаковой при разных настройках языка устройства.
     private fun guidanceLabel(value: Double) =
         String.format(Locale.ROOT, "Следование описанию %.1f", value)
 
+    // Создаём заливку со скруглёнными углами для ручки и полей. Общая настройка сохраняет
+    // согласованный размер скругления.
     private fun rounded(color: Int, radius: Int) =
         GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(radius).toFloat()
         }
 
+    // Добавляем отступ заданной высоты между группами. Следующий ряд начинается после него без
+    // пустой текстовой подписи.
     private fun gap(parent: LinearLayout, height: Int) {
         parent.addView(View(context), LinearLayout.LayoutParams(MATCH_PARENT, dp(height)))
     }
 
+    // Создаём подпись общего цвета с заданным размером и начертанием. Убираем системный запас по
+    // высоте, чтобы строки совпадали с измерениями панели.
     private fun text(value: String, size: Int, weight: Int = 400) =
         TextView(context).apply {
             text = value
@@ -863,6 +947,8 @@ internal class StudioGenerationSheet(
             if (weight != 400) typeface = Typeface.create(typeface, weight, false)
         }
 
+    // Закрепляем диалог у нижнего края и просим систему уменьшить рабочую область при клавиатуре.
+    // После показа окно занимает доступную ширину и высоту по содержимому.
     private fun show() {
         dialog.window?.apply {
             setGravity(Gravity.BOTTOM)
@@ -875,6 +961,8 @@ internal class StudioGenerationSheet(
         dialog.window?.setLayout(MATCH_PARENT, WRAP_CONTENT)
     }
 
+    // Переводим размеры оформления в точки текущего экрана. Округление даёт целое значение,
+    // которое принимает системная разметка.
     private fun dp(value: Int) = (value * density).roundToInt()
 }
 

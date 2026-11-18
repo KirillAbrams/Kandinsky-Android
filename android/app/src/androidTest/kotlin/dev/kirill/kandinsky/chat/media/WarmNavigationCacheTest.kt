@@ -1,3 +1,6 @@
+// Проверки возврата в историю и к чётким кадрам на андроиде. Они сверяют первый показ, работу
+// списка в маленьком окне, освобождение памяти и подготовку в сторону прокрутки.
+
 package dev.kirill.kandinsky.chat.media
 
 import dev.kirill.kandinsky.chat.app.ChatRuntime
@@ -27,6 +30,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WarmNavigationCacheTest {
+    // Удаляем одну ячейку из альбома двух видео. Прежний слой сообщения остаётся, но в нём
+    // сохраняется только привязка оставшегося ролика.
     @Test
     fun albumBecomingSingleKeepsOnlyTheRemainingVideoBinding() {
         val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "album-to-single-" + UUID.randomUUID()))
@@ -39,6 +44,8 @@ class WarmNavigationCacheTest {
             scene.imageViewport = scene.viewport
             val a = Attachment("one", "missing/one.mp4", "video/mp4", 100, 640, 360, 1, 3000, "one")
             val b = Attachment("two", "missing/two.mp4", "video/mp4", 100, 640, 360, 1, 3000, "two")
+            // Применяем одну редакцию сообщения с заданными вложениями и возвращаем её узел.
+            // Проверка видит, создан ли новый слой при смене состава.
             fun show(attachments: List<Attachment>, revision: Int): MessageNode {
                 val row = Message(79001, 2, OrderKey(1, 79001), MessageDirection.INCOMING,
                     0, MessageKind.VIDEO, "", "", null, revision, attachments)
@@ -61,11 +68,15 @@ class WarmNavigationCacheTest {
         h.close()
     }
 
+    // Заполняем хранилище позициями, проверяем исчезновение старых и предел сохранённого кадра.
+    // Смена номера отсекает поздний рисунок, а закрытие освобождает память.
     @Test
     fun videoReturnCacheBoundsIdentityAndLateInvalidation() {
         val budget = ImageByteBudget()
         val cache = VideoPlaybackCache(budget)
         val a = Attachment("same", "media/same.mp4", "video/mp4", 100, 1920, 1080, 1, 3000, "same")
+        // Связываем один файл с разными сообщениями. Позиция должна относиться к сообщению, в
+        // котором был показ.
         fun key(id: Long) = VideoPlaybackKey(id, a)
         val ticket = cache.generation
         for (id in 1L..300L) cache.rememberPosition(id, key(id), ticket)
@@ -94,6 +105,8 @@ class WarmNavigationCacheTest {
         assertEquals(0, budget.bytes)
     }
 
+    // Открываем историю из местного списка при разных малых высотах. Проверяем, что оба чата
+    // видимы и выбранные строки открывают ровно свой номер без лишнего действия аккаунта.
     @Test
     fun shortHistoryPanelKeepsCachedChatsReachableAndSelectsTheExactRow() {
         val activity = emptyActivity()
@@ -163,6 +176,8 @@ class WarmNavigationCacheTest {
         }
     }
 
+    // Делаем один ближний файл сзади движения и несколько впереди. Сверяем два запроса вперёд и
+    // один назад, чтобы быстрый разворот встретил готовый кадр.
     @Test
     fun directionalPrefetchKeepsAnOppositeNeighborReadyForReversal() {
         val h = RepositoryHarness.open(File(i.targetContext.cacheDir, "direction-" + UUID.randomUUID()))
@@ -211,10 +226,16 @@ class WarmNavigationCacheTest {
     }
 
     private val i
+        // Берём владельца проверочного запуска, который даёт контекст приложения и доступ к
+        // потоку экрана.
         get() = InstrumentationRegistry.getInstrumentation()
 
+    // Синхронно запускаем команды проверки в потоке экрана. Тогда измерение может читать
+    // результат после его применения.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Готовим настоящее фото из проверочных материалов тем же путём, что и выбранный файл в
+    // приложении.
     private fun photo(media: MediaStore): AttachmentDraft = awaitResult { callback ->
         main {
             media.stage(
@@ -230,7 +251,8 @@ class WarmNavigationCacheTest {
         Cancellation {}
     }
 
-    // Сохраняет номер, путь, размеры, ориентацию и длительность без повторного чтения файла.
+    // Переносим сведения подготовленного файла во вложение. Имя, поворот и размеры остаются
+    // прежними без повторного чтения.
     private fun attachment(draft: AttachmentDraft) =
         Attachment(
             draft.id,
@@ -244,15 +266,16 @@ class WarmNavigationCacheTest {
             draft.thumbnailKey,
         )
 
+    // Запрашиваем готовое изображение заданного размера и ждём ответа. Сохранённую копию потом
+    // сравниваем с кадром ленты.
     private fun decoded(media: MediaStore, asset: Attachment, size: Int): PreparedImage =
         awaitResult { callback ->
             main { media.thumbnail(asset, ThumbnailKey(size), 0) { _, result -> callback(result) } }
             Cancellation {}
         }
 
-    // При появлении строки запрос исходника не должен убирать это малое изображение или показывать
-    // действие
-    // загрузки.
+    // Готовим соседний кадр заранее и удерживаем оригинал после появления строки. Маленький
+    // рисунок остаётся на месте, чёткий возвращается без второй передачи и лишней кнопки.
     @Test
     fun historyPhotoWarmsOutsideViewportShowsPreviewAndReusesDecodedFrame() {
         val h =
@@ -302,7 +325,11 @@ class WarmNavigationCacheTest {
         val cachedFile = media.fileURL(asset.relativePath)
         cachedFile.parentFile?.mkdirs()
         original.copyTo(cachedFile)
+        // Читаем ширину полученного кадра и сразу отпускаем его временную копию. Это позволяет
+        // наблюдать качество без удержания лишней памяти.
         fun width(): Int = scene.preview(1)?.use { it.bitmap?.width ?: 0 } ?: 0
+        // Сверяем условие короткими подходами в потоке экрана до заданного срока. Сообщение
+        // показывает, какой кадр или переход не успел.
         fun waitFor(label: String, predicate: () -> Boolean) {
             val until = SystemClock.uptimeMillis() + 4000
             var done = false
@@ -377,6 +404,8 @@ class WarmNavigationCacheTest {
         }
     }
 
+    // Закрываем ещё не измеренную историю и проверяем ответ об отмене. Ожидание первого кадра не
+    // должно пережить экран.
     @Test
     fun closingAnInitialViewportResolvesItsPendingWaiter() {
         var result: Result<Unit>? = null
@@ -392,6 +421,8 @@ class WarmNavigationCacheTest {
         )
     }
 
+    // Проверяем, что переход отпускает крупные оригиналы и сохраняет до восьми мебибайт недавних
+    // кадров. Ошибка при переходе не отменяет последующую обычную очистку.
     @Test
     fun navigationEvictsOriginalsBoundsNormalPixelsAndRestoresPurgeAfterFailure() {
         val h =
@@ -441,6 +472,8 @@ class WarmNavigationCacheTest {
         }
     }
 
+    // Подключаем уже декодированное фото и проверяем его до следующего прохода экрана. Кнопка
+    // загрузки не должна мелькнуть, а рисунок должен остаться тем же.
     @Test
     fun cachedPhotoIsReadyDuringBindWithoutAnIntermediateLoadingControl() {
         val h =
@@ -504,7 +537,8 @@ class WarmNavigationCacheTest {
         }
     }
 
-    // Проверку запускаем без сохранённого профиля, чтобы она не открыла сеанс на рабочем сервере.
+    // Поднимаем приложение до пустой формы входа. Так проверка может открыть своё хранилище без
+    // сеанса на рабочем сервере.
     private fun emptyActivity(): MainActivity {
         val context = i.targetContext
         check(context.packageName.endsWith(".cleanup")) { "Нужна отдельная проверочная установка" }
@@ -557,6 +591,8 @@ class WarmNavigationCacheTest {
         return activity
     }
 
+    // Получаем область истории внутри переписки. Нужен доступ к показанному кадру и его
+    // измерениям без изменения публичного входа в приложение.
     private fun host(chrome: ConversationChrome) =
         ConversationChrome::class
             .java
@@ -564,10 +600,14 @@ class WarmNavigationCacheTest {
             .apply { isAccessible = true }
             .get(chrome) as ChatScrollHost
 
+    // Получаем сцену ленты, чтобы проверить, как она удерживает конкретное фото и действия
+    // загрузки.
     private fun scene(host: ChatScrollHost) =
         ChatScrollHost::class.java.getDeclaredField("scene").apply { isAccessible = true }.get(host)
             as RetainedChatScene
 
+    // Открываем тестовую переписку и ждём готовность первого кадра. Сверяем живые фрагменты,
+    // видимое фото и отсутствие нового загрузчика, затем отдаём экран владельцу проверки.
     private fun openConversation(
         activity: MainActivity,
         runtime: ChatRuntime,
@@ -601,7 +641,9 @@ class WarmNavigationCacheTest {
         return chrome to model
     }
 
-    // Готовые пиксели берутся из существующего запаса без повторного декодирования.
+    // Готовим рисунок заранее и открываем чат. Первый кадр должен использовать именно эту карту
+    // точек, иначе одной готовности сведений об истории было бы достаточно для ошибочного
+    // прохода.
     @Test
     fun openHistoryCompletesWithTheInitialPhotoFrameNotOnlyMetadata() {
         val activity = emptyActivity()
@@ -654,6 +696,8 @@ class WarmNavigationCacheTest {
         }
     }
 
+    // Сначала смотрим маленький кадр и доводим оригинал до чёткого. Уходим и возвращаемся к тому
+    // же рисунку, затем скрываем приложение вне перехода и проверяем освобождение памяти.
     @Test
     fun conversationRoundTripKeepsTheFirstPhotoDrawableAndBackgroundStillPurges() {
         val activity = emptyActivity()

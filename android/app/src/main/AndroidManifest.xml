@@ -1,3 +1,4 @@
+<!-- Объявляет точку запуска, ссылки приглашения, доступ к сети и камере. Настройки закрывают резервное копирование и обычное открытое соединение. Файлы результатов передаются через отдельного поставщика с временным разрешением. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CAMERA"/>

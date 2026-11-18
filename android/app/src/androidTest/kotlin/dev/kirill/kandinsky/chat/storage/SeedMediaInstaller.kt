@@ -1,3 +1,6 @@
+// Копирует настоящие проверочные вложения в папку местного набора и сравнивает их с описанием.
+// Тест получает те же неповреждённые файлы при каждом запуске.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.content.res.AssetManager
@@ -12,8 +15,12 @@ import org.json.JSONObject
 object SeedMediaInstaller {
     private data class Record(val name: String, val size: Long, val sha: String)
 
+    // Сообщает о несоответствии состава или содержимого одной понятной ошибкой. Так тест
+    // останавливается сразу при повреждении входных данных.
     private fun corrupt(): Nothing = throw RepoException(RepoError.CORRUPT)
 
+    // Сверяет версию, чат, типы, имена, размеры и отпечатки из описания файлов. Ограничивает
+    // число и размер, чтобы посторонняя запись не попала в проверочную папку.
     private fun records(assets: AssetManager): List<Record> {
         val text =
             assets.open("real-media/manifest.json").use { input ->
@@ -63,6 +70,8 @@ object SeedMediaInstaller {
         }
     }
 
+    // Последовательно читает уже имеющуюся копию и сверяет количество байтов и отпечаток.
+    // Совпадение имени само по себе не считается доказательством целого файла.
     private fun matches(file: File, record: Record, buffer: ByteArray): Boolean {
         if (file.length() != record.size) return false
         val hash = MessageDigest.getInstance("SHA-256")
@@ -80,6 +89,8 @@ object SeedMediaInstaller {
             hash.digest().joinToString("") { "%02x".format(it.toInt() and 255) } == record.sha
     }
 
+    // Проверяет пути и существующие копии, а новые файлы пишет во временное имя и переносит
+    // только после сверки. После сбоя не останется неполного файла под рабочим именем.
     fun install(root: File, assets: AssetManager) {
         val values = records(assets)
         val directory = File(root.canonicalFile, "media/seed")

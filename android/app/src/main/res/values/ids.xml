@@ -1,3 +1,4 @@
+<!-- Закрепляет имена команды копирования и жалобы. По ним интерфейс различает действия над сообщением. -->
 <resources>
     <item name="message_copy" type="id"/>
     <item name="message_report" type="id"/>

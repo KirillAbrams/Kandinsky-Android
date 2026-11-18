@@ -1,3 +1,6 @@
+// Проверяет запись сетевых событий, очереди и истории в отдельную базу телефона. Сценарии
+// повторяют потери ответа, старые версии данных и открытие файла заново.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -19,6 +22,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NetworkPersistenceTest {
+    // Сохраняет номер повтора и сверяет его после открытия базы. После подтверждения следующая
+    // команда получает другой номер, чтобы не повторить завершённое действие.
     @Test
     fun retryNumberSurvivesReopenUntilItsOwnReplyIsSaved() {
         val root =
@@ -64,6 +69,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Заполняет очередь записями прежнего вида и отправляет новый запрос. Такие записи не должны
+    // занимать место для новой отправки или попадать в список команд к выполнению.
     @Test
     fun retiredOperationsDoNotConsumePromptCapacity() {
         val root =
@@ -127,9 +134,14 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Переводит один результат в очередь и обратно в работу, а второй оставляет активным. Сверяет
+    // ход работы каждого, чтобы перезапуск первого не сбрасывал второй и не возвращал старые
+    // проценты.
     @Test
     fun queuedSlotClearsProgressWhileRunningSlotKeepsItsMeasurement() = withNetworkStore { h, _ ->
         val cache = NetworkStore(SQLiteChatRepository(h.store, NetworkJournal(1)), 1)
+        // Формирует строку генерации с двумя результатами, сохраняет её через обработчик и
+        // возвращает обновлённые состояния. По ним сверяем то, что приложение получит из базы после записи.
         fun publish(
             revision: Int,
             stage: String,
@@ -138,6 +150,8 @@ class NetworkPersistenceTest {
             run: String? = null,
             startedAt: Long = 1,
         ): List<dev.kirill.kandinsky.chat.domain.StudioGeneration.Slot> {
+            // Собирает состояние результата с номером запуска и временем начала. Эти признаки
+            // позволяют отличить продолжение от новой попытки.
             fun slot(id: String, status: String, value: Int?, runId: String?, start: Long) =
                 JSONObject()
                     .put("id", id)
@@ -210,6 +224,8 @@ class NetworkPersistenceTest {
         )
     }
 
+    // Сохраняет обычные и архивный чаты, затем дважды читает местный список без запроса.
+    // Проверяет порядок и исключение архива, чтобы список оставался пригодным при обрыве связи.
     @Test
     fun recentStudioThreadsComeFromTheSavedCatalogWhileOffline() = withNetworkStore { h, cache ->
         val saved =
@@ -260,16 +276,24 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Добавляет две местные отправки, применяет серверное подтверждение и пересчитывает старый
+    // порядок. Сверяет прежние номера и ожидающий запрос в конце истории.
     @Test
     fun unconfirmedPromptsStayAtTailThroughReplayAndLegacyUpgrade() = withNetworkStore { h, cache ->
         val local = SQLiteChatRepository(h.store, NetworkJournal(1))
         val serverBase = 1_837_550_888_340_132_174L
         val first = SendCommand(UUID.randomUUID().toString(), 2, text = "First queued prompt")
         val second = SendCommand(UUID.randomUUID().toString(), 2, text = "Second queued prompt")
+        // Собирает порцию истории из переданных строк. Сценарий управляет их порядком, чтобы
+        // проверить положение серверного ответа относительно ожидающих.
         fun history(vararg rows: JSONObject) =
             JSONObject().put("messages", JSONArray(rows.toList())).put("hasOlder", false)
+        // Создаёт серверное сообщение с заданным порядком, отправителем и текстом. По нему тест
+        // отличает подтверждение от новой строки.
         fun wire(id: Long, seq: Long, sender: Long, text: String) =
             serverMessage(id, seq, sender).put("text", text).put("savedAtMs", 1_794_483_289_395L)
+        // Читает сообщения через обычное местное хранилище. Сравнение тогда показывает порядок,
+        // который получит экран после обмена.
         fun localRows() = await<HistoryPage> { local.history(PageRequest(2), it) }.rows
 
         val previous = wire(90, serverBase, 0, "Previous answer")
@@ -329,6 +353,8 @@ class NetworkPersistenceTest {
         assertEquals(listOf(secondID), outbox)
     }
 
+    // Открывает временную базу, ставит сетевые таблицы и готовит чат для теста. В конце закрывает
+    // соединение и убирает папку, чтобы состояние не мешало соседним сценариям.
     private fun withNetworkStore(
         action: (dev.kirill.kandinsky.chat.support.RepositoryHarness, NetworkStore) -> Unit
     ) {
@@ -355,6 +381,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Готовит сообщение с нужными номерами и постоянными остальными полями. Тест может менять
+    // порядок или владельца без повторения полного ответа.
     private fun serverMessage(id: Long, seq: Long, sender: Long = 1) =
         org.json
             .JSONObject()
@@ -371,6 +399,8 @@ class NetworkPersistenceTest {
             .put("revision", 1)
             .put("attachments", org.json.JSONArray())
 
+    // Ждёт ответ очереди не дольше десяти секунд и возвращает значение или сбой. Зависшая запись
+    // не удержит тест без конца.
     private fun <T> await(start: ((Result<T>) -> Unit) -> Unit): T {
         val done = CountDownLatch(1)
         var value: Result<T>? = null
@@ -382,6 +412,8 @@ class NetworkPersistenceTest {
         return checkNotNull(value).getOrThrow()
     }
 
+    // Сохраняет позицию обмена, вновь открывает базу и сверяет ожидание подтверждения. Следующий
+    // номер должен остаться видимым даже после подтверждения предыдущего.
     @Test
     fun savedCursorWaitsForConfirmationAcrossReopen() = withNetworkStore { harness, cache ->
         await<Unit> { done ->
@@ -406,6 +438,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Применяет карточку и повтор сообщения, затем проверяет историю, счётчик и границу следующей
+    // порции. Повтор не должен считаться новым сообщением.
     @Test
     fun chatRefreshPreservesPagingAndDoesNotDoubleCountReplay() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -476,6 +510,8 @@ class NetworkPersistenceTest {
                         cache.events(db, events)
                         cache.events(db, events)
                         cache.mergeChats(db, chats)
+                        // Читает одно число из базы при проверке счётчика и признаков страницы.
+                        // Так сценарий видит сохранённые значения прямо после повторного события.
                         fun scalar(q: String) =
                             db.rawQuery(q, null).use {
                                 it.moveToFirst()
@@ -495,6 +531,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Имитирует сбой перед записью и потерю ответа после записи. Число сообщений и ожидающих
+    // отправок должно меняться вместе, чтобы повтор не оставил лишнюю строку.
     @Test
     fun visibleMessageAndOutboxShareTheCommitAndSurviveLostReply() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -527,6 +565,8 @@ class NetworkPersistenceTest {
                     }
                     .isFailure
             )
+            // Считает сообщения и записи очереди в одном чтении базы. По паре чисел видно,
+            // сохранилось ли действие полностью.
             fun counts() =
                 await<Pair<Long, Long>> { callback ->
                     store.submit(
@@ -576,6 +616,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Проверяет откат целого пакета с неизвестным событием, повтор допустимого пакета и приход
+    // страницы после удаления. Старый ответ не должен вернуть скрытое сообщение.
     @Test
     fun replayIsAtomicDeduplicatedAndCannotResurrectLocalDeletion() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -583,7 +625,11 @@ class NetworkPersistenceTest {
         val store = await<SQLiteStore> { SQLiteStore.open(root, callback = it) }
         val local = dev.kirill.kandinsky.chat.storage.SQLiteChatRepository(store, NetworkJournal(1))
         val cache = NetworkStore(local, 1)
+        // Передаёт действие рабочей очереди и ждёт его результата. Это позволяет сверять
+        // состояние строго после обработки события.
         fun runSQL(action: (SQLiteDatabase) -> Unit) = await<Unit> { store.submit(action, it) }
+        // Создаёт входящую строку с выбранным номером и номером команды клиента. Идентичную
+        // строку можно прислать снова для проверки повтора.
         fun incoming(id: Long, client: String) =
             org.json
                 .JSONObject()
@@ -607,6 +653,8 @@ class NetworkPersistenceTest {
                 .put("kind", "message")
                 .put("chatId", 2)
                 .put("message", message)
+        // Оборачивает события с указанной позицией обмена. Даже при нескольких событиях тест
+        // может проверить общий откат по одной границе.
         fun frame(events: org.json.JSONArray, cursor: Long) =
             org.json.JSONObject().put("type", "events").put("events", events).put("cursor", cursor)
         try {
@@ -687,6 +735,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Удаляет местную строку, которую сервер отклонил, и проверяет очередь. Лишняя команда
+    // удаления для неизвестного серверу номера не должна блокировать дальнейший обмен.
     @Test
     fun removingRejectedMessageCannotLeaveABlockingDeleteCommand() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -749,6 +799,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Открывает старый файл и сверяет наличие нового поля вместе с прежним текстом. Обновление
+    // должно добавить местный статус и сохранить исходное сообщение.
     @Test
     fun migrationPreservesVersionTwoRowsAndAddsDeliveryState() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -835,6 +887,8 @@ class NetworkPersistenceTest {
         }
     }
 
+    // Применяет новую версию вложения сначала с тем же файлом, затем с другим. Сверяет местный
+    // путь, чтобы старые байты не показались под новым номером.
     @Test
     fun ownMediaRevisionKeepsOnlyAMatchingCachedBlob() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -845,6 +899,8 @@ class NetworkPersistenceTest {
         val client = UUID.randomUUID().toString()
         val oldBlob = "a".repeat(64)
         val newBlob = "b".repeat(64)
+        // Собирает порцию с заданными номером файла и версией сообщения. В тесте это разделяет
+        // изменение записи и смену самого вложения.
         fun page(blob: String, revision: Int): org.json.JSONObject {
             val a =
                 org.json
@@ -893,6 +949,9 @@ class NetworkPersistenceTest {
                             db.execSQL(
                                 "UPDATE attachments SET relativePath='objects/own-original.jpg' WHERE id='net-501-0'"
                             )
+                            // Читает сохранённый путь вложения после события. По нему тест
+                            // определяет, оставило ли хранилище подходящую копию или
+                            // переключилось на другой файл.
                             fun path() =
                                 db.rawQuery(
                                         "SELECT relativePath FROM attachments WHERE id='net-501-0'",

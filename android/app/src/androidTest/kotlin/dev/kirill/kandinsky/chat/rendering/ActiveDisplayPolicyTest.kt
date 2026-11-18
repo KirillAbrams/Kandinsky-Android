@@ -1,3 +1,6 @@
+// Проверяет запрос частоты окна при настоящем жесте прокрутки на Андроиде. Сравнивает настройку
+// окна до, во время и после движения.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
@@ -10,6 +13,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ActiveDisplayPolicyTest {
+    // Вычисляет самый частый режим при том же размере, запускает движение ленты и ждёт этого
+    // запроса. По окончании проверяет, что окно вернуло прежнее значение.
     @Test
     fun activeNativeInertiaHintsHighestCompatibleDisplayModeAndRestoresIdleWindow() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -25,6 +30,8 @@ class ActiveDisplayPolicyTest {
         try {
             dev.kirill.kandinsky.chat.support.AppFlowDriver().openChat("Длинная история")
             assertNotNull(d.wait(Until.findObject(By.res("composer.input").enabled(true)), 15000))
+            // Ищет область прокрутки внутри текущего дерева окна. Проверка следит за движением
+            // нужной ленты, даже если внешние контейнеры изменились.
             fun host(v: View): ChatScrollHost? {
                 if (v is ChatScrollHost) return v
                 if (v is ViewGroup)

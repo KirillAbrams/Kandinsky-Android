@@ -1,3 +1,6 @@
+// Подготавливает ограниченное число ближайших вложений до их показа. При изменении видимой
+// области отменяет старую работу и оставляет готовые копии в общем хранилище.
+
 package dev.kirill.kandinsky.chat.media
 
 import dev.kirill.kandinsky.chat.domain.Attachment
@@ -17,6 +20,8 @@ internal class MediaImagePrefetch {
         var tiny: PreparedImage? = null
         var video: Cancellation? = null
         var closed = false
+        // Снимает запросы на оба размера и подготовку видео, затем освобождает малый кадр. Иначе
+        // строка, которая уже далеко, удерживала бы память.
         fun close() {
             closed = true
             request?.cancel()
@@ -28,9 +33,13 @@ internal class MediaImagePrefetch {
     }
     private val entries = mutableMapOf<String, Entry>()
 
+    // Учитывает путь, предельный размер и требование оригинала. Это различает варианты подготовки
+    // одного вложения.
     private fun identity(attachment: Attachment, key: ThumbnailKey) =
         attachment.relativePath + "@${key.maxPixel}:${key.studioOriginal}"
 
+    // Ищет уже подготовленную запись и возвращает подходящую миниатюру или её маленькую копию.
+    // При отсутствии ничего не загружает.
     fun preview(item: Item, store: MediaStore): PreparedImage? {
         val (attachment, maxPixel) = item
         val key = store.studioPhotoKey(attachment) ?: ThumbnailKey(maxPixel)
@@ -38,6 +47,9 @@ internal class MediaImagePrefetch {
         return store.cachedThumbnail(attachment, key) ?: entry.tiny?.retained()
     }
 
+    // Оставляет до двенадцати ближайших вложений, склеивает одинаковые ключи и держит раннюю
+    // подготовку одного видео. Большой готовый кадр возвращает хранилищу, чтобы соседние строки
+    // могли вытесняться.
     fun update(items: List<Item>, store: MediaStore) {
         val selected = items.take(12).map { (attachment, maxPixel) ->
             val key = store.studioPhotoKey(attachment) ?: ThumbnailKey(maxPixel)
@@ -73,6 +85,8 @@ internal class MediaImagePrefetch {
         }
     }
 
+    // Закрывает все записи и убирает их из карты. Это останавливает ранние передачи при смене или
+    // закрытии ленты.
     fun clear() {
         entries.values.forEach { it.close() }
         entries.clear()

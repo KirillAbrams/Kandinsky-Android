@@ -1,3 +1,6 @@
+// Управляет главным окном Андроида. Восстанавливает вход и выбранный чат, открывает вложения
+// через систему и закрывает работу владельца при выходе.
+
 package dev.kirill.kandinsky.chat.app
 
 import android.content.Intent
@@ -54,12 +57,16 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
     private var historyDrawer: FrameLayout? = null
     private var drawerClosing = false
 
+    // Передаёт сведения о действиях пользователя сетевой службе и оставляет обычную обработку
+    // системе. Без этого служба могла бы считать активный вход бездействующим.
     override fun onUserInteraction() {
         super.onUserInteraction()
         runtime?.network?.userInteraction()
     }
 
-    // При повороте экрана оставляем уже открытые хранилище и соединение.
+    // Показывает ожидание, готовит окно и открывает вход и историю вне потока экрана. При
+    // повороте повторно использует готовые службы, чтобы не открывать ту же базу и соединение
+    // заново.
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         coordinator = AppCoordinator { show(it) }
@@ -146,12 +153,16 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         onBackPressedDispatcher.addCallback(this) { leaveStudio() }
     }
 
+    // Берёт приглашение из параметра запуска или ссылки со специальным адресом входа. Посторонняя
+    // ссылка не будет прочитана как приглашение.
     private fun invitationFromIntent(): String? =
         intent.getStringExtra("network-invitation")
             ?: intent.data
                 ?.takeIf { it.scheme == "kandinsky-native" && it.host == "join" }
                 ?.getQueryParameter("invitation")
 
+    // Подключает обмен, сообщения об ошибках и события удаления к текущему аккаунту. Сначала
+    // восстанавливает черновик, затем при его отсутствии ищет прежний или недавний чат.
     private fun activateChat(local: ChatRuntime, restoredID: Long) {
         runtime = local
         store = local.store
@@ -250,6 +261,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Настраивает системные полосы и уменьшение области при открытии клавиатуры, учитывая версию
+    // телефона. Иначе верхние или нижние кнопки могли бы оказаться под элементами системы.
     @Suppress("DEPRECATION")
     private fun configureWindow() {
         window.statusBarColor = Color.TRANSPARENT
@@ -272,8 +285,12 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
 
+    // Передаёт новый выбор из управляющего объекта к подготовке экрана. Пустой номер означает,
+    // что нужно открыть заготовку вместо существующей истории.
     private fun show(id: Long?) = showSurface(id)
 
+    // Сохраняет параметры старого чата, закрывает его состояние и готовит новый экран скрытым.
+    // Показывает черновик или историю только после подготовки и проверки номера перехода.
     @Suppress("DEPRECATION")
     private fun showSurface(id: Long?) {
         if (id != null)
@@ -301,6 +318,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
                 isClickable = true
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }
+        // Проверяет, что подготовленный экран ещё ожидается, и убирает прежние представления. До
+        // этого запрет на нажатия и озвучивание скрывал незаконченный экран.
         fun reveal() {
             if (isDestroyed || generation != ticket || pendingContainer !== container) return
             val retire = {
@@ -438,6 +457,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         surface.requestApplyInsets()
     }
 
+    // Передаёт экрану службы обмена, файлов и проигрывания текущего владельца, если они открыты.
+    // Сам экран не должен заново создавать эти службы.
     internal fun createConversationChrome(
         chatID: Long,
         state: ConversationState?,
@@ -449,6 +470,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         return ConversationChrome(this, chatID, state, services, back)
     }
 
+    // Связывает команды панели с открытием чата, созданием, удалением и выходом. Сначала
+    // закрывает панель, чтобы её слой не остался поверх следующего экрана.
     private fun makeStudioHistoryDrawer(sync: NetworkSync) =
         StudioHistoryPanel(
             this,
@@ -472,6 +495,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
             },
         )
 
+    // Открывает одну панель поверх видимой истории с учётом направления письма и системных
+    // отступов. Пока она открыта, скрывает чат от озвучивания и сообщает ему о перекрытии.
     private fun openStudioDrawer() {
         val sync = runtime?.network ?: return coordinator.showChats()
         val chat = chatView ?: return
@@ -524,12 +549,16 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         shade.animate().alpha(1f).setDuration(246).start()
     }
 
+    // Скрывает клавиатуру панели и убирает её сразу или по окончании движения. Повторный запрос
+    // во время закрытия не должен запустить второй переход.
     private fun closeStudioDrawer(animated: Boolean = true, then: (() -> Unit)? = null) {
         val drawer = historyDrawer ?: return
         if (drawerClosing && animated) return
         drawerClosing = true
         val panel = drawer.getChildAt(1) as StudioHistoryPanel
         panel.hideKeyboard()
+        // Проверяет текущую панель, снимает её и возвращает чату доступность и обычный показ.
+        // Только затем выполняет действие, ради которого панель закрыли.
         fun finish() {
             if (historyDrawer !== drawer) return
             historyDrawer = null
@@ -556,6 +585,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
             .start()
     }
 
+    // Убирает местный вход, закрывает его экран и отдельно отправляет выход прежним ключом. Если
+    // местная запись не очистилась, показывает ошибку вместо смены аккаунта.
     private fun logoutStudio(sync: NetworkSync) {
         try {
             NetworkCredentials(this).removeActive()
@@ -582,6 +613,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Открывает защищённое поле пароля, проверяет длину и ждёт подтверждения сервера. При ошибке
+    // возвращает возможность ввести пароль, при успехе начинает местную очистку.
     private fun confirmAccountErasure(sync: NetworkSync) {
         if (runtime?.network !== sync || isDestroyed) return
         val password =
@@ -594,6 +627,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
                 filters = arrayOf(android.text.InputFilter.LengthFilter(256))
                 accessibilityDelegate =
                     object : View.AccessibilityDelegate() {
+                        // Присваивает полю пароля постоянный идентификатор доступности. Так
+                        // проверка может найти нужное поле независимо от подписи и языка системы.
                         override fun onInitializeAccessibilityNodeInfo(
                             host: View,
                             info: android.view.accessibility.AccessibilityNodeInfo,
@@ -662,6 +697,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Принимает удаление только от действующего аккаунта, ставит отметку и закрывает панель. Если
+    // приложение остановится, отметка позволит возобновить очистку.
     private fun eraseAccountLocally(sync: NetworkSync) {
         if (runtime?.network !== sync || isDestroyed) return
         val id = sync.profile.userID
@@ -670,6 +707,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         switchAccount(erasing = id)
     }
 
+    // На отдельном потоке повторяет отметку и завершает очистку файлов и входа владельца. При
+    // сбое окно предлагает повторить ту же операцию.
     private fun finishErasure(userID: Long) {
         val context = applicationContext
         Thread(
@@ -702,6 +741,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
             .start()
     }
 
+    // Показывает форму с отдельной службой входа и учитывает клавиатуру. После выбора запускает
+    // главное окно заново с сохранённым профилем и очищает прежний стек экранов.
     private fun showAccountEntry() {
         pendingContainer = null
         entry?.close()
@@ -738,6 +779,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         screen.requestApplyInsets()
     }
 
+    // Снимает выбор, сохраняет точку чтения и закрывает службы прежнего владельца. При удалении
+    // сразу скрывает прежние данные и ждёт закрытия файла перед очисткой.
     private fun switchAccount(erasing: Long? = null) {
         generation++
         pendingContainer = null
@@ -752,6 +795,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         store = null
         coordinator.close()
         if (erasing != null) setContentView(FrameLayout(this))
+        // После освобождения служб выбирает местную очистку или экран входа. Обычный вход не
+        // открывается, если окно уже закрыто.
         fun finish() {
             if (erasing != null) finishErasure(erasing) else if (!isDestroyed) showAccountEntry()
         }
@@ -765,10 +810,14 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Запрашивает заготовку нового чата при действующем подключении. Если первая отправка уже
+    // создаёт историю, второй запуск не происходит.
     private fun composeNetworkChat() {
         if (runtime?.network != null && chatView?.isStartingThread != true) coordinator.showChats()
     }
 
+    // Ставит отметку о начале отправки и использует существующий номер черновика или создаёт чат
+    // с тем же номером операции. После смены экрана поздний ответ не откроет ненужный чат.
     private fun submitFirstPrompt(
         chat: ConversationChrome,
         model: ConversationState,
@@ -779,6 +828,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
     ) {
         if (isDestroyed || generation != ticket || chat.isStartingThread) return
         chat.setStartingThread(true)
+        // Привязывает черновик к полученному чату и передаёт запрос с настройками генерации. По
+        // завершении открывает сохранённый чат либо показывает ошибку на текущем экране.
         fun send(id: Long) {
             if (isDestroyed || generation != ticket) return
             model.bindStudioDraft(id)
@@ -815,6 +866,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Сначала закрывает открытую панель, иначе возвращает к входу или закрывает окно по текущему
+    // состоянию. Во время создания истории не прерывает первый запрос кнопкой назад.
     private fun leaveStudio() {
         if (chatView?.isStartingThread == true) return
         if (historyDrawer != null) closeStudioDrawer()
@@ -823,6 +876,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         else finish()
     }
 
+    // Отмечает, что окно видно, возобновляет обмен и разрешает показ файлов. Это возвращает
+    // работу после выхода из фона.
     override fun onStart() {
         super.onStart()
         isForeground = true
@@ -830,6 +885,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         chatView?.setMediaVisible(true)
     }
 
+    // Ставит обмен и вложения на паузу, останавливает проигрывание и запись, сохраняет позицию.
+    // Так скрытое окно освобождает ресурсы и помнит, где пользователь читал.
     override fun onStop() {
         MetricsRuntime.export()
         isForeground = false
@@ -842,6 +899,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         super.onStop()
     }
 
+    // Записывает номер текущего чата и папку для нового окна. Просит сохранить точку чтения,
+    // чтобы пересоздание не сбрасывало место.
     override fun onSaveInstanceState(outState: Bundle) {
         chatView?.captureAnchor()
         state?.flush {}
@@ -850,10 +909,14 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         super.onSaveInstanceState(outState)
     }
 
+    // Оставляет готовые службы аккаунта при пересоздании окна, если история уже открыта. Новое
+    // окно может вернуть их без повторного запуска базы.
     @Deprecated("Stores the runtime across Activity recreation")
     override fun onRetainCustomNonConfigurationInstance(): Any? =
         if (repository != null) runtime else null
 
+    // При серьёзном предупреждении системы просит экран и хранилище освободить лишнюю память. Это
+    // снижает риск остановки приложения из-за удержания подготовленных копий.
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
@@ -862,6 +925,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Закрывает форму, измерения и состояние окна, убирает ожидающие ответы выбора файлов.
+    // Сохраняет общие службы только при пересоздании окна с готовой историей.
     override fun onDestroy() {
         entry?.close()
         entry = null
@@ -879,6 +944,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         super.onDestroy()
     }
 
+    // Возвращает успех сразу при уже выданном доступе или запоминает обработчик и просит систему
+    // показать разрешение. Камера не откроется до ответа.
     override fun requestCameraPermission(callback: (Boolean) -> Unit) {
         if (
             checkSelfPermission(android.Manifest.permission.CAMERA) ==
@@ -891,16 +958,22 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         }
     }
 
+    // Сохраняет обработчик и открывает системный выбор документа с отдельным номером запроса.
+    // Результат можно направить владельцу именно этой операции.
     @Suppress("DEPRECATION")
     override fun launchDocumentPicker(request: Intent, callback: (Intent?) -> Unit) {
         documentResult = callback
         startActivityForResult(request, 7401)
     }
 
+    // Убирает ссылку на ожидающий ответ выбора файла. После закрытия экрана поздний результат не
+    // уйдёт прежнему обработчику.
     override fun clearDocumentResult() {
         documentResult = null
     }
 
+    // Передаёт выбранный документ только для своего номера запроса, а отмену обозначает пустым
+    // ответом. Остальные результаты обрабатывает система.
     @Deprecated("Native SDK-only scoped picker result")
     override fun onActivityResult(
         requestCode: Int,
@@ -911,6 +984,8 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
         if (requestCode == 7401) documentResult?.invoke(if (resultCode == RESULT_OK) data else null)
     }
 
+    // Для своего номера доступа к камере забирает одноразовый обработчик и сообщает решение.
+    // Повторный системный вызов уже не запустит прежнее действие.
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,

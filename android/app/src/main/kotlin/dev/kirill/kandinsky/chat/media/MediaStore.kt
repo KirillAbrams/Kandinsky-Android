@@ -1,3 +1,6 @@
+// Хранит выбранные файлы и готовые изображения отдельно от сетевого чтения. Проверяет путь,
+// размер и владельцев, прежде чем показать или убрать вложение.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.*
@@ -49,6 +52,8 @@ class MediaStore(
     private val invalidationHandlers = mutableMapOf<UUID, () -> Unit>()
     private var previewThread: HandlerThread? = null
 
+    // Создаёт один рабочий поток для тихих роликов по первому запросу. Следующие просмотры
+    // используют его же и не добавляют отдельный поток каждому видео.
     internal fun previewWorker(): Handler {
         checkMainThread()
         check(!closed)
@@ -64,27 +69,40 @@ class MediaStore(
         private set
 
     val peakBytesUsed
+        // Возвращает наибольший расход памяти за время жизни хранилища. По нему можно проверить,
+        // соблюдался ли предел при одновременной подготовке.
         get() = imageMemoryBudget.peakBytes
 
     val bytesUsed
+        // Возвращает байты готовых изображений и временных резервов сейчас. После ухода последних
+        // читателей счёт должен уменьшиться.
         get() = imageMemoryBudget.bytes
 
+    // Проверяет поток экрана для операций с ключами и подписками. Их состояние не меняется из
+    // фонового чтения одновременно.
     private fun checkMainThread() {
         check(Looper.myLooper() == Looper.getMainLooper())
     }
 
+    // Возвращает проверенный путь к вложению внутри папки текущего владельца. Исключает ошибочный
+    // выход за её границы.
     fun fileURL(relative: String): File = resolve(store.root, relative)
 
-    // Проверяем наличие файла на телефоне без загрузки и декодирования.
+    // Проверяет, лежит ли готовый оригинал на телефоне, без сети и разбора изображения. Неудачная
+    // проверка пути означает, что местной копии нет.
     fun hasLocalOriginal(attachment: Attachment): Boolean =
         runCatching { fileURL(attachment.relativePath).isFile }.getOrDefault(false)
 
+    // Готовит присланные байты для постоянной папки вложений. Черновик получает путь только после
+    // общей проверки файла.
     fun stage(
         open: () -> InputStream,
         mime: String,
         callback: (Result<AttachmentDraft>) -> Unit,
     ): Cancellation = stage(open, mime, "objects", callback)
 
+    // Передаёт чтение фоновой очереди, если хранилище открыто и не чистится. При отмене убирает
+    // слишком поздно созданную копию.
     private fun stage(
         open: () -> InputStream,
         mime: String,
@@ -107,22 +125,30 @@ class MediaStore(
         }
     }
 
+    // Сохраняет выбор пользователя отдельно от файлов истории. После отказа от выбора такую копию
+    // можно убрать.
     fun stageSelection(
         open: () -> InputStream,
         mime: String,
         callback: (Result<AttachmentDraft>) -> Unit,
     ): Cancellation = stage(open, mime, "selections", callback)
 
+    // Выбирает подготовку фотографии допустимого размера перед помещением в папку исходников.
+    // Генератор получит готовую копию для передачи.
     fun stageStudioPhoto(
         open: () -> InputStream,
         callback: (Result<AttachmentDraft>) -> Unit,
     ): Cancellation = stage(open, "image/jpeg", "selections", callback, prepareStudioPhoto = true)
 
+    // Передаёт одну неиспользованную копию общей уборке. Ссылки из других черновиков всё ещё
+    // учитываются.
     fun discardUnpublishedImport(
         draft: AttachmentDraft,
         callback: (Result<Unit>) -> Unit = {},
     ): Cancellation = discardUnpublishedImports(listOf(draft), callback)
 
+    // Проверяет имена и принадлежность файлов, читает живые ссылки и удаляет только
+    // неиспользуемые. Иначе отмена импорта могла бы оборвать ожидающую отправку.
     fun discardUnpublishedImports(
         drafts: List<AttachmentDraft>,
         callback: (Result<Unit>) -> Unit = {},
@@ -167,6 +193,8 @@ class MediaStore(
         }
     }
 
+    // Не начинает уборку при открытом импорте, сначала читает ссылки, затем очищает файлы
+    // отдельно. Пока идёт восстановление, новые операции не должны добавить файл мимо списка.
     fun recover(callback: (Result<Unit>) -> Unit): Cancellation {
         checkMainThread()
         if (
@@ -209,14 +237,18 @@ class MediaStore(
         return token
     }
 
+    // Проверяет, подходит ли вложение к режиму подготовки видео генерации. Обычные сообщения не
+    // используют это правило автоматически.
     fun isStudioVideo(attachment: Attachment) =
         studioOriginals && attachment.mime.startsWith("video/")
 
-    // Возвращает отдельный признак оригинала, чтобы этот рисунок не смешивался с обычной
-    // уменьшенной копией.
+    // Ищет отметку прежнего показа по пути. При возврате экран может избежать повторной размытой
+    // картинки.
     internal fun wasShownInGallery(attachment: Attachment): Boolean =
         attachment.relativePath in seenGalleryPaths
 
+    // Запоминает показанный путь как самый свежий и ограничивает список недавних показов. Старые
+    // просмотры не занимают память бесконечно.
     internal fun markShownInGallery(attachment: Attachment) {
         val path = attachment.relativePath
         seenGalleryPaths.remove(path)
@@ -224,6 +256,8 @@ class MediaStore(
         if (seenGalleryPaths.size > 512) seenGalleryPaths.remove(seenGalleryPaths.first())
     }
 
+    // Выбирает подготовку сетевого фото из оригинала с отдельным ключом и пределом размера.
+    // Обычная миниатюра не заменяет результат этого чтения.
     fun studioPhotoKey(attachment: Attachment, maxPixel: Int? = null): ThumbnailKey? {
         if (
             !studioOriginals ||
@@ -236,8 +270,8 @@ class MediaStore(
         return ThumbnailKey(if (edge > 0) minOf(edge, limit) else limit, studioOriginal = true)
     }
 
-    // Не начинает загрузку и декодирование, поэтому ячейка может сразу показать известный кадр при
-    // привязке.
+    // Считает имя нужного варианта и возвращает готовый рисунок из памяти. Такой поиск не
+    // открывает файл или сеть.
     fun cachedThumbnail(attachment: Attachment, key: ThumbnailKey): PreparedImage? {
         checkMainThread()
         if (closed || recovering) return null
@@ -257,6 +291,8 @@ class MediaStore(
         )
     }
 
+    // Объединяет одинаковые запросы к фото генерации по размеру, виду и разрешению сети. Каждый
+    // вызывающий экран получает ответ со своим номером.
     fun thumbnail(
         attachment: Attachment,
         key: ThumbnailKey,
@@ -280,6 +316,9 @@ class MediaStore(
         )
     }
 
+    // Проверяет путь и память, затем ищет местный файл, при необходимости скачивает и готовит
+    // нужный размер. Отказ и отмена возвращают память, а пригодный кадр можно использовать
+    // повторно.
     private fun loadThumbnail(
         attachment: Attachment, key: ThumbnailKey, ticket: Int, localOnly: Boolean,
         priority: Int, progress: (Double) -> Unit, willDownload: () -> Boolean,
@@ -428,8 +467,8 @@ class MediaStore(
         return token
     }
 
-    // Не ждёт загрузки оригинала, поэтому даёт первый рисунок до появления более подробного
-    // изображения.
+    // Проверяет малую картинку и использует её байты, путь и вид медиа в ключе. Видео и фото
+    // могут дать разное размытие для одного входа.
     private fun tinyPreviewKey(attachment: Attachment): String? {
         val text = dev.kirill.kandinsky.chat.storage.MediaPreviewStorage.tiny(attachment.tinyPreview)
             ?: return null
@@ -437,13 +476,16 @@ class MediaStore(
         return attachment.relativePath + variant + text
     }
 
-    // Готовое размытие появляется при привязке ячейки, без очереди декодирования.
+    // Возвращает готовое маленькое изображение из памяти для ленты генерации. На экране оно может
+    // появиться без новой очереди.
     fun cachedTinyPreview(attachment: Attachment): PreparedImage? {
         checkMainThread()
         if (closed || !studioOriginals) return null
         return tinyPreviewKey(attachment)?.let { tinyPreviewCache.frame(it) }
     }
 
+    // Проверяет предельные размеры маленькой картинки, выделяет память и сглаживает её в фоне.
+    // При отмене или ошибке освобождает рисунок и резерв.
     fun tinyPreview(
         attachment: Attachment,
         completion: (Result<PreparedImage>) -> Unit,
@@ -524,6 +566,8 @@ class MediaStore(
         }
     }
 
+    // Готовит источник из сохранённого файла или сети и связывает чтение с отменой. Поздний
+    // закрытый запрос освобождает источник сразу после получения.
     fun playbackSource(
         attachment: Attachment,
         localOnly: Boolean = false,
@@ -565,6 +609,8 @@ class MediaStore(
         }
     }
 
+    // Допускает раннее чтение только для подходящего сетевого видео нужного размера. После
+    // подготовки закрывает источник, а отмена прекращает чтение раньше.
     fun prepareStudioVideo(attachment: Attachment): Cancellation? {
         checkMainThread()
         if (
@@ -586,15 +632,13 @@ class MediaStore(
         }
     }
 
-    // Отмена прекращает ожидающее чтение, а готовые изображения соседних сообщений не очищаются
-    // из-за
-    // завершения этого запроса.
+    // Просит полный исходник без сообщения о промежуточном ходе. Подходит для вызова, которому
+    // нужен только готовый файл.
     fun ensureOriginal(attachment: Attachment, callback: (Result<File>) -> Unit): Cancellation =
         ensureOriginal(attachment, {}, callback)
 
-    // Отмена прекращает ожидающее чтение, а готовые изображения соседних сообщений не очищаются
-    // из-за
-    // завершения этого запроса.
+    // Запрашивает полный файл с отдельным счётчиком хода и отменой. Эта передача не должна
+    // очищать уже готовые картинки соседних строк.
     fun ensureOriginal(
         attachment: Attachment,
         progress: (Double) -> Unit,
@@ -619,6 +663,8 @@ class MediaStore(
         }
     }
 
+    // На время перехода включает удержание полезных кадров для возврата и восстанавливает прежний
+    // режим после выхода. Большие кадры всё равно уступают место.
     fun <T> withNavigationCache(action: () -> T): T {
         checkMainThread()
         val previous = navigating
@@ -631,6 +677,8 @@ class MediaStore(
         }
     }
 
+    // Оставляет подборку для возврата во время перехода или освобождает все три хранилища
+    // изображений. Места просмотра видео могут жить отдельно от пикселей.
     fun releaseIdleImages() {
         checkMainThread()
         if (navigating) thumbnailCache.retainNavigationImages()
@@ -641,6 +689,8 @@ class MediaStore(
         }
     }
 
+    // Даёт экрану отдельный номер действия при очистке. Владелец сможет убрать эту подписку перед
+    // своим закрытием.
     fun registerInvalidation(action: () -> Unit): UUID {
         checkMainThread()
         val id = UUID.randomUUID()
@@ -648,11 +698,15 @@ class MediaStore(
         return id
     }
 
+    // Снимает указанную подписку в потоке экрана. Закрытая поверхность больше не получает просьбу
+    // об очистке.
     fun unregisterInvalidation(id: UUID) {
         checkMainThread()
         invalidationHandlers.remove(id)
     }
 
+    // Убирает ранние работы, сообщает владельцам об очистке и уменьшает будущий размер кадров и
+    // общий предел памяти. Это помогает пережить предупреждение системы.
     fun trimMemory() {
         videoPreparation.clear()
         checkMainThread()
@@ -664,6 +718,8 @@ class MediaStore(
         imageMemoryBudget.limit = 24 * 1024 * 1024
     }
 
+    // Снимает подписки и закрывает очереди, сохранённые кадры, диск и поток тихого видео. Новая
+    // операция после этого не должна держать прежние файлы.
     fun close() {
         checkMainThread()
         if (closed) return
@@ -687,6 +743,8 @@ class MediaStore(
     companion object {
         private val STUDIO_PHOTO_MIMES = setOf("image/png", "image/jpeg", "image/webp")
 
+        // Убирает временные файлы и готовые копии без ссылок из проверенных папок. Сначала
+        // отзывает производные кадры, иначе удалённый исходник остался бы виден.
         private fun deleteUnreferencedFiles(root: File, referencedPaths: Set<String>) {
             for (directoryName in listOf("staging", "objects", "selections")) {
                 val directory = ownedDirectory(root, directoryName)
@@ -700,7 +758,8 @@ class MediaStore(
             }
         }
 
-        // Файл может ещё не попасть в сообщение, но уже быть нужен черновику или очереди отправки.
+        // Собирает пути из истории, выбранных исходников и ожидающих отправок, в том числе из
+        // старых черновиков. Очистка учитывает их все.
         private fun readReferencedPaths(
             db: android.database.sqlite.SQLiteDatabase,
             pending: ((android.database.sqlite.SQLiteDatabase) -> Set<String>)?,
@@ -717,6 +776,8 @@ class MediaStore(
                 .use { cursor ->
                     while (cursor.moveToNext()) {
                         val draft = JSONObject(cursor.getString(0))
+                        // Добавляет пути переданных вложений к общему списку. Одна отправка может
+                        // содержать несколько файлов, которые ещё нельзя удалять.
                         fun collectAttachmentPaths(attachments: org.json.JSONArray) {
                             for (index in 0 until attachments.length()) {
                                 paths += attachments.getJSONObject(index).getString("relativePath")
@@ -739,6 +800,8 @@ class MediaStore(
             return paths
         }
 
+        // Сводит ошибки базы, разбора и системы к понятным причинам. Различает повреждение,
+        // запрет доступа и нехватку диска или памяти.
         fun map(t: Throwable): Throwable {
             if (t is MediaException) return t
             if (t is RepoException)
@@ -771,6 +834,8 @@ class MediaStore(
             )
         }
 
+        // Создаёт каталог только внутри проверенного места для медиа. Ссылка на другую папку
+        // вызывает отказ до записи.
         private fun ownedDirectory(root: File, name: String): File {
             val base = File(root.canonicalFile, "media")
             val dir = File(base, name)
@@ -780,6 +845,8 @@ class MediaStore(
             return dir
         }
 
+        // Отклоняет пустые и недопустимые части пути, затем проверяет итоговое расположение. Файл
+        // за пределами папки владельца не читается этим путём.
         private fun resolve(root: File, relative: String): File {
             if (
                 relative.startsWith("/") ||
@@ -793,6 +860,8 @@ class MediaStore(
             return file
         }
 
+        // Подтверждает перенос файла записью изменений каталога и закрывает системный указатель.
+        // Иначе сбой питания мог бы оставить байты без нужного имени.
         private fun syncDirectory(directory: File) {
             val directoryDescriptor = Os.open(directory.path, OsConstants.O_RDONLY, 0)
             try {
@@ -802,6 +871,8 @@ class MediaStore(
             }
         }
 
+        // Копирует байты ограниченными порциями, при необходимости уменьшает фото, проверяет файл
+        // и публикует через перенос. Временные файлы удаляются при любом исходе.
         private fun copyAndProbe(
             open: () -> InputStream,
             root: File,
@@ -914,6 +985,8 @@ class MediaStore(
             }
         }
 
+        // Проверяет реальный размер, ориентацию фото или дорожки и длительность ролика. Неверное
+        // содержимое не проходит только по названию файла.
         private fun probe(
             file: File,
             mime: String,
@@ -1004,6 +1077,8 @@ class MediaStore(
             }
         }
 
+        // Готовит рисунок или первый кадр в пределах нужной стороны, отклоняя незаконченный
+        // разбор. Если выход больше обещанного, освобождает его и возвращает ошибку.
         private fun decode(file: File, mime: String, maxPixel: Int): Bitmap {
             val result =
                 if (mime.startsWith("video/"))

@@ -1,3 +1,6 @@
+// Проверяет запись ввода, точки чтения, настроек и ожидающих команд на временной базе Андроида.
+// Включает потерю ответа и старые записи.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -14,6 +17,8 @@ import org.junit.Test
 class ConversationStateTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    // Пишет настройки и текст в черновик и заново открывает файл. Сверяет все поля и версию,
+    // чтобы неполная запись не прошла проверку.
     @Test
     fun generationOptionsSurviveARealDatabaseReopen() {
         var h =
@@ -58,6 +63,8 @@ class ConversationStateTest {
         }
     }
 
+    // Меняет точку чтения без редактирования и закрытия. Проверяет её в базе и убеждается, что
+    // черновик не менялся.
     @Test
     fun scrollingSavesLatestPositionWithoutEditingOrClosing() {
         val h =
@@ -90,6 +97,8 @@ class ConversationStateTest {
         }
     }
 
+    // Задерживает запись черновика и меняет положение во время ожидания. После завершения
+    // проверяет сохранение нового места.
     @Test
     fun draftWriteCannotOverwriteNewerReadingPosition() {
         val h =
@@ -128,6 +137,8 @@ class ConversationStateTest {
         }
     }
 
+    // Сверяет устойчивый номер повтора для того же результата, отказ для заблокированного и новый
+    // номер после смены запуска. Один ожидающий повтор блокирует второй.
     @Test
     fun retrySurvivesLostReplyAndReopening() {
         val harness =
@@ -151,8 +162,12 @@ class ConversationStateTest {
         }
     }
 
+    // Исполняет действие в потоке интерфейса и ждёт завершения. Тест обращается к состоянию через
+    // тот же поток, что и экран.
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
+    // Открывает определённый чат и ждёт результата чтения базы. Следующее действие не начнётся с
+    // наполовину готовым черновиком.
     private fun open(state: ConversationState) {
         awaitResult<Unit> { cb ->
             main { state.open(2, cb) }
@@ -160,6 +175,8 @@ class ConversationStateTest {
         }
     }
 
+    // Просит состояние отправить текущую команду и ждёт завершения. Тест может отличить сбой
+    // записи от успешно сохранённого ответа.
     private fun send(state: ConversationState) {
         awaitResult<Unit> { cb ->
             main { state.send(cb) }
@@ -167,6 +184,8 @@ class ConversationStateTest {
         }
     }
 
+    // Проверяет сохранение группы файлов после записи черновика старого вида и уборки. Позднее
+    // сверяет исходники, порядок и постоянные номера отправок.
     @Test
     fun selectionSurvivesLegacyDraftRewriteAndLegacyRecovery() {
         var h =
@@ -335,6 +354,8 @@ class ConversationStateTest {
         }
     }
 
+    // Обрывает ответ о записи группы и вновь открывает состояние. Проверяет отправку оставшихся
+    // команд без повторных сообщений и без потери отдельного текста.
     @Test
     fun mediaBatchSurvivesLostReplyAndRestartWithoutConsumingComposerDraft() {
         var h =
@@ -448,6 +469,8 @@ class ConversationStateTest {
         h.close()
     }
 
+    // Проверяет восстановление номера команды после потери ответа и очистку ввода после повтора.
+    // Новый черновик и место чтения затем остаются при повторном открытии.
     @Test
     fun committedSendClearsDraftAndRestartPreservesIt() {
         var h =
@@ -501,6 +524,8 @@ class ConversationStateTest {
         h.close()
     }
 
+    // Меняет ввод после начала отправки и до её ответа. После успеха прежнего запроса новый текст
+    // проверяется и в памяти, и в базе.
     @Test
     fun newestInputIsNotClearedByEarlierCommit() {
         val h =
@@ -529,6 +554,8 @@ class ConversationStateTest {
         h.close()
     }
 
+    // Останавливает чтение базы, закрывает экран и лишь затем продолжает чтение. Старый черновик
+    // не затирается ещё пустым состоянием.
     @Test
     fun legacyDraftSurvivesCloseWhileOpenWaitsForSQLite() {
         val h =

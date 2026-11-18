@@ -1,3 +1,6 @@
+// Рисует стрелку назад или знак закрытия на экране просмотра медиа. Обе кнопки используют одни
+// правила цвета и размера.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.*
@@ -13,6 +16,8 @@ internal class MediaNavigationDrawable(private val back: Boolean = false) : Draw
             strokeJoin = Paint.Join.ROUND
         }
 
+    // Масштабирует знак и ставит его по центру. Выбирает стрелку или крест, сохраняя пропорции
+    // при изменении рамки.
     override fun draw(canvas: Canvas) {
         val size = minOf(bounds.width(), bounds.height()) * (if (back) 0.5f else 1f)
         canvas.withTranslation(bounds.exactCenterX() - size / 2, bounds.exactCenterY() - size / 2) {
@@ -31,17 +36,22 @@ internal class MediaNavigationDrawable(private val back: Boolean = false) : Draw
         }
     }
 
+    // Меняет прозрачность краски и назначает перерисовку. Иначе кнопка продолжала бы показывать
+    // прежнюю яркость.
     override fun setAlpha(alpha: Int) {
         paint.alpha = alpha
         invalidateSelf()
     }
 
+    // Передаёт новый цветовой фильтр краске и обновляет знак. Рисунок сразу учитывает оформление
+    // владельца.
     override fun setColorFilter(filter: ColorFilter?) {
         paint.colorFilter = filter
         invalidateSelf()
     }
 
-    // Это позволяет учитывать незаполненную часть его границ при выводе
+    // Сообщает, что фон вокруг штрихов прозрачен. Система не должна считать всю рамку
+    // закрашенной.
     @Deprecated("Drawable translucency is intrinsic")
     override fun getOpacity() = PixelFormat.TRANSLUCENT
 }

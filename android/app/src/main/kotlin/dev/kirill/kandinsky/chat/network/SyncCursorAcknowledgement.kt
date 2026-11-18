@@ -1,3 +1,6 @@
+// Подтверждает серверу номер последнего сохранённого изменения. Пока ждёт ответ, держит одну
+// отметку, чтобы подтверждения не меняли порядок.
+
 package dev.kirill.kandinsky.chat.network
 
 import org.json.JSONObject
@@ -7,6 +10,9 @@ internal class SyncCursorAcknowledgement(private val sync: NetworkSync) {
     private var checkAgain = false
     private var inFlight: Long? = null
 
+    // Смотрит в базу после возобновления связи и отправляет неподтверждённую отметку. Если пришёл
+    // новый запрос на сверку, помнит об этом. Ответ от старого соединения после разрыва
+    // отбрасывается.
     fun acknowledgeSavedCursor() {
         if (!sync.resumed || inFlight != null) return
         if (lookingUp) {
@@ -31,6 +37,8 @@ internal class SyncCursorAcknowledgement(private val sync: NetworkSync) {
         }
     }
 
+    // Сверяет пришедший номер с ожидаемым и записывает его в базу. Только успешная запись
+    // освобождает место для следующего подтверждения, иначе повторный запуск потерял бы отметку.
     fun confirmSavedCursor(frame: JSONObject) {
         val cursor = frame.getLong("cursor")
         if (inFlight != cursor) return
@@ -44,6 +52,8 @@ internal class SyncCursorAcknowledgement(private val sync: NetworkSync) {
         }
     }
 
+    // Очищает признаки поиска и ожидания старого ответа. После переподключения подтверждение
+    // можно начать заново из базы, не удерживая состояние прежнего канала.
     fun reset() {
         checkAgain = false
         lookingUp = false

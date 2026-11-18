@@ -1,3 +1,6 @@
+// Выполняет запросы к местной истории и записывает изменения чата. Целая операция базы защищает
+// отправку, удаление и черновик от частичной записи.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.content.ContentValues
@@ -16,16 +19,23 @@ class SQLiteChatRepository(
     private val columns =
         "id,chatId,sortKey,kind,text,caption,replyToId,revision,savedAt,direction,deliveryState"
 
+    // Читает целое поле по имени столбца. Явное имя защищает от чтения соседнего поля после
+    // изменения порядка в запросе.
     private fun Cursor.long(name: String) = getLong(getColumnIndexOrThrow(name))
 
+    // Читает текст из именованного поля текущей строки. Отсутствующий столбец приводит к ошибке
+    // вместо незаметного выбора другого значения.
     private fun Cursor.string(name: String) = getString(getColumnIndexOrThrow(name))
 
-    // getLong возвращает 0 для SQL NULL. Проверяем поле до чтения числа.
+    // Проверяет, заполнено ли числовое поле, и только после этого читает число. Иначе отсутствие
+    // ссылки или времени стало бы обычным нулём.
     private fun Cursor.optionalLong(name: String): Long? {
         val i = getColumnIndexOrThrow(name)
         return if (isNull(i)) null else getLong(i)
     }
 
+    // Делает короткую подпись из последнего текста или подписи вложения. Если подписи нет,
+    // показывает название вида вложения либо сообщение о пустом чате.
     private fun preview(c: Cursor): String {
         if (c.optionalLong("lastId") == null) return "Сообщений пока нет"
         val text = c.string("lastText")
@@ -43,6 +53,8 @@ class SQLiteChatRepository(
         }
     }
 
+    // В одном запросе получает карточки и их последние сообщения. Закреплённые идут первыми, а
+    // остальные по времени активности, чтобы более свежий чат был виден сразу.
     private fun summaries(db: SQLiteDatabase): List<ChatSummary> {
         val result = ArrayList<ChatSummary>()
         db.rawQuery(
@@ -70,9 +82,13 @@ class SQLiteChatRepository(
         return result
     }
 
+    // Выбирает карточку с нужным номером. Если её нет, возвращает ошибку и тем самым не даёт
+    // команде работать с несуществующим чатом.
     internal fun summary(db: SQLiteDatabase, id: Long) =
         summaries(db).firstOrNull { it.id == id } ?: throw RepoException(RepoError.NOT_FOUND)
 
+    // Проверяет, что чат существует, сбрасывает счётчик и сохраняет событие обмена. Эти действия
+    // выполняются вместе, чтобы сервер и телефон получили согласованную отметку.
     override fun markRead(chatID: ChatID, callback: (Result<Unit>) -> Unit): Cancellation =
         store.submit(
             { db ->
@@ -87,6 +103,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Фильтрует карточки по названию без различия строчных и прописных букв. При пустой строке
+    // оставляет весь список.
     override fun chats(matching: String, callback: (Result<List<ChatSummary>>) -> Unit) =
         store.submit(
             { db ->
@@ -98,8 +116,9 @@ class SQLiteChatRepository(
             callback,
         )
 
-    // Сохраняет порядок вложений, чтобы результаты альбома не менялись местами после повторного
-    // открытия.
+    // Подбирает строки с ограничением по памяти, соединяет их с вложениями в порядке записи и
+    // добавляет сведения о генерации. Так тяжёлая страница не вытесняет остальные данные, а
+    // альбом не меняет порядок.
     internal fun messages(db: SQLiteDatabase, sql: String, args: Array<String>): List<Message> {
         val output = ArrayList<Message>()
         var bytes = 0
@@ -208,6 +227,9 @@ class SQLiteChatRepository(
                                                 .getString("kandinskyStatus")
                                                 .uppercase(Locale.ROOT)
                                         )
+                                    // Берёт необязательное текстовое поле состояния генерации.
+                                    // Пустое поле превращает в отсутствие значения, чтобы показ
+                                    // не зависел от заполненности всех полей.
                                     fun string(key: String) =
                                         if (payload.isNull(key)) null else payload.getString(key)
                                     val rawSlots = payload.optJSONArray("kandinskySlots")
@@ -261,11 +283,14 @@ class SQLiteChatRepository(
         }
     }
 
+    // Возвращает одно сообщение с вложениями и просит сообщить об ошибке, если его больше нет.
+    // Удаление и повтор отправки не будут опираться на пустую строку.
     private fun message(db: SQLiteDatabase, id: Long) =
         messages(db, "SELECT $columns FROM messages WHERE id=?", arrayOf(id.toString()))
             .firstOrNull() ?: throw RepoException(RepoError.NOT_FOUND)
 
-    // У сообщений может совпасть время. По номеру отличаем соседние строки на границе страницы.
+    // Выбирает строго более ранние или более поздние строки по двум признакам. При совпавшем
+    // времени номер сообщения не даёт пропустить строку на границе.
     private fun range(anchor: OrderKey, older: Boolean): Pair<String, Array<String>> {
         val op = if (older) "<" else ">"
         return "(sortKey$op? OR (sortKey=? AND id$op?))" to
@@ -276,12 +301,17 @@ class SQLiteChatRepository(
             )
     }
 
+    // Проверяет предел страницы и собирает сообщения с нужной стороны или вокруг точки чтения.
+    // Возвращает границы продолжения, чтобы экран дозагружал только существующую историю.
     override fun history(request: PageRequest, callback: (Result<HistoryPage>) -> Unit) =
         store.submit(
             { db ->
                 if (request.limit !in 1..128) throw RepoException(RepoError.INVALID_INPUT)
                 summary(db, request.chatID)
                 val visual = if (request.visualOnly) " AND kind IN ('photo','video','gif')" else ""
+                // Строит выборку для одного направления, ограничивает число сообщений и
+                // восстанавливает порядок старых строк по возрастанию. Экран может объединить
+                // соседние порции без переворота.
                 fun query(anchor: OrderKey?, older: Boolean, limit: Int): List<Message> {
                     var sql = "SELECT $columns FROM messages WHERE chatId=?$visual"
                     val args = mutableListOf(request.chatID.toString())
@@ -312,6 +342,8 @@ class SQLiteChatRepository(
                             minOf(older.size, maxOf(request.limit / 2, request.limit - newer.size))
                         older.takeLast(count) + newer.take(request.limit - count)
                     } else query(anchor, request.direction != PageDirection.NEWER, request.limit)
+                // Проверяет наличие хотя бы одного сообщения за указанным краем. Если дальше
+                // строк нет, не предлагает экрану продолжать загрузку.
                 fun more(key: OrderKey?, older: Boolean): OrderKey? {
                     if (key == null) return null
                     val r = range(key, older)
@@ -334,6 +366,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Возвращает упорядоченную сводку строк и примерные высоты по типу и длине текста. Прокрутка
+    // получает опоры без чтения полных сообщений и вложений.
     override fun index(chatID: Long, callback: (Result<List<IndexedRow>>) -> Unit) =
         store.submit(
             { db ->
@@ -376,6 +410,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Проверяет заполненность и длину отправки, затем сверяет имена и существование файлов внутри
+    // папки вложений. Неверный путь или пустое сообщение не попадут в базу.
     private fun validate(c: SendCommand) {
         if (
             c.operationID.isEmpty() ||
@@ -402,6 +438,8 @@ class SQLiteChatRepository(
         }
     }
 
+    // Подтверждает работу только после успешного выполнения всего блока и всегда завершает
+    // операцию базы. Если завершение тоже упало, исходная ошибка остаётся доступной.
     private inline fun <T> transaction(db: SQLiteDatabase, block: () -> T): T {
         db.beginTransaction()
         var failure: Throwable? = null
@@ -421,7 +459,8 @@ class SQLiteChatRepository(
         }
     }
 
-    // Ключ операции и сообщение записываются вместе. При повторе вернём уже созданное сообщение.
+    // Сверяет повтор по номеру и отпечатку. Новое сообщение, вложения, карточку и событие обмена
+    // пишет вместе, чтобы потеря ответа не превратила повтор в дубль.
     override fun send(command: SendCommand, callback: (Result<MessageDelta>) -> Unit) =
         store.submit(
             { db ->
@@ -527,6 +566,9 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Добавляет действие в очередь обмена и удаляет сообщение вместе с обновлением карточки.
+    // После удаления последнего сообщения в карточке появится прежняя последняя строка либо
+    // пустое место.
     override fun delete(messageID: Long, callback: (Result<MessageDelta>) -> Unit) =
         store.submit(
             { db ->
@@ -563,6 +605,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Ищет буквальный текст среди строк одного чата и продолжает поиск за сохранённым ключом.
+    // Предел числа результатов не отдаёт всю длинную историю за раз.
     override fun search(
         chatID: Long,
         text: String,
@@ -588,7 +632,8 @@ class SQLiteChatRepository(
             callback,
         )
 
-    // Сохраняем вложения вместе с текстом, чтобы после перезапуска восстановить весь черновик.
+    // Записывает новую версию ввода и незавершённый выбор файлов одной операцией. Если очередь
+    // поздно принесла более раннюю версию, свежий текст остаётся в базе.
     override fun saveDraft(chatID: Long, draft: Draft, callback: (Result<Unit>) -> Unit) =
         store.submit(
             { db ->
@@ -619,6 +664,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Восстанавливает сохранённый ввод и подставляет из отдельной таблицы незавершённый выбор
+    // файлов. При отсутствии строки возвращает пустой черновик.
     override fun draft(chatID: Long, callback: (Result<Draft>) -> Unit) =
         store.submit(
             { db ->
@@ -641,6 +688,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Проверяет смещение и версию раскладки, потом заменяет точку чтения. Неверные числа не
+    // смогут испортить следующий вход в чат.
     override fun savePosition(
         chatID: Long,
         anchor: ReadingAnchor,
@@ -675,6 +724,8 @@ class SQLiteChatRepository(
             callback,
         )
 
+    // Разбирает точку чтения из строки выбранного чата. Различает отсутствие записи и битый
+    // формат, чтобы вызывающий код мог обработать ошибку.
     override fun position(chatID: Long, callback: (Result<ReadingAnchor?>) -> Unit) =
         store.submit(
             { db ->

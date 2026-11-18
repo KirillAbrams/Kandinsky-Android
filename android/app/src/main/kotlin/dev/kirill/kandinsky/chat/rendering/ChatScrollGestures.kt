@@ -1,3 +1,7 @@
+// Жесты ленты на андроиде ведут движение пальца, запускают затухание и переводят касание в
+// действие строки. Историю ограничиваем её краями. При остановке передаём последнее место чтения
+// владельцу экрана.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -6,6 +10,9 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.*
 import kotlin.math.*
 
+// При касании тормозим старую инерцию и начинаем замер скорости. Перемещение начинается после
+// системного порога. При отпускании запускаем движение по скорости или возвращаем признак
+// короткого нажатия.
 internal fun ChatScrollHost.handleScrollTouch(event: MotionEvent): Boolean {
     gestures.onTouchEvent(event)
     var isTap = false
@@ -58,6 +65,8 @@ internal fun ChatScrollHost.handleScrollTouch(event: MotionEvent): Boolean {
     return isTap
 }
 
+// Сбрасываем признаки касания и возвращаем системе измеритель скорости. Обновляем запрос к
+// дисплею и выдаём текущее место чтения.
 internal fun ChatScrollHost.finishScrollTouch() {
     dragging = false
     velocity?.recycle()
@@ -66,6 +75,8 @@ internal fun ChatScrollHost.finishScrollTouch() {
     onAnchor?.invoke(readingAnchor())
 }
 
+// Сначала проверяем действие загрузки, затем кнопки результата и позицию вложения. Относительные
+// координаты внутри строки позволяют выбрать точный файл из общей карточки.
 internal fun ChatScrollHost.performRowTap(tapX: Float, tapY: Float): Boolean {
     if (scene.performLoadAction(tapX, tapY)) return true
     val (row, frame) = hit(tapX, tapY) ?: return false
@@ -104,6 +115,8 @@ internal fun ChatScrollHost.performRowTap(tapX: Float, tapY: Float): Boolean {
     return true
 }
 
+// Переносим разницу между двумя положениями инерции на реальную ленту. Если достигли края,
+// останавливаем её. После каждого шага готовим видимые строки и сохраняем позицию в конце.
 internal fun ChatScrollHost.advanceFling() {
     if (scroller.computeScrollOffset()) {
         pendingAnchor = null
@@ -119,6 +132,8 @@ internal fun ChatScrollHost.advanceFling() {
     }
 }
 
+// Находим строку по координате в полной истории и проверяем её фактический прямоугольник на
+// экране. Панели, отступы и пустой участок рядом с сообщением не должны открыть файл.
 internal fun ChatScrollHost.hit(x: Float, y: Float): Pair<Message, RectF>? {
     val id = index.anchorAt(offset + y).messageID
     val row = loaded[id] ?: return null

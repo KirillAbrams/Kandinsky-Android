@@ -1,3 +1,6 @@
+// Проверяет одновременный уход последнего получателя и присоединение нового. Передача должна или
+// остаться нужной, или сразу стать закрытой.
+
 package dev.kirill.kandinsky.chat.media
 
 import java.util.UUID
@@ -9,6 +12,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaRequestOwnersTest {
+    // Двести раз запускает добавление и снятие получателя одновременно. Принятый получатель не
+    // теряет передачу, закрытый запрос не принимает нового, сигнал отмены приходит один раз.
     @Test
     fun aNewOwnerRacingWithLastCancellationIsEitherKeptAliveOrRefused() {
         val workers = Executors.newFixedThreadPool(2)

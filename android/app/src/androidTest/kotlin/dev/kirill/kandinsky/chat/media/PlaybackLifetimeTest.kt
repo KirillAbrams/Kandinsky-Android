@@ -1,3 +1,6 @@
+// Проверки времени жизни системного проигрывателя на андроиде. Они отслеживают паузу, перемотку,
+// звук, смену источника и освобождение места для камеры после остановки.
+
 package dev.kirill.kandinsky.chat.media
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -13,6 +16,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackLifetimeTest {
+    // Сверяем состав поверхности. У неё должны остаться только выход видео и изображение, а
+    // касания не блокируются лишней кнопкой.
     @Test
     fun videoSurfaceContainsOnlyVideoAndPoster() {
         val h = RepositoryHarness.open(File(context.cacheDir, "surface-only-" + UUID.randomUUID()))
@@ -36,7 +41,8 @@ class PlaybackLifetimeTest {
         h.close()
     }
 
-    // Неподдержанный файл не должен занять разрешение или запустить фоновую загрузку.
+    // Передаём неподдержанный звуковой файл и ждём отказ. Не должно возникнуть владельца
+    // проигрывателя или включиться звук.
     @Test
     fun audioCannotOpenPlayerOrEnableSound() {
         val h =
@@ -73,8 +79,12 @@ class PlaybackLifetimeTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Выполняем действия с проигрывателем в потоке экрана и ждём завершения. Так измерение
+    // получает состояние после команды.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Проверяем звуковую дорожку исходника и два настоящих повтора без звука. Ставим паузу,
+    // перематываем и снова ждём движения. После остановки освобождается один занятый владелец.
     @Test
     fun mutedRoundLoopsAcrossNativeEndAndKeepsPauseSeekAndOneOwner() {
         val root = File(context.cacheDir, "round-loop-" + UUID.randomUUID())
@@ -205,6 +215,8 @@ class PlaybackLifetimeTest {
         }
     }
 
+    // Даём обычному видео один раз дойти до конца, затем перематываем и запускаем дальше. Сверяем
+    // реальную позицию, потому что готовность источника сама по себе не означает повтор.
     @Test
     fun regularVideoEndsWithoutLoopingAndCanSeekToReplay() {
         val h = RepositoryHarness.open(File(context.cacheDir, "video-end-" + UUID.randomUUID()))
@@ -288,6 +300,8 @@ class PlaybackLifetimeTest {
         }
     }
 
+    // Сначала подтверждаем сообщение с прежним местным файлом. Затем подменяем источник
+    // обновлённым и проверяем остановку старого воспроизведения.
     @Test
     fun higherRevisionStopsReplacedSourceButAcknowledgementKeepsTheSameLocalFile() {
         val h =
@@ -330,6 +344,8 @@ class PlaybackLifetimeTest {
             }
             assertTrue(ready.await(8, TimeUnit.SECONDS))
             val chat = ChatSummary(2, "source", "", 1, 1, 0, false)
+            // Строим поступившее изменение с переданным файлом в той же строке. Это изолирует
+            // влияние пути и редакции на решение проигрывателя.
             fun update(value: Attachment) =
                 MessageDelta(
                     updated =
@@ -375,6 +391,8 @@ class PlaybackLifetimeTest {
         }
     }
 
+    // Готовим ролик, перематываем и меняем цель. Одновременно должно оставаться одно
+    // воспроизведение, а съёмка получает разрешение после освобождения места.
     @Test
     fun singleNativeOwnerSeekLatestTargetAndCaptureAfterRelease() {
         val h = RepositoryHarness.open(File(context.cacheDir, "play-" + UUID.randomUUID()))
@@ -491,7 +509,8 @@ class PlaybackLifetimeTest {
         h.close()
     }
 
-    // Поздний ответ не должен возобновить показ.
+    // Закрываем незавершённый настоящий проигрыватель и ждём выдачу места камере. Запоздалый
+    // ответ не должен вернуть движение.
     @Test
     fun closeDuringPrepareDoesNotResumeFromLateCallback() {
         val h = RepositoryHarness.open(File(context.cacheDir, "play-close-" + UUID.randomUUID()))
@@ -561,6 +580,8 @@ class PlaybackLifetimeTest {
         h.close()
     }
 
+    // Показываем ролик и затем убираем его сообщение из сцены. Проверяем, что владелец снимается,
+    // когда строка больше недоступна.
     @Test
     fun missingPlaybackMessageStopsNativeOwner() {
         val h = RepositoryHarness.open(File(context.cacheDir, "offscreen-" + UUID.randomUUID()))
@@ -635,6 +656,8 @@ class PlaybackLifetimeTest {
         }
     }
 
+    // Удерживаем последовательные запросы оригиналов во время снятия проигрывателя. Смена цели
+    // отменяет старый запрос, а остановка во время ухода отменяет и последний.
     @Test
     fun repeatedStopCancelsEveryPendingOriginalDuringRetirement() {
         val h =

@@ -1,3 +1,6 @@
+// Проверяет окна настроек и выбора файлов на изолированной сборке Андроида. Сверяет действия,
+// границы полей и закрытие без сохранения.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Activity
@@ -29,6 +32,8 @@ class StudioGenerationSheetTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private lateinit var activity: Activity
 
+    // Проверяет отдельное имя сборки и отсутствие сохранённого входа перед запуском окна.
+    // Настоящий аккаунт не участвует в проверке.
     @Before
     fun openIsolatedActivity() {
         val context = instrumentation.targetContext
@@ -41,19 +46,27 @@ class StudioGenerationSheetTest {
         instrumentation.waitForIdleSync()
     }
 
+    // Закрывает открытое окно из нужного потока после сценария. Сбой теста не оставит это окно на
+    // экране.
     @After
     fun closeActivity() {
         if (::activity.isInitialized) onMain { activity.finish() }
     }
 
+    // Исполняет действие в потоке интерфейса с ожиданием. Проверка не рисует и не нажимает
+    // элементы из рабочего потока.
     private fun onMain(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
+    // Запоминает открытые окна, выполняет показ и берёт единственное новое. Тест ищет поля в
+    // появившейся панели.
     private fun show(open: () -> Unit): View {
         val before = WindowInspector.getGlobalWindowViews().toSet()
         open()
         return WindowInspector.getGlobalWindowViews().single { it !in before }
     }
 
+    // Перечисляет элемент и вложенные части. Это даёт проверить настоящие поля после смены их
+    // родителя.
     private fun descendants(view: View): Sequence<View> = sequence {
         yield(view)
         if (view is ViewGroup) {
@@ -61,14 +74,21 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // Находит видимый текстовый элемент с точной подписью. Скрытая копия кнопки не подойдёт
+    // вместо рабочей.
     private fun View.text(label: String): TextView =
         descendants(this).filterIsInstance<TextView>().single { it.text.toString() == label && it.isShown }
 
+    // Ищет видимое действие по описанию доступности. Поиск не зависит от рисунка кнопки.
     private fun View.control(label: String): View =
         descendants(this).single { it.contentDescription == label && it.isShown }
 
+    // Просит выполнить нажатие и проверяет наличие обработчика. Тест не примет неподключённую
+    // кнопку за выполненное действие.
     private fun click(view: View) = assertTrue("У элемента должно быть действие", view.performClick())
 
+    // Меняет параметры, двигает ползунок и проверяет пределы текста и числа. После исправления
+    // сверяет переданные значения и снятие фокуса у свёрнутого поля.
     @Test
     fun advancedSettingsValidateSeedAndKeepSelectedDimensionsCountAndGuidance() {
         val options = KandinskyOptions(model = "video", aspect = "5:3", seconds = 3, count = 2)
@@ -147,6 +167,8 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // Проверяет, что длинные варианты лежат друг под другом внутри панели. Затем выбирает нужный
+    // и убеждается, что форма передала этот выбор.
     @Test
     fun longQualityLabelsWrapInsideThePanelAndCanStillBeSelected() {
         val first = "Быстрая генерация для проверки композиции и основных деталей изображения"
@@ -180,6 +202,8 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // Сравнивает короткое движение и длинный жест вниз после правки значения. Короткое сохраняет
+    // панель, закрывающий жест не отправляет настройки.
     @Test
     fun shortGripDragKeepsSettingsOpenAndDownwardSwipeDiscardsChanges() {
         val submitted = mutableListOf<KandinskyOptions>()
@@ -200,6 +224,8 @@ class StudioGenerationSheetTest {
                 it.importantForAccessibility == View.IMPORTANT_FOR_ACCESSIBILITY_NO &&
                     it.isClickable && it.childCount == 1
             }
+            // Создаёт последовательность касания, движения и отпускания с выбранной длиной.
+            // Сценарий проверяет порог на том же элементе.
             fun drag(distance: Float) {
                 val now = SystemClock.uptimeMillis()
                 val start = grip.height / 4f
@@ -228,6 +254,8 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // Открывает сохранённые параметры при меньшем наборе возможностей, проверяет отсутствие
+    // лишних полей и допустимые значения после подтверждения.
     @Test
     fun savedOptionsAreClampedWhenTheModelStopsOfferingThem() {
         val original = KandinskyOptions(
@@ -253,6 +281,8 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // Проверяет сообщение пустого списка, затем выделение и озвучивание доступных моделей. Выбор
+    // должен вернуть именно нажатую запись.
     @Test
     fun emptyCatalogueExplainsFailureAndLoadedModelsReturnTheChosenEntry() {
         val selected = mutableListOf<StudioModel>()
@@ -278,6 +308,8 @@ class StudioGenerationSheetTest {
         }
     }
 
+    // По очереди выбирает фото, камеру и видео, затем открывает недавние загрузки. Сверяет предел
+    // пяти строк и результат выбранного файла.
     @Test
     fun attachmentOptionsAndRecentUploadsReturnTheirOwnValues() {
         val sources = mutableListOf<AttachmentSource>()

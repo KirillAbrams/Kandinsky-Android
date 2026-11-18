@@ -1,3 +1,6 @@
+// Снимаем системные показатели кадров на отдельных участках прокрутки и просмотра. Сохраняем
+// события окна и жестов, чтобы сравнивать одинаковую работу.
+
 package dev.kirill.kandinsky.chat
 
 import android.content.Intent
@@ -12,6 +15,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReleasePerformanceFlowTest {
+    // Запускаем приложение и наблюдателей окна, открываем длинную историю и запускаем нужные
+    // участки замера. Сохраняем ограниченный отчёт и освобождаем наблюдателей даже при ошибке.
     @Test
     fun nativeReleasePhases() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -42,6 +47,8 @@ class ReleasePerformanceFlowTest {
             precedingCallback = checkNotNull(activity.window.callback)
             ownedCallback =
                 object : Window.Callback by precedingCallback {
+                    // Для замера системных жестов сохраняем вид, время и координаты событий в
+                    // пределах журнала. Затем передаём событие обычному окну без изменения.
                     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                         if (
                             InstrumentationRegistry.getArguments().getString("gestures") ==
@@ -65,6 +72,8 @@ class ReleasePerformanceFlowTest {
                         return precedingCallback.dispatchTouchEvent(event)
                     }
 
+                    // Записываем момент смены параметров окна и выбранный режим экрана. Эти
+                    // данные помогают связать изменение кадров с реальным запросом режима.
                     override fun onWindowAttributesChanged(attributes: WindowManager.LayoutParams) {
                         synchronized(lock) {
                             if (modeChanges.length() < 4096)
@@ -115,9 +124,14 @@ class ReleasePerformanceFlowTest {
         i.runOnMainSync {
             activity.window.addOnFrameMetricsAvailableListener(listener, Handler(thread.looper))
         }
+        // Ждём доступный элемент по постоянной метке не дольше 15 секунд. Замер не начнётся, если
+        // нужный экран ещё не готов.
         fun find(id: String) =
             d.wait(Until.findObject(By.res(id).enabled(true)), 15000)
                 ?: throw AssertionError("Missing enabled " + id)
+        // Находим и нажимаем элемент с коротким повтором, если экран успел заменить его.
+        // Последняя ошибка возвращается проверке, чтобы пропущенное нажатие не выглядело
+        // успешным.
         fun tap(id: String) {
             for (n in 0..2) try {
                 find(id).click()
@@ -126,16 +140,23 @@ class ReleasePerformanceFlowTest {
                 if (n == 2) throw e
             }
         }
+        // Нажимаем меню, открываем строку по точному названию и ждём поле ввода. Только после
+        // этого можно начинать измеряемые жесты.
         fun openHistory(title: String) {
             tap("chat.back")
             val row = d.wait(Until.findObject(By.text(title)), 15000) ?: error("Нет чата $title")
             row.click()
             find("composer.input")
         }
+        // По проверочному параметру выключаем правило выбора режима экрана у прокручиваемой
+        // истории. Это позволяет сравнить два режима на одном устройстве без изменения рабочей
+        // сборки.
         fun applyPolicyControl() {
             if (InstrumentationRegistry.getArguments().getString("policy") != "off") return
             i.runOnMainSync {
                 var found = 0
+                // Ищем экран чата в дереве окна и снимаем его правило выбора режима. Счётчик
+                // подтверждает, что изменён ровно один нужный экран.
                 fun visit(v: View) {
                     if (v is dev.kirill.kandinsky.chat.rendering.ChatScrollHost) {
                         val field = v.javaClass.getDeclaredField("displayPolicy")
@@ -152,10 +173,14 @@ class ReleasePerformanceFlowTest {
                 assertEquals(1, found)
             }
         }
+        // Запускаем инерцию системного прокручивания из экрана чата и читаем скорость. Проверяем,
+        // что движение началось и действительно сдвинуло положение.
         fun nativeFling(up: Boolean): Float {
             lateinit var host: dev.kirill.kandinsky.chat.rendering.ChatScrollHost
             lateinit var scroller: android.widget.OverScroller
             i.runOnMainSync {
+                // Ищем действительный экран истории среди дочерних элементов окна. Он нужен для
+                // запуска и чтения движения из штатного прокручивания.
                 fun find(v: View): dev.kirill.kandinsky.chat.rendering.ChatScrollHost? {
                     if (v is dev.kirill.kandinsky.chat.rendering.ChatScrollHost) return v
                     if (v is ViewGroup)
@@ -212,6 +237,9 @@ class ReleasePerformanceFlowTest {
             }
             return velocity
         }
+        // Передаём системе последовательность касаний, ждём доставку окончания и измеряем
+        // движение после отпускания. Это позволяет отличить настоящую инерцию от простого
+        // изменения координат.
         fun osFling(up: Boolean): Float {
             lateinit var host: dev.kirill.kandinsky.chat.rendering.ChatScrollHost
             lateinit var scroller: android.widget.OverScroller
@@ -219,6 +247,8 @@ class ReleasePerformanceFlowTest {
             val location = IntArray(2)
             var origin = 0f
             i.runOnMainSync {
+                // Находим видимый экран истории в дереве и используем его размер и положение.
+                // Жест должен попасть в нужное окно и остаться в пределах истории.
                 fun locate(v: View): dev.kirill.kandinsky.chat.rendering.ChatScrollHost? {
                     if (v is dev.kirill.kandinsky.chat.rendering.ChatScrollHost) return v
                     if (v is ViewGroup)
@@ -241,6 +271,8 @@ class ReleasePerformanceFlowTest {
             val begin = System.nanoTime()
             var downTime = 0L
             val calls = JSONArray()
+            // Формируем одно событие касания с общим временем начала жеста и нужным шагом.
+            // Проверяем, что система приняла событие, и освобождаем его после передачи.
             fun send(action: Int, step: Int) {
                 val now = SystemClock.uptimeMillis()
                 if (action == MotionEvent.ACTION_DOWN) downTime = now
@@ -279,6 +311,8 @@ class ReleasePerformanceFlowTest {
                 send(if (n == 12) MotionEvent.ACTION_UP else MotionEvent.ACTION_MOVE, n)
             }
             val receiptDeadline = SystemClock.uptimeMillis() + 1000
+            // Ищем окончание своего жеста в журнале окна по времени и виду события. Без такой
+            // сверки нельзя связать последующее движение с введённым жестом.
             fun receivedUp() =
                 synchronized(lock) {
                     (touchStart until systemTouches.length()).any { n ->
@@ -333,10 +367,14 @@ class ReleasePerformanceFlowTest {
         var controlledView: View? = null
         var previousViewRate = Float.NaN
         var ownedViewRate = Float.NaN
+        // На поддерживаемой версии системы по параметру проверки просим для истории наибольшую
+        // частоту. Убеждаемся, что запрос применён к нужному экрану.
         fun applyViewRateControl() {
             if (InstrumentationRegistry.getArguments().getString("view-rate") != "highest") return
             assertTrue(Build.VERSION.SDK_INT >= 35)
             i.runOnMainSync {
+                // Находим прокручиваемую историю для проверки частоты. Другие элементы окна
+                // оставляем с прежними настройками.
                 fun find(v: View): dev.kirill.kandinsky.chat.rendering.ChatScrollHost? {
                     if (v is dev.kirill.kandinsky.chat.rendering.ChatScrollHost) return v
                     if (v is ViewGroup)
@@ -365,6 +403,9 @@ class ReleasePerformanceFlowTest {
                 )
             }
         }
+        // В ограниченный период повторяем жесты по готовым строкам или к новым страницам.
+        // Записываем число жестов, времена и исходную скорость, чтобы сравнить участки с
+        // одинаковым вводом.
         fun runPhase(name: String, seconds: Long, pages: Boolean) {
             phase.set(name)
             android.os.Trace.beginAsyncSection("Kandinsky.Bench." + name, 1)

@@ -1,3 +1,6 @@
+// Ограничивает фоновую обработку медиа и ждёт выдачи результата в поток экрана. Переполненная
+// очередь получает отказ вместо бесконечного роста.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.os.Handler
@@ -6,6 +9,8 @@ import dev.kirill.kandinsky.chat.domain.Cancellation
 import java.util.concurrent.Executors
 
 class MediaDecodeQueue(private val maximumWorkers: Int = 2) {
+    // Проверяет допустимое число фоновых работников до начала очереди. Слишком много
+    // одновременных разборов заняли бы память.
     init {
         require(maximumWorkers in 1..2)
     }
@@ -25,11 +30,17 @@ class MediaDecodeQueue(private val maximumWorkers: Int = 2) {
     private val active = mutableSetOf<Job>()
     private var closed = false
     val runningCount
+        // Читает число начатых задач под блокировкой. Пока результат выдаётся, задача ещё
+        // учитывается как активная.
         get() = synchronized(gate) { active.size }
 
     val pendingCount
+        // Под той же блокировкой читает число ожидающих. Число не смешивает работы, которые уже
+        // выполняются.
         get() = synchronized(gate) { pending.size }
 
+    // Ставит задачу по её срочности, назначает отмену и сообщает об отказе при переполнении.
+    // Готовый результат возвращается в поток экрана или освобождается после отмены.
     fun <T> submit(
         priority: Int = 0,
         work: () -> T,
@@ -83,6 +94,8 @@ class MediaDecodeQueue(private val maximumWorkers: Int = 2) {
         return job.token
     }
 
+    // Запускает работы из головы очереди только до предела фоновых исполнителей. Отменённая
+    // задача получает отказ до начала разбора.
     private fun drain() {
         while (!closed && active.size < maximumWorkers && pending.isNotEmpty()) {
             val job = pending.removeFirst()
@@ -97,7 +110,8 @@ class MediaDecodeQueue(private val maximumWorkers: Int = 2) {
         }
     }
 
-    // Активные задания тоже помечает отменёнными, чтобы поздний результат был освобождён.
+    // Закрывает ожидание, отменяет активные задачи и завершает очередь работников. Иначе закрытый
+    // чат оставил бы фоновый разбор без получателя.
     fun close() {
         synchronized(gate) {
             if (closed) return

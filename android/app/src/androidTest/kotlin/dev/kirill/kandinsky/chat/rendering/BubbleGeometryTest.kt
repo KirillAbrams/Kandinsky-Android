@@ -1,3 +1,5 @@
+// Проверяем размеры строк, форму исходящего запроса и расположение кнопок под фото и видео.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -5,6 +7,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BubbleGeometryTest {
+    // Сверяем компактную строку, высоту фото с кнопками и дополнительные действия у видео. По
+    // пикселям проверяем, что метка и фон не закрашивают лишнюю область.
     @Test
     fun compactTextAndPhotoActionFooter() {
         val row =
@@ -83,6 +87,8 @@ class BubbleGeometryTest {
         )
     }
 
+    // Сверяем отступы и высоту запроса, у которого время вынесено отдельно. Прозрачность края
+    // посередине и рисование снизу подтверждают форму хвостика.
     @Test
     fun kandinskyPromptKeepsSeparateTimestampAndTail() {
         val row =

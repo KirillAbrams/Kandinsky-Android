@@ -1,3 +1,6 @@
+// Проверяет повторное использование строки списка Андроида, доступность обеих команд и остановку
+// индикатора.
+
 package dev.kirill.kandinsky.chat.chatlist
 
 import android.content.Intent
@@ -13,6 +16,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StudioDrawerCellTest {
+    // Привязывает занятую, затем свободную строку и проверяет размеры кнопок, разные действия и
+    // остановку индикатора. После снятия строки с окна индикатор также должен исчезнуть.
     @Test fun busyRowReusesSafelyAndKeepsIndependentActionTargets() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val activity = instrumentation.startActivitySync(
@@ -26,11 +31,15 @@ class StudioDrawerCellTest {
                 activity.setContentView(root)
                 val cell = StudioThreadCell(activity)
                 val density = activity.resources.displayMetrics.density
+                // Переводит ожидаемые размеры в точки экрана телефона. Иначе тест сравнивал бы
+                // разные единицы на устройствах с другой плотностью.
                 fun dp(value: Int) = (value * density + 0.5f).toInt()
                 root.addView(cell, FrameLayout.LayoutParams(dp(304), dp(44)))
                 var opened = 0
                 var menuOpened = 0
                 val active = StudioThread(1, "Длинное название в одну строку", 0, 0, true, false, 1, true)
+                // Привязывает выбранный тестовый чат и выполняет измерение и раскладку. Это даёт
+                // проверить итоговые рамки и обработчики сразу после повторного использования.
                 fun bind(row: StudioThread) {
                     cell.bind(row, true, { opened++ }, { menuOpened++ }) { view, id -> view.tag = id }
                     cell.measure(

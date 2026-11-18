@@ -1,3 +1,6 @@
+// Разделяет чтение местной базы, загрузку файлов и запись полученных номеров. Потеря ответа не
+// должна удалять сохранённые сведения о уже переданном вложении.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -13,6 +16,8 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
         val replies: Map<Long, Long>,
     )
 
+    // Читает связи из базы, закрывает это чтение до сетевой работы и отбирает доступные ответы.
+    // Перед возвратом записывает номера загруженных файлов, чтобы повтор мог использовать их.
     fun prepare(commands: List<SendCommand>, completion: (Result<List<JSONObject>>) -> Unit) {
         // Сначала читаем ссылки из базы. Пока загружаются файлы, транзакция уже закрыта.
         sync.database({ db -> readReferences(db, commands) }) { selected ->
@@ -38,6 +43,9 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
         }
     }
 
+    // Собирает ранее выданные номера оригиналов и копий, а для ответов находит их номера сервера.
+    // Без такой сверки отправка могла бы ссылаться на местную строку, о которой сервер ещё не
+    // знает.
     private fun readReferences(db: SQLiteDatabase, commands: List<SendCommand>): PayloadReferences {
         val uploads = hashMapOf<String, Pair<String, String?>>()
         db.rawQuery("SELECT attachmentID,blobID,previewBlobID FROM net_uploads", null).use {
@@ -52,6 +60,8 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
         return PayloadReferences(uploads, replies)
     }
 
+    // Складывает вид сообщения, текст, вложения и параметры генерации в форму для сервера.
+    // Использует прежние номера вместо повторной загрузки, когда файл уже был принят.
     private fun messagePayload(command: SendCommand, references: PayloadReferences): JSONObject {
         val attachments =
             command.attachments.map { attachment ->
@@ -76,6 +86,9 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
             }
     }
 
+    // Отправляет оригинал из местной папки, при необходимости связывает его с чатом как исходник
+    // генерации. Затем готовит копию с номером родителя, чтобы сервер мог проследить связь
+    // файлов.
     private fun uploadAttachment(
         attachment: AttachmentDraft,
         command: SendCommand,
@@ -90,6 +103,8 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
         return blob to NetworkPreview.upload(sync.store.root, attachment, sync.api, parent = blob)
     }
 
+    // Прикладывает номера, размеры, поворот и другие сведения, нужные получателю. Без них лента
+    // не сможет заранее выделить правильное место и выбрать подходящую копию.
     private fun attachmentPayload(
         attachment: AttachmentDraft,
         upload: Pair<String, String?>,
@@ -111,6 +126,8 @@ internal class OutgoingMessagePayloads(private val sync: NetworkSync) {
             }
     }
 
+    // Сохраняет номера всех обработанных вложений одной записью базы. После обрыва уже принятые
+    // файлы можно найти по местным номерам.
     private fun saveUploads(db: SQLiteDatabase, messages: List<JSONObject>) {
         NetworkStore.transaction(db) {
             for (message in messages) {

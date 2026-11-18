@@ -1,7 +1,11 @@
+// Описывает имя установки, версию, зависимости и варианты сборки Андроида.
+// Проверочные файлы и подпись для магазина подключаются здесь отдельно.
+
 plugins {
     id("com.android.application")
 }
 
+// Считывает четыре части подписи из окружения. Пароли и путь к ключу не хранятся в исходниках.
 val uploadStore = providers.environmentVariable("KANDINSKY_ANDROID_KEYSTORE").orNull
 val uploadStorePassword = providers.environmentVariable("KANDINSKY_ANDROID_STORE_PASSWORD").orNull
 val uploadKeyAlias = providers.environmentVariable("KANDINSKY_ANDROID_KEY_ALIAS").orNull
@@ -9,6 +13,7 @@ val uploadKeyPassword = providers.environmentVariable("KANDINSKY_ANDROID_KEY_PAS
 val uploadSigningValues =
     listOf(uploadStore, uploadStorePassword, uploadKeyAlias, uploadKeyPassword)
 
+// Разрешает запуск без подписи магазина или с полным набором. Частичная настройка сразу даёт ошибку.
 require(
     uploadSigningValues.all { it.isNullOrBlank() } ||
         uploadSigningValues.none { it.isNullOrBlank() }
@@ -22,6 +27,8 @@ android {
     compileSdk = 37
     buildToolsVersion =
         providers.gradleProperty("kandinsky.androidBuildTools").orElse("36.1.0").get()
+    // Имя обычной установки сохраняет обновление поверх прежней версии. У отдельных проверок может
+    // быть своё имя и свой адрес, чтобы они не обращались к рабочему аккаунту.
     defaultConfig {
         applicationId =
             providers
@@ -43,6 +50,7 @@ android {
         versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.15").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    // Добавляет большой набор только в проверку на устройстве. Выпускное приложение не несёт эти файлы.
     val standFixtures = rootProject.layout.projectDirectory.dir("../fixtures")
     sourceSets["androidTest"].assets.directories.add(standFixtures.asFile.path)
     androidResources { noCompress += listOf("mp4", "m4a", "gif") }
@@ -55,6 +63,7 @@ android {
                 keyPassword = uploadKeyPassword
             }
         } else null
+    // Разделяет обычную, отладочную и магазинную сборки. Конфигурация магазина использует свой ключ.
     buildTypes {
         debug {
             val measureCoverage = providers.gradleProperty("kandinsky.coverage")
@@ -80,6 +89,8 @@ android {
     }
 }
 
+// Собирает рабочие и проверочные библиотеки в отдельных группах. Зависимости проверок не нужны
+// при обычном запуске.
 dependencies {
     implementation("androidx.activity:activity:1.13.0")
     implementation("androidx.core:core-ktx:1.19.1")
@@ -91,7 +102,7 @@ dependencies {
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.4.1")
 }
 
-// Эти аннотации нужны компилятору Kotlin. В приложение их можно не включать.
+// Эти пометки нужны при компиляции. Их можно исключить из пакета приложения.
 configurations
     .matching { it.name.endsWith("RuntimeClasspath") }
     .configureEach { exclude(group = "org.jetbrains", module = "annotations") }

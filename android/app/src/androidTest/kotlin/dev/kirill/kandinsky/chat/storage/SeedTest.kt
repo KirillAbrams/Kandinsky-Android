@@ -1,3 +1,6 @@
+// Проверяет большой местный набор на телефоне. Тесты смотрят, можно ли прочитать вложения и как
+// повторная загрузка влияет на историю.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.graphics.BitmapFactory
@@ -15,6 +18,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SeedTest {
+    // Сверяет состав набора, размеры изображений, движение картинок и возможность получить кадр
+    // ролика. Проверяет объём снимков, чтобы набор оставался достаточно тяжёлым.
     @Test
     fun corpusFilesAndComposition() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -75,8 +80,8 @@ class SeedTest {
         assertTrue(photoBytes > 48 * 1024 * 1024)
     }
 
-    // Повторная установка не должна удалять добавленную строку или повторно создавать исходные
-    // сообщения.
+    // Сохраняет подготовленные строки, проверяет наличие их файлов и добавляет своё сообщение.
+    // Повторное открытие и установка не должны стереть его или удвоить набор.
     @Test
     fun seedCompositionAndIdempotence() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

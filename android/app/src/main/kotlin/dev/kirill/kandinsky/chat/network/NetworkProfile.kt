@@ -1,3 +1,6 @@
+// Сохраняет активный вход и запомненные аккаунты в зашифрованных файлах вне резервной копии.
+// Ведёт отметки об очистке, чтобы удалить данные выбранного владельца даже после перезапуска.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.Context
@@ -21,12 +24,15 @@ class NetworkProfile(
     val expiresAtMs: Long,
     val username: String? = null,
 ) {
-    // Скрываем ключ сессии, чтобы он случайно не попал в журнал вместе с профилем.
+    // Возвращает для журнала номер владельца без ключа входа. Иначе печать всего профиля могла бы
+    // раскрыть доступ.
     override fun toString() = "NetworkProfile(userID=$userID, credentials=redacted)"
 
     companion object {
         const val ORIGIN = dev.kirill.kandinsky.chat.BuildConfig.KANDINSKY_BRIDGE_ORIGIN
 
+        // Читает поля сохранённого входа и проверяет номер владельца и вид ключа. Пустое имя
+        // остаётся пустым, а повреждённый вход не подставляется в сетевые запросы.
         fun decode(json: JSONObject) =
             NetworkProfile(
                     json.getLong("userId"),
@@ -39,6 +45,8 @@ class NetworkProfile(
                 .also { require(it.userID > 0 && it.token.matches(Regex("[a-f0-9]{64}"))) }
     }
 
+    // Готовит поля профиля к шифрованию и сохраняет имя только если оно задано. Чтение сможет
+    // восстановить тот же профиль без догадок.
     fun encode() =
         JSONObject()
             .put("userId", userID)
@@ -53,12 +61,18 @@ class NetworkCredentials(context: Context) {
     private val root = context.noBackupFilesDir
     private val navigation = context.getSharedPreferences("studio.navigation", Context.MODE_PRIVATE)
 
+    // Читает положительный номер последнего чата отдельно для каждого владельца. При отсутствии
+    // номера приложение выбирает экран обычным путём.
     fun selectedChat(user: Long): Long? = navigation.getLong("chat:$user", -1).takeIf { it > 0 }
 
+    // Записывает текущий чат под номером владельца. Это возвращает человека к его истории при
+    // следующем запуске.
     fun selectChat(user: Long, chat: Long) {
         navigation.edit { putLong("chat:$user", chat) }
     }
 
+    // Удаляет выбор чата только для заданного владельца. Без этого после удаления мог бы остаться
+    // указатель на закрытую историю.
     internal fun clearSelectedChat(user: Long) {
         navigation.edit { remove("chat:$user") }
     }
@@ -72,7 +86,9 @@ class NetworkCredentials(context: Context) {
         val gate = Any()
     }
 
-    // Уже перенесённые записи пропускает, поэтому прерванный переход можно повторить.
+    // Находит старые записи по именам, проверяет, переносит и перечитывает перед удалением
+    // прежней копии. Если перенос оборвётся, повтор использует уже записанный результат и не
+    // перетирает его.
     private fun upgradeRecords() {
         for ((target, suffix) in listOf(file to "-session-v1", accounts to "-accounts-v1")) {
             val candidates =
@@ -114,6 +130,8 @@ class NetworkCredentials(context: Context) {
         }
     }
 
+    // Ищет единственный ключ в системном хранилище пакета или создаёт его для шифрования и чтения
+    // записей. При нескольких ключах останавливается, чтобы не выбрать случайный.
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val prefix = namespace + "."
@@ -142,6 +160,9 @@ class NetworkCredentials(context: Context) {
             .generateKey()
     }
 
+    // Проверяет наличие основного или запасного файла, его размер и версию. Системный ключ
+    // расшифровывает байты и проверяет их целостность, иначе повреждённый файл мог бы стать
+    // входом.
     private fun read(source: AtomicFile): String? {
         if (!source.baseFile.exists() && !File(source.baseFile.path + ".bak").exists()) return null
         val bytes =
@@ -155,6 +176,8 @@ class NetworkCredentials(context: Context) {
         return String(cipher.doFinal(bytes.copyOfRange(13, bytes.size)), Charsets.UTF_8)
     }
 
+    // Шифрует запись с одноразовым значением и заменяет файл только после полной записи. При
+    // ошибке отменяет замену, чтобы предыдущий вход оставался читаемым.
     private fun write(target: AtomicFile, text: String) {
         val cipher =
             Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
@@ -169,18 +192,24 @@ class NetworkCredentials(context: Context) {
         }
     }
 
+    // Под общей блокировкой переносит старые записи и читает текущую. Без блокировки чтение могло
+    // бы пересечься с изменением входа.
     fun load(): NetworkProfile? =
         synchronized(gate) {
             upgradeRecords()
             read(file)?.let { NetworkProfile.decode(JSONObject(it)) }
         }
 
+    // Расшифровывает список, проверяет предел в восемь записей и разбирает каждый профиль. Если
+    // списка ещё нет, возвращает пустой.
     private fun remembered(): List<NetworkProfile> {
         val array = read(accounts)?.let { org.json.JSONArray(it) } ?: return emptyList()
         require(array.length() <= 8)
         return (0 until array.length()).map { NetworkProfile.decode(array.getJSONObject(it)) }
     }
 
+    // Объединяет активный и запомненные входы без повтора и ставит активный первым. Блокировка
+    // удерживает обе части списка в согласованном состоянии.
     fun profiles(): List<NetworkProfile> =
         synchronized(gate) {
             val current = load()
@@ -189,6 +218,8 @@ class NetworkCredentials(context: Context) {
             else listOf(current) + values.filter { it.userID != current.userID }
         }
 
+    // Собирает новый список с текущим и прежними входами, убирает повторы и оставляет до восьми.
+    // Затем защищённо записывает список и активный профиль.
     fun save(profile: NetworkProfile) =
         synchronized(gate) {
             val prior = load()
@@ -203,18 +234,24 @@ class NetworkCredentials(context: Context) {
             write(file, profile.encode().toString())
         }
 
+    // Находит активного пользователя и вызывает общее удаление его записи. Без очистки повторный
+    // запуск мог бы восстановить вышедший аккаунт.
     fun removeActive() =
         synchronized(gate) {
             val current = load() ?: return@synchronized
             removeAccount(current.userID)
         }
 
+    // Приводит старые записи к нынешним именам и убирает указанный аккаунт. Номер позволяет
+    // закончить удаление даже после смены активного входа.
     fun forget(userID: Long) =
         synchronized(gate) {
             upgradeRecords()
             removeAccount(userID)
         }
 
+    // Сохраняет список без этого владельца и при совпадении удаляет текущий вход. Сразу
+    // перечитывает его, чтобы обнаружить неудачное удаление файла.
     private fun removeAccount(userID: Long) {
         val remaining = remembered().filter { it.userID != userID }
         write(
@@ -229,12 +266,17 @@ class NetworkCredentials(context: Context) {
 }
 
 internal object LocalAccountErasure {
+    // Находит принятую для приложения папку данных. По этому пути очистка работает и после
+    // переноса старого хранилища.
     private fun root(context: Context) =
         dev.kirill.kandinsky.chat.storage.AppDataRoot.resolve(context.filesDir)
 
-    // Сама функция не создаёт её, чтобы обычная проверка наличия очереди не меняла файловую систему
+    // Строит путь к папке отметок без создания каталога. Обычная проверка наличия очереди поэтому
+    // не меняет файлы.
     private fun queue(context: Context) = File(root(context), "erased-accounts")
 
+    // Проверяет номер и создаёт отметку о предстоящем удалении под блокировкой. Следующий запуск
+    // сможет продолжить с этой отметки после обрыва.
     @Synchronized
     fun stage(context: Context, userID: Long) {
         require(userID > 0)
@@ -243,8 +285,8 @@ internal object LocalAccountErasure {
         File(queue, userID.toString()).createNewFile()
     }
 
-    // Снимаем отметку после полной очистки. Если приложение закроется раньше, продолжим при
-    // запуске.
+    // По отметкам убирает вход, указатель на чат, папку владельца и временные файлы общего
+    // доступа. Снимает отметку только в конце, чтобы прерванная очистка продолжилась при запуске.
     @Synchronized
     fun finish(context: Context, credentials: NetworkCredentials) {
         val queue = queue(context)
@@ -261,8 +303,8 @@ internal object LocalAccountErasure {
         }
     }
 
-    // Обходит дерево без следования ссылкам и удаляет записи от самых вложенных к корню, освобождая
-    // только выбранный каталог
+    // Удаляет содержимое от вложенных записей к корню и не следует по ссылкам. Это освобождает
+    // именно выбранную папку, не затрагивая содержимое по чужому пути.
     private fun removePrivateTree(directory: File) {
         val path = directory.toPath()
         if (!java.nio.file.Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return

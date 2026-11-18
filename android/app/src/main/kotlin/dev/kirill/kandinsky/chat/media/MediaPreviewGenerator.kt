@@ -1,3 +1,6 @@
+// Готовит уменьшенные фото и кадры видео и сглаживает маленькие картинки до показа. Производные
+// файлы живут отдельно от исходников.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.*
@@ -10,7 +13,8 @@ import java.util.UUID
 import androidx.core.graphics.scale
 
 object MediaPreviewGenerator {
-    // Использует криптографический отпечаток пути, чтобы не переносить его знаки в имя файла.
+    // Считает контрольную сумму относительного пути и получает безопасное постоянное имя.
+    // Повторный запрос найдёт ту же копию.
     fun derivedName(relative: String) =
         "local-" +
             MessageDigest.getInstance("SHA-256").digest(relative.toByteArray()).joinToString("") {
@@ -18,6 +22,8 @@ object MediaPreviewGenerator {
             } +
             ".jpg"
 
+    // Возвращает готовую миниатюру или извлекает кадр и уменьшает его. Проверяет и переносит
+    // временный файл целиком, освобождает рисунки и удаляет старые производные.
     fun normalFile(root: File, relative: String, file: File, mime: String): File {
         val directory = File(root.canonicalFile, "media/previews")
         require(directory.canonicalFile == directory.absoluteFile)
@@ -66,7 +72,8 @@ object MediaPreviewGenerator {
         return target
     }
 
-    // Два прохода сглаживают границы пикселей до увеличения миниатюры на экране.
+    // Сглаживает маленькую картинку по горизонтали и вертикали дважды. Для видео использует более
+    // сильное сглаживание, чтобы при увеличении границы точек были менее заметны.
     internal fun softenTinyPreview(image: Bitmap, video: Boolean) {
         val width = image.width
         val height = image.height
@@ -81,6 +88,8 @@ object MediaPreviewGenerator {
         image.setPixels(pixels, 0, width, 0, 0, width, height)
     }
 
+    // Усредняет соседние цвета вдоль одной оси с учётом видимости точки и удалённости. Возле
+    // краёв повторяет крайние значения, чтобы не добавить прозрачную полосу.
     private fun softenAxis(
         input: IntArray, output: IntArray, length: Int, lines: Int,
         pixelStride: Int, lineStride: Int, maximumRadius: Int,
@@ -111,6 +120,8 @@ object MediaPreviewGenerator {
         }
     }
 
+    // Уменьшает готовое изображение до малого размера, размывает соседние точки и сжимает до
+    // нужного числа байтов. Возвращает строку для передачи и освобождает временные рисунки.
     fun tiny(normal: File): String {
         val source =
             BitmapFactory.decodeFile(normal.path) ?: throw MediaException(MediaError.CORRUPT)

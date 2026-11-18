@@ -1,3 +1,7 @@
+// Показ файлов в ленте на андроиде передаёт один проигрыватель между сообщением и полноэкранным
+// просмотром. Готовый кадр передаётся вместе с вложением, а движущееся содержимое
+// останавливается, когда чат скрыт.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -9,7 +13,8 @@ import dev.kirill.kandinsky.chat.results.MediaGalleryController
 import dev.kirill.kandinsky.chat.results.PhotoViewerController
 import kotlin.math.*
 
-// На время вызова сохраняет этот номер, чтобы альбом открылся на нужной фотографии или видео.
+// Запоминаем выбранную ячейку на время обработки касания. Возвращаем номер по умолчанию даже при
+// ошибке обработчика, чтобы следующее фото открылось на своём месте.
 internal fun ChatScrollHost.activateMedia(row: Message, frame: RectF, index: Int = 0) {
     tappedMediaIndex = index
     try {
@@ -19,6 +24,8 @@ internal fun ChatScrollHost.activateMedia(row: Message, frame: RectF, index: Int
     }
 }
 
+// Открываем просмотр по действию увеличения. Сохранение и отправку файла передаём владельцу
+// выгрузки, который берёт оригинал и сообщает об ошибке.
 internal fun ChatScrollHost.performMediaAction(action: KandinskyMediaAction, row: Message, frame: RectF) {
     if (action == KandinskyMediaAction.EXPAND) {
         activateMedia(row, frame)
@@ -31,8 +38,9 @@ internal fun ChatScrollHost.performMediaAction(action: KandinskyMediaAction, row
     }
 }
 
-// Проверяет владельца представления, чтобы другой экран не изменял чужую поверхность
-// воспроизведения.
+// Назначаем владельца поверхности и сохраняем ссылки на свои обработчики. По касанию открываем
+// галерею или отдельное фото с готовым кадром. Чужое окно не должно получить обновление или
+// закрытие от ленты.
 internal fun ChatScrollHost.attachPlayback(coordinator: MediaCoordinator, media: MediaStore) {
     playback = coordinator
     coordinator.presentationOwner = playbackOwner
@@ -93,9 +101,8 @@ internal fun ChatScrollHost.attachPlayback(coordinator: MediaCoordinator, media:
     }
 }
 
-// После закрытия останавливает этот просмотр, восстанавливает видимость чата и вызывает
-// подходящее
-// продолжение.
+// Передаём исходный ролик в отдельный просмотр с правильными пропорциями и повтором. При выходе
+// останавливаем его, возвращаем видимость чата и затем запускаем закрытие либо улучшение.
 internal fun ChatScrollHost.presentStudioPreview(
     attachment: Attachment,
     onEnhance: (() -> Unit)? = null,
@@ -136,6 +143,9 @@ internal fun ChatScrollHost.presentStudioPreview(
     preview.show()
 }
 
+// Передаём выбранное вложение, готовый кадр и общую поверхность в галерею. Для результата
+// генерации ставим на паузу движение внизу, а при возврате восстанавливаем прежнее состояние
+// только для того же владельца.
 private fun ChatScrollHost.openMediaGallery(row: Message, attachmentIndex: Int = 0) {
     if (mediaGallery != null || photoViewer != null) return
     val repo = repository ?: return
@@ -170,6 +180,9 @@ private fun ChatScrollHost.openMediaGallery(row: Message, attachmentIndex: Int =
     viewer.show()
 }
 
+// Ищем выбранный ролик среди видимых строк и ставим поверхность в рамку его вложения. Учитываем
+// поворот картинки и круглую форму. Если строка ушла или ещё не видна, убираем проигрыватель из
+// ленты.
 internal fun ChatScrollHost.updateInlinePlayer() {
     if (studioPreview != null || mediaGallery != null) return
     val c = playback ?: return
@@ -230,6 +243,8 @@ internal fun ChatScrollHost.updateInlinePlayer() {
     surface.update()
 }
 
+// Снимаем поверхность и прекращаем показ только для своего воспроизведения. Если управление
+// перешло в галерею, чужой ролик продолжается.
 private fun ChatScrollHost.hideInlinePlayer() {
     val c = playback ?: return
     if (c.presentationOwner !== playbackOwner) return
@@ -239,9 +254,8 @@ private fun ChatScrollHost.hideInlinePlayer() {
     c.stop()
 }
 
-// Учитывает открытый просмотр поверх чата, чтобы одни и те же ресурсы не показывались
-// одновременно в двух
-// местах.
+// Проверяем, что чат перед пользователем и не закрыт отдельным просмотром. При возврате активного
+// окна разрешаем галерее восстановить её ролик, а при скрытии снимаем запрос частоты дисплея.
 internal fun ChatScrollHost.updateMediaVisibility(visible: Boolean) {
     if (!visible) displayPolicy?.setActive(false)
     val active =
@@ -255,19 +269,24 @@ internal fun ChatScrollHost.updateMediaVisibility(visible: Boolean) {
     schedule()
 }
 
-// Используется при переходах между чатами, чтобы скрытый экран не продолжал движение.
+// Завершаем инерцию и снимаем состояние жеста перед уходом. Останавливаем движение файлов, чтобы
+// переход не оставил работающую за экраном ленту.
 internal fun ChatScrollHost.pauseMediaForNavigation() {
     scroller.abortAnimation()
     dragging = false
     setMovingMediaVisible(false)
 }
 
+// Меняем разрешение именно движущихся кадров и индикаторов с учётом открытого просмотра. Сцена
+// применит это на следующем кадре.
 internal fun ChatScrollHost.updateMovingMediaVisibility(visible: Boolean) {
     scene.movingMediaVisible =
         visible && studioPreview == null && mediaGallery?.onDeleteResult == null
     schedule()
 }
 
+// Передаём сцене хранилище и место для поверхностей. Изображение после подготовки просит
+// пересобрать кадр, а движение также обновляет запрос к дисплею.
 internal fun ChatScrollHost.attachMediaStore(store: dev.kirill.kandinsky.chat.media.MediaStore) {
     scene.mediaStore = store
     scene.movingContainer = this

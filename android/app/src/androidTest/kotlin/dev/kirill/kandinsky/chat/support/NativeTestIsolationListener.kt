@@ -1,3 +1,6 @@
+// Перед каждой проверкой запоминаем настройки экрана и ожидания. После проверки восстанавливаем
+// их, чтобы последующий сценарий получил прежнее устройство.
+
 package dev.kirill.kandinsky.chat.support
 
 import androidx.test.uiautomator.Configurator
@@ -9,6 +12,8 @@ class NativeTestIsolationListener : RunListener() {
     private var autoRotate = false
     private var userRotation = 0
 
+    // Сохраняем режим поворота и время ожидания, затем ставим книжное положение и обычное
+    // ожидание. Измерения получают одинаковое окно независимо от предыдущего теста.
     override fun testStarted(description: Description) {
         previous = Configurator.getInstance().waitForIdleTimeout
         Configurator.getInstance().waitForIdleTimeout = 10000
@@ -31,6 +36,8 @@ class NativeTestIsolationListener : RunListener() {
         }
     }
 
+    // Возвращаем прежний поворот и при необходимости его автоматическую смену. Время ожидания
+    // возвращаем даже при ошибке поворота.
     override fun testFinished(description: Description) {
         try {
             val automation =

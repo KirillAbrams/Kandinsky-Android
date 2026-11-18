@@ -1,3 +1,7 @@
+// Подготовленная строка на андроиде хранит рамки вложений, перенос текста, время и части рисунка.
+// Измерение отделено от показа, а у длинных сообщений есть ограниченные фрагменты. Сохранённые
+// начала строк помогают вернуть чтение после смены ширины.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -28,9 +32,9 @@ data class TextBlock(
 )
 
 object MediaMosaic {
-    // Оставляем четыре результата сеткой два на два, чтобы при появлении изображений карточка не
-    // изменила
-    // форму.
+    // Распределяем вложения по рядам по размеру и пропорциям. При четырёх результатах можно
+    // сохранить сетку ожидания. Размеры приводим к точкам экрана и доводим последний край ряда до
+    // общей ширины.
     fun layout(
         sizes: List<Pair<Int, Int>>,
         width: Float,
@@ -45,6 +49,8 @@ object MediaMosaic {
         val target = width * 4.0 / 3
         var best = emptyList<Int>()
         var cost = Double.MAX_VALUE
+        // Сравниваем общую высоту рядов с желаемой. Очень тонкие ряды и уменьшение числа ячеек в
+        // следующем ряду ухудшают оценку.
         fun score(rows: List<Int>) {
             var index = 0
             val heights =
@@ -61,6 +67,8 @@ object MediaMosaic {
                 cost = value
             }
         }
+        // Перебираем допустимые длины рядов до последнего вложения. Ограничиваем число рядов,
+        // чтобы расчёт оставался небольшим.
         fun visit(remaining: Int, rows: List<Int>) {
             if (remaining == 0) {
                 score(rows)
@@ -111,6 +119,8 @@ enum class KandinskyMediaAction(val title: String, private val iconResource: Int
     SHARE("Поделиться", dev.kirill.kandinsky.chat.R.drawable.kandinsky_result_share),
     EXPAND("На весь экран", dev.kirill.kandinsky.chat.R.drawable.kandinsky_result_expand);
 
+    // Ставим готовый значок действия чуть выше центра его кнопки. Рамка нажатия остаётся шире
+    // самого рисунка.
     fun draw(canvas: Canvas, frame: RectF, unit: Float) {
         val icon = icons[this] ?: return
         val half = 6.75f * unit
@@ -126,6 +136,8 @@ enum class KandinskyMediaAction(val title: String, private val iconResource: Int
                 colorFilter = PorterDuffColorFilter(Color.rgb(97, 97, 97), PorterDuff.Mode.SRC_IN)
             }
 
+        // Читаем значки действий из ресурсов один раз под общей защитой. Несколько строк не
+        // загружают одинаковый рисунок одновременно.
         @Synchronized
         fun load(resources: android.content.res.Resources) {
             if (icons.isEmpty())
@@ -184,11 +196,15 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         if (isStudioResult) Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99000000.toInt() }
         else null
     val mediaCornerRadius
+        // Возвращаем скругление по виду файла. У результата оно меньше, у наклейки сохраняется её
+        // собственный прозрачный край.
         get() =
             if (isStudioResult) 12 * unit
             else if (message.kind == MessageKind.STICKER) 0f else 15 * unit
 
     val mediaBottomSquare
+        // Оставляем нижний край кадра прямым, когда под ним начинается подпись. Круглое видео и
+        // наклейку это правило не затрагивает.
         get() =
             mediaRect != null &&
                 message.kind != MessageKind.ROUND &&
@@ -359,11 +375,16 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
     val blocks: List<TextBlock>
     val byteCost: Int
     val height: Float
+        // Берём общую высоту из конца последнего фрагмента. До готовых частей сохраняем
+        // минимальную высоту строки.
         get() = blocks.lastOrNull()?.let { it.offsetY + it.height } ?: 44 * unit
 
     var closeCount = 0
         private set
 
+    // Строим одну часть для карточки генерации или делим текстовую раскладку на короткие части.
+    // Учитываем место для времени, кнопок и подписи, затем оцениваем память этого рисунка для
+    // общего хранилища.
     init {
         val card = generationCard
         if (card != null) {
@@ -422,6 +443,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
+    // Собираем общий контур исходящего запроса со скруглениями и хвостом в правом нижнем углу.
+    // Каждый фрагмент рисует свою часть этого контура.
     private fun makePromptBubble(): Path {
         val corner = 16 * unit
         val join = 5 * unit
@@ -441,17 +464,23 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
+    // По вертикальной точке находим строку и возвращаем позицию её первого символа и расстояние
+    // до него. Так чтение переживает изменение ширины или шрифта.
     fun lineAnchor(y: Float): Pair<Int, Float>? {
         val l = layout ?: return null
         val line = l.getLineForVertical(max(0, (y - textTop).toInt()))
         return l.getLineStart(line) to (l.getLineTop(line) + textTop - y)
     }
 
+    // Приводим сохранённое смещение к допустимому тексту и ищем верх его строки в новой
+    // раскладке. Без готовой раскладки координаты ещё нет.
     fun yForUTF16(value: Int): Float? =
         layout?.let { it.getLineTop(it.getLineForOffset(value.coerceIn(0, text.length))) + textTop }
 
     data class AccessibleLine(val start: Int, val text: String, val frame: RectF)
 
+    // Берём непустые строки, реально пересекающие указанную полосу, и возвращаем их текст и
+    // рамки. Количество ограничено, чтобы длинный абзац не занял всё окно доступности.
     fun accessibleLines(lower: Float, upper: Float, limit: Int): List<AccessibleLine> {
         if (limit <= 0) return emptyList()
         generationCard?.let { card ->
@@ -486,7 +515,9 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         return result
     }
 
-    // После освобождения текстовой разметки завершает вызов без повторного её создания.
+    // Рисуем фон и нужную часть текста в её границах. На последнем фрагменте добавляем время, а
+    // сообщение генерации отдаём отдельной карточке. После закрытия старую разметку не создаём
+    // снова.
     fun draw(part: Int, c: Canvas) {
         generationCard?.let {
             if (part == 0 && closeCount == 0) it.drawStatic(c)
@@ -569,7 +600,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
-    // У сетки генераций пропускает этот общий слой, поскольку её ячейки рисуют состояние отдельно.
+    // Добавляем поверх вложения время, длительность и значок звука по виду файла. У сетки
+    // результатов свой слой, а управление активным видео может убрать дублирующие значки.
     fun drawMediaStamp(c: Canvas, manual: Boolean = false) {
         if (generationCard?.isBatch == true) return
         val rect = mediaRect ?: return
@@ -579,8 +611,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
             return
         }
         stampPaint.color = Color.WHITE
-        // Используется для времени и длительности, чтобы буквы читались на светлом и тёмном
-        // изображении.
+        // Рисуем короткую надпись на своём полупрозрачном прямоугольнике. Длина рамки берётся из
+        // текста, чтобы цифры читались на любом кадре.
         fun pill(label: String, x: Float, y: Float) {
             val w = stampPaint.measureText(label)
             val box = RectF(x, y, x + w + 10 * unit, y + 18 * unit)
@@ -650,10 +682,14 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
+    // Для одиночного результата выбираем длительность сверху у видео и время снизу без подписи.
+    // Выравниваем рамку по измеренному тексту.
     private fun drawStudioMediaBadges(canvas: Canvas, rect: RectF) {
         val textPaint = studioBadgeText ?: return
         val fillPaint = studioBadgeFill ?: return
         val badgeHeight = 17.2f * unit
+        // Рисуем скруглённую рамку и надпись с одинаковым отступом. Обе метки используют общую
+        // высоту, чтобы не перекрывать результат сильнее необходимого.
         fun draw(label: String, left: Float, top: Float, width: Float) {
             canvas.drawRoundRect(
                 left,
@@ -683,6 +719,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
+    // Сбрасываем готовую текстовую раскладку под защитой и отмечаем закрытие один раз. Старый
+    // фрагмент после этого пропускается при рисовании.
     @Synchronized
     fun close() {
         if (closeCount == 0) {
@@ -691,6 +729,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         }
     }
 
+    // Проверяем целые воспринимаемые символы сообщения. Если кроме пробелов и переносов там
+    // только цветные значки, выбираем крупный размер по их числу.
     private fun largeEmojiSize(value: String, unit: Float): Float? {
         if (value.isEmpty()) return null
         var head = 0
@@ -743,6 +783,8 @@ class PreparedText(val message: Message, val key: TextLayoutKey) {
         return ceil(120 * multiplier * unit) + ceil(4 * unit)
     }
 
+    // Даём подпись виду вложения и добавляем текст автора при наличии. Такое название нужно у
+    // строки, где не рисуется сам файл.
     private fun label(m: Message): String {
 
         val title =

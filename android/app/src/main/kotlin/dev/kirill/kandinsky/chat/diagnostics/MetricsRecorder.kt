@@ -1,3 +1,6 @@
+// Хранит ограниченное число замеров Андроида, считает сводки и максимумы. Последние числа можно
+// выгрузить без накопления всего сеанса.
+
 package dev.kirill.kandinsky.chat.diagnostics
 
 import kotlin.math.ceil
@@ -23,16 +26,22 @@ class MetricsRecorder(private val capacity: Int = 8192) {
     private val samples = linkedMapOf<String, Samples>()
     private val peaks = linkedMapOf<String, Int>()
 
+    // Проверяет, что окно хранения содержит хотя бы один замер. Нулевой размер сделал бы замену
+    // старых значений невозможной.
     init {
         require(capacity > 0)
     }
 
-    // Монотонные часы продолжают отсчёт, даже если пользователь поменял время на телефоне.
+    // Возвращает время независимого счётчика. Изменение часового пояса и системной даты не меняет
+    // длину измеряемой работы.
     fun begin() = System.nanoTime()
 
+    // Переводит разницу между началом и концом в миллисекунды и записывает её. Сводки разных
+    // операций получают одинаковую меру.
     fun end(name: String, token: Long) = record(name, (System.nanoTime() - token) / 1_000_000.0)
 
-    // Храним только последние замеры. Общее число и максимум считаем с начала работы.
+    // Отбрасывает неверные длительности и новые имена сверх предела. Внутри серии заменяет старые
+    // замеры по кругу, сохраняя общий счёт и максимум.
     @Synchronized
     fun record(name: String, milliseconds: Double) {
         if (
@@ -49,18 +58,22 @@ class MetricsRecorder(private val capacity: Int = 8192) {
         series.size = minOf(capacity, series.size + 1)
     }
 
-    // Ограничиваем число имён показателей, чтобы диагностика не расходовала всё больше памяти.
+    // Запоминает наибольшее значение и ограничивает число разных имён. Так динамический набор
+    // показателей не займёт всю память.
     @Synchronized
     fun peak(name: String, value: Int) {
         if (peaks.containsKey(name) || peaks.size < 12) peaks[name] = maxOf(peaks[name] ?: 0, value)
     }
 
-    // Медиану и процентили считаем по последним замерам, максимум берём за всё время.
+    // Сортирует последние значения и получает срединную и верхние точки. Общий счёт и
+    // максимальное значение остаются накопленными за весь период.
     @Synchronized
     fun statistics(name: String): NumericStatistics? {
         val series = samples[name] ?: return null
         if (series.size == 0) return null
         val sortedValues = series.values.copyOf(series.size).sorted()
+        // Находит первый элемент на заданной доле сортированного ряда. Округление вверх даёт
+        // допустимую точку даже для короткого ряда.
         fun percentile(fraction: Double) =
             sortedValues[maxOf(0, ceil(sortedValues.size * fraction).toInt() - 1)]
         return NumericStatistics(
@@ -73,6 +86,8 @@ class MetricsRecorder(private val capacity: Int = 8192) {
         )
     }
 
+    // Копирует сохранённые значения от самого старого к самому новому. Граница кольца не должна
+    // развернуть хронологию отчёта.
     @Synchronized
     fun rawSamples() =
         samples.mapValues { (_, series) ->
@@ -83,7 +98,11 @@ class MetricsRecorder(private val capacity: Int = 8192) {
                     .toList()
         }
 
+    // Формирует отдельную сводку по каждому накопленному имени. Выгрузка получает готовые числа,
+    // без доступа к рабочему буферу.
     @Synchronized fun snapshot() = samples.keys.associateWith { statistics(it)!! }
 
+    // Возвращает копию максимумов, чтобы запись отчёта не удерживала и не меняла внутреннюю
+    // таблицу.
     @Synchronized fun peakSnapshot() = peaks.toMap()
 }

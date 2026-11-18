@@ -1,3 +1,6 @@
+// Описывает ошибки и запросы медиа, а также общий порядок отмены и освобождения камеры и
+// проигрывателя.
+
 package dev.kirill.kandinsky.chat.media
 
 import dev.kirill.kandinsky.chat.domain.Cancellation
@@ -31,16 +34,21 @@ class MediaCancellation : Cancellation {
     private var handler: (() -> Unit)? = null
     private var progress: ((Double) -> Unit)? = null
 
-    // После отмены или завершения новый обработчик не устанавливается.
+    // Сохраняет получателя хода только для активной работы. Завершившаяся передача не может
+    // принять новую подписку.
     fun onProgress(action: (Double) -> Unit) {
         synchronized(gate) { if (state == 0) progress = action }
     }
 
+    // Отправляет допустимую долю только действующему получателю и вызывает его вне блокировки.
+    // Позднее обновление не держит завершённый запрос.
     fun reportProgress(value: Double) {
         val action = synchronized(gate) { if (state == 0) progress else null }
         action?.invoke(value.coerceIn(0.0, 1.0))
     }
 
+    // Сохраняет действие для текущей работы или сразу вызывает его при уже отданной отмене. Так
+    // сетевой запрос получит отмену даже после поздней установки обработчика.
     fun onCancel(action: () -> Unit) {
         val now =
             synchronized(gate) {
@@ -50,7 +58,8 @@ class MediaCancellation : Cancellation {
         if (now) action()
     }
 
-    // Вызываем обработчик после снятия блокировки. Он сам может обратиться к этому объекту.
+    // Отмечает отмену один раз, очищает ссылки на обработчики и вызывает сохранённое действие вне
+    // блокировки. Это позволяет остановке завершить связанную работу самостоятельно.
     override fun cancel() {
         val action =
             synchronized(gate) {
@@ -64,7 +73,8 @@ class MediaCancellation : Cancellation {
         action?.invoke()
     }
 
-    // Очищает обработчики, чтобы они не удерживали получателей после конца работы.
+    // Отмечает конец только активной работы и очищает обе подписки. Код выдачи может отличить
+    // завершение от отмены, не отдавая ненужный результат.
     fun finish(): Boolean =
         synchronized(gate) {
             if (state != 0) return false
@@ -75,12 +85,15 @@ class MediaCancellation : Cancellation {
         }
 
     val isCancelled
+        // Читает признак отмены под той же блокировкой, что и запись. Поток загрузки может
+        // проверить его перед следующим шагом.
         get() = synchronized(gate) { state == 1 }
 }
 
 class CaptureLease(val kind: CaptureKind, private val released: () -> Unit) {
     private val once = AtomicBoolean(false)
 
+    // Возвращает право камеры при первом вызове. Повторное закрытие не меняет очередь съёмки.
     fun release() {
         if (once.compareAndSet(false, true)) released()
     }
@@ -89,11 +102,15 @@ class CaptureLease(val kind: CaptureKind, private val released: () -> Unit) {
 class PlaybackLease(private val released: () -> Unit) {
     private val once = AtomicBoolean(false)
 
+    // Возвращает место проигрывателя один раз. Поздний вызов не должен снять место уже нового
+    // просмотра.
     fun release() {
         if (once.compareAndSet(false, true)) released()
     }
 }
 
 interface CaptureAdmission {
+    // Задаёт запрос на камеру и возвращает средство отмены, пока ответ ещё ожидается. Экран может
+    // уйти до выдачи права.
     fun acquire(kind: CaptureKind, completion: (Result<CaptureLease>) -> Unit): Cancellation
 }

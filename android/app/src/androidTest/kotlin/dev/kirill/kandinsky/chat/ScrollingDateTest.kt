@@ -1,3 +1,5 @@
+// Проверяем, что разделитель даты движется вместе с сообщениями, когда человек листает историю.
+
 package dev.kirill.kandinsky.chat
 
 import android.content.Intent
@@ -15,6 +17,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ScrollingDateTest {
+    // Открываем историю, находим первый разделитель и прокручиваем содержимое. Дата должна
+    // сдвинуться вместе со строками или уйти из видимой области.
     @Test
     fun calendarDividerMovesWithHistoryInsteadOfStickingToChrome() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -38,6 +42,8 @@ class ScrollingDateTest {
             var firstMessage = 0L
             lateinit var host: ChatScrollHost
             i.runOnMainSync {
+                // Обходим вложенные элементы окна в поисках настоящего экрана истории. Его
+                // разметка позволяет найти положение разделителя до и после жеста.
                 fun locate(v: View): ChatScrollHost? {
                     if (v is ChatScrollHost) return v
                     if (v is ViewGroup)

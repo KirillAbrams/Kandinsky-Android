@@ -1,3 +1,6 @@
+// Проверки фото и альбомов на андроиде. Они смотрят, сохраняются ли готовые точки при сдвиге и
+// клавиатуре, когда появляется отмена передачи и что освобождается после закрытия сцены.
+
 package dev.kirill.kandinsky.chat.media
 
 import dev.kirill.kandinsky.chat.app.ChatRuntime
@@ -15,6 +18,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaImageLifetimeTest {
+    // Удерживаем чтение местного фото и проверяем, что при возврате маленький рисунок не
+    // мелькнул. Сетевой путь здесь считается ошибкой, а после разрешения чтения ждём чёткий кадр.
     @Test
     fun localPhotoReturnPrefersSavedPixelsOverInlineBlur() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -72,6 +77,8 @@ class MediaImageLifetimeTest {
         }
     }
 
+    // Начинаем с местной проверки без кнопки передачи. Затем даём сетевой ход, ждём управление
+    // отменой и проверяем, что нажатие дошло до загрузки.
     @Test
     fun videoTransferControlWaitsForActualNetworkProgress() {
         val instrument = InstrumentationRegistry.getInstrumentation()
@@ -119,6 +126,8 @@ class MediaImageLifetimeTest {
         }
     }
 
+    // Показываем маленький и чёткий кадры одного фото, затем снова привязываем его. Поздний
+    // маленький рисунок не перекрывает чёткий, а управление загрузкой остаётся скрытым.
     @Test
     fun rebindingPhotoKeepsSharpPixelsAndRejectsLateBlur() {
         val instrument = InstrumentationRegistry.getInstrumentation()
@@ -174,6 +183,8 @@ class MediaImageLifetimeTest {
         }
     }
 
+    // Сдвигаем сцену дробными шагами. Проверяем, что готовая высота и владелец фото прежние, а
+    // меняется лишь его экранное положение.
     @Test
     fun fractionalScrollingKeepsTheNativePhotoSize() {
         val instrument = InstrumentationRegistry.getInstrumentation()
@@ -200,6 +211,8 @@ class MediaImageLifetimeTest {
                 )
                 val prepared = PreparedText(row, TextLayoutKey(1, 1, 300, 17, 1))
                 val rect = checkNotNull(prepared.mediaRect)
+                // Ставим подготовленную строку на заданной высоте. Меняем координату без
+                // повторного измерения, чтобы заметить лишнюю переделку кадра.
                 fun apply(y: Float) = scene.apply(
                     SceneSnapshot(scene.ticket, listOf(
                         SceneFragment(prepared, 0, RectF(10f, y, 10f + prepared.width, y + prepared.height))
@@ -229,9 +242,13 @@ class MediaImageLifetimeTest {
         }
     }
 
+    // Готовим набор разных ячеек и сравниваем цвета нарисованных точек. После ухода за экран все
+    // кадры освобождаются, а прокрутка не перезаписывает текст.
     @Test
     fun albumPaintsEveryNativeImageAndRetiresAllLeasesOutsideViewport() {
         val i = InstrumentationRegistry.getInstrumentation()
+        // Выполняем создание, сдвиг и закрытие альбома в потоке экрана. Иначе состояние слоёв
+        // могло бы меняться во время проверки.
         fun main(action: () -> Unit) = i.runOnMainSync(action)
         val h =
             RepositoryHarness.open(
@@ -358,6 +375,8 @@ class MediaImageLifetimeTest {
         h.close()
     }
 
+    // Проверяем альбомы разных размеров. Каждый файл получает положительную рамку внутри строки в
+    // исходном порядке, без наложения на соседей.
     @Test
     fun everyAlbumAttachmentHasAnOrderedNonOverlappingHitRectangle() {
         for (count in 2..10) for (width in listOf(160, 260, 340)) {
@@ -415,6 +434,8 @@ class MediaImageLifetimeTest {
         }
     }
 
+    // Открываем переписку с настоящим фото и ждём чёткий кадр, затем показываем клавиатуру. Фото
+    // обязано остаться под ней в видимой истории.
     @Test
     fun openingTheKeyboardKeepsTheVisiblePhoto() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -536,11 +557,14 @@ class MediaImageLifetimeTest {
         }
     }
 
-    // Готовность изображения не должна вызывать повторную запись текста.
+    // Ждём готовый рисунок у строки с подписью и сдвигаем сцену. Текст не записывается второй
+    // раз, а после скрытия отменённое улучшение качества перестаёт удерживать память.
     @Test
     fun decodedNativeImageDoesNotRerecordTextAndClosesWithVisibleScene() {
         val i = InstrumentationRegistry.getInstrumentation()
         val context = i.targetContext
+        // Ставим снимки сцены и читаем их готовность в потоке экрана. В этом же потоке закрываем
+        // ресурс, чтобы проверить освобождение сразу после команды.
         fun main(action: () -> Unit) = i.runOnMainSync(action)
         val h = RepositoryHarness.open(File(context.cacheDir, "slot-" + UUID.randomUUID()))
         lateinit var media: MediaStore
@@ -579,6 +603,8 @@ class MediaImageLifetimeTest {
         assertTrue(text.accessibleLines(0f, 1000f, 128)[0].frame.top > rect.bottom)
         val ready = CountDownLatch(1)
         val scene = RetainedChatScene()
+        // Собираем одну и ту же строку с новым вертикальным положением. Редакция и размеры
+        // сохраняются, поэтому меняется только положение.
         fun snapshot(y: Float) =
             SceneSnapshot(
                 scene.ticket,

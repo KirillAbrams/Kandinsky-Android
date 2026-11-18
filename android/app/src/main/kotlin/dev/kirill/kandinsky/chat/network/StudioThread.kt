@@ -1,3 +1,6 @@
+// Хранит краткую карточку чата и сведения о странице списка. Карточка используется и при чтении
+// ответа, и при записи в местное хранилище.
+
 package dev.kirill.kandinsky.chat.network
 
 import org.json.JSONObject
@@ -12,6 +15,8 @@ data class StudioThread(
     val activityAtMs: Long = 0,
     val generating: Boolean = false,
 ) {
+    // Собирает все поля карточки в форме, которую принимает запись чатов. Без передачи времени и
+    // признака генерации локальная копия потеряла бы полученное состояние.
     fun wire() =
         JSONObject()
             .put("id", id)
@@ -24,6 +29,9 @@ data class StudioThread(
             .put("generating", generating)
 
     companion object {
+        // Читает обязательные номер, название и признаки, а двум поздним полям даёт исходные
+        // значения при отсутствии. Это сохраняет чтение прежних ответов без подмены обязательных
+        // данных.
         fun from(value: JSONObject) =
             StudioThread(
                 value.getLong("id"),

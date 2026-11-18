@@ -1,3 +1,8 @@
+// Полноэкранная галерея на андроиде открывает выбранное вложение и держит две ближайшие страницы.
+// При свайпе она согласует жест, соседнюю порцию истории и общее воспроизведение. Подготовленный
+// кадр остаётся на странице, пока проигрыватель получает первый кадр или переходит к другому
+// ролику.
+
 package dev.kirill.kandinsky.chat.results
 
 import android.app.Activity
@@ -69,6 +74,9 @@ class MediaGalleryController(
     private var playingDuringSwipe = false
     private var preparingLocalVideo = false
     private val studioPlayback
+        // Различаем просмотр результата генерации и обычного вложения по наличию действия
+        // удаления. Для результата применяем режим повтора и отдельное поведение восстановления
+        // после паузы.
         get() = onDeleteResult != null
 
     private var closing = false
@@ -148,9 +156,13 @@ class MediaGalleryController(
     private var topInset = 0
     private var bottomInset = 0
 
+    // Даём видимому элементу постоянное имя. Средства доступности и проверки могут найти страницу
+    // или кнопку без поиска по её месту на экране.
     private fun id(view: View, name: String) {
         view.accessibilityDelegate =
             object : View.AccessibilityDelegate() {
+                // После заполнения обычных свойств добавляем переданное имя элемента. Системные
+                // сведения о содержимом при этом сохраняются.
                 override fun onInitializeAccessibilityNodeInfo(
                     host: View,
                     info: AccessibilityNodeInfo,
@@ -161,6 +173,9 @@ class MediaGalleryController(
             }
     }
 
+    // Один раз собираем галерею, подключаем проигрыватель и показываем окно поверх переписки.
+    // Полноэкранная раскладка получает отступы системы, а после показа включаем выбранную
+    // страницу и читаем соседей.
     fun show() {
         if (dialog != null || closing) return
         id(root, "media.viewer")
@@ -202,6 +217,9 @@ class MediaGalleryController(
         )
         val next =
             object : Dialog(activity, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
+                // Направляем закрытие собственного окна через общую уборку. Если владелец уже
+                // отвязал окно, используем обычное системное закрытие и избегаем повторного
+                // вызова.
                 override fun dismiss() {
                     if (dialog === this) close() else super.dismiss()
                 }
@@ -233,6 +251,8 @@ class MediaGalleryController(
         loadNeighbours()
     }
 
+    // Оставляем отступы под системные полосы, а для видео добавляем место под управление.
+    // Заголовок сжимается, если рядом открывается действие результата.
     private fun layoutControls() {
         (closeButton.layoutParams as FrameLayout.LayoutParams)
             .apply { topMargin = topInset + (4 * d).toInt() }
@@ -258,6 +278,9 @@ class MediaGalleryController(
             .also { topShade.layoutParams = it }
     }
 
+    // Оставляем подходящие страницы по номеру и файлу, а ушедшие закрываем вместе с оригиналом.
+    // Переносим ручную отмену загрузки на повторно открытую страницу и только после расстановки
+    // активируем выбранное вложение.
     private fun reconcile() {
         if (closing) return
         val selected =
@@ -329,6 +352,8 @@ class MediaGalleryController(
         prepareGalleryNeighbours()
     }
 
+    // Запрашиваем кадры на расстоянии двух позиций из местного хранилища. Уход за это окно
+    // отменяет работу, чтобы быстрый свайп не набрал длинную очередь чтения.
     private fun prepareGalleryNeighbours() {
         val index = model.selectedIndex ?: return
         val farther = listOfNotNull(model.entries.getOrNull(index - 2), model.entries.getOrNull(index + 2))
@@ -345,8 +370,9 @@ class MediaGalleryController(
         }
     }
 
-    // Освобождаем оригинал предыдущей страницы до загрузки следующего, чтобы не держать оба в
-    // памяти.
+    // Освобождаем оригиналы соседних страниц до выбора нового. Для видео проверяем, можно ли
+    // продолжить отложенный ролик или перенести проигрыватель из ленты с живым кадром. Иначе
+    // запускаем файл выбранной страницы.
     private fun activate() {
         if (!appeared || closing) return
         val selected = model.selected ?: return
@@ -400,12 +426,17 @@ class MediaGalleryController(
         playerChanged()
     }
 
+    // Проверяем, что у галереи нужное сообщение и нужный файл и что проигрыватель не завершился
+    // ошибкой. Это защищает от показа кадра другого вложения из того же сообщения.
     private fun ownsVideo(entry: MediaGalleryEntry): Boolean =
         playback.presentationOwner === owner &&
             playback.currentMessageID == entry.messageID &&
             playback.currentTarget?.attachment?.relativePath == entry.attachment.relativePath &&
             playback.lastError == null
 
+    // Ставим готовое видео на паузу при переходе к фото и сохраняем кадр. Когда проигрыватель
+    // свободен, можно подготовить соседний уже просмотренный ролик из местного файла по
+    // сохранённой позиции.
     private fun parkVideo(selected: MediaGalleryEntry, previousSelection: String?) {
         val previous = activeVideo
         if (previous != null) {
@@ -441,6 +472,8 @@ class MediaGalleryController(
         }
     }
 
+    // Переносим поверхность проигрывателя в рамку выбранной страницы. Учитываем поворот исходного
+    // файла, чтобы ширина и высота не поменялись местами при показе.
     private fun placeSurface(page: Page, keepFrame: Boolean) {
         val attachment = page.entry.attachment
         playback.presentationOwner = owner
@@ -453,6 +486,8 @@ class MediaGalleryController(
         surface.setPoster(if (keepFrame) null else page.photo.retainedPreview())
     }
 
+    // Запускаем нужный файл. Подготовленного соседа держим на паузе и читаем только с телефона, а
+    // при обычном открытии допускаем загрузку.
     private fun startVideo(entry: MediaGalleryEntry, preparing: Boolean = false) {
         preparingLocalVideo = preparing
         playback.play(
@@ -462,6 +497,8 @@ class MediaGalleryController(
         )
     }
 
+    // Убираем прежний проигрыватель с экрана, сохраняя видимый кадр для страницы. Останавливаем
+    // обработку только при своём владении, чтобы не прервать чужое воспроизведение.
     private fun retireVideo(stop: Boolean = true) {
         val previous = activeVideo ?: parkedVideo
         playingDuringSwipe = false
@@ -475,6 +512,8 @@ class MediaGalleryController(
         if (previous != null && stop && playback.presentationOwner === owner) playback.stop()
     }
 
+    // При возврате приложения повторно активируем ролик генерации, если ссылка на страницу ещё
+    // есть, а проигрыватель её уже отпустил. Если видео продолжает работать, перезапуск не нужен.
     fun resumeAutoplay() {
         if (!studioPlayback || closing || activeVideo == null || playback.currentMessageID != null)
             return
@@ -482,6 +521,9 @@ class MediaGalleryController(
         activate()
     }
 
+    // Обновляем поверхность по текущему состоянию. Пока живого кадра нет, оставляем готовый
+    // снимок. Если местная подготовка выбранного ролика не удалась, снова открываем его обычным
+    // способом.
     private fun playerChanged() {
         if (closing) return
         val selected = activeVideo ?: parkedVideo ?: return
@@ -504,6 +546,8 @@ class MediaGalleryController(
             surface.setPoster(pages[selected.id]?.photo?.retainedPreview())
     }
 
+    // Снимаем отметку об отмене загрузки для текущего видео, освобождаем прежнюю попытку и
+    // запускаем её заново. Отметки остальных страниц остаются на месте.
     private fun retryVideo() {
         val selected = model.selected ?: return
         if (!selected.isVideo) return
@@ -512,17 +556,23 @@ class MediaGalleryController(
         activate()
     }
 
+    // Показываем действие удаления только для входящего серверного файла результата с
+    // обработчиком. У пользовательского исходника такого действия нет.
     private fun canDelete(entry: MediaGalleryEntry) =
         onDeleteResult != null &&
             entry.isIncoming &&
             entry.attachment.relativePath.startsWith("remote/")
 
+    // Пересчитываем видимость меню при смене файла и общего состояния кнопок. Скрытые кнопки не
+    // появляются из-за перехода к удаляемому результату.
     private fun updateResultMenu() {
         moreButton.visibility =
             if (!controlsHidden && model.selected?.let(::canDelete) == true) View.VISIBLE
             else View.GONE
     }
 
+    // Открываем меню для выбранного результата и передаём обработчику номер сообщения вместе с
+    // ключом одного файла. Отмена закрывает окно без отправки действия.
     private fun confirmResultRemoval() {
         val entry = model.selected?.takeIf(::canDelete) ?: return
         android.app.AlertDialog.Builder(activity)
@@ -534,6 +584,8 @@ class MediaGalleryController(
             .show()
     }
 
+    // Прячем или возвращаем заголовок, подпись и кнопки по касанию страницы. Пустую подпись с её
+    // затемнением не рисуем даже при видимых кнопках.
     private fun toggleControls() {
         controlsHidden = !controlsHidden
         updateResultMenu()
@@ -549,7 +601,8 @@ class MediaGalleryController(
 
     private var requestGeneration = 0
 
-    // Запрашивает ограниченную визуальную историю вокруг выбранного элемента при нехватке соседей.
+    // Читаем не более тридцати двух записей фото и видео вокруг выбранного места. Номер запроса
+    // отсеивает поздний ответ, а при движении порция ждёт остановки, чтобы не сдвинуть страницу.
     private fun loadNeighbours() {
         val selected = model.selected ?: return
         if (closing || request != null || !model.needsPage || lastRequestID == selected.id) return
@@ -580,6 +633,9 @@ class MediaGalleryController(
             }
     }
 
+    // Когда подготовленный сосед занял большую часть экрана, запускаем его с сохранённого места.
+    // При движении назад останавливаем ниже другого порога, чтобы запросы пуска и паузы не
+    // спорили у одной границы.
     private fun updateVideoDuringSwipe(offset: Float) {
         val entry = parkedVideo ?: return
         val slot = pages[entry.id]?.slot ?: return
@@ -594,6 +650,8 @@ class MediaGalleryController(
         }
     }
 
+    // По конечному положению выбираем страницу, применяем отложенную историю и возвращаем окно к
+    // центру. Если соседей всё ещё мало, запрашиваем следующую порцию.
     private fun settled() {
         if (closing || pager.stride <= 0) return
         val slot = (pager.scrollX.toDouble() / pager.stride).roundToInt()
@@ -606,6 +664,8 @@ class MediaGalleryController(
         loadNeighbours()
     }
 
+    // Новый жест может застать незавершённое движение. Закрепляем ближайшую страницу и переносим
+    // смещение относительно нового центра, чтобы под пальцем остался тот же участок.
     private fun resumeGesture() {
         if (closing || pager.stride <= 0) return
         val offset = pager.scrollX
@@ -623,6 +683,9 @@ class MediaGalleryController(
         loadNeighbours()
     }
 
+    // При изменении истории текущего чата сбрасываем незавершённый запрос соседей и обновляем
+    // модель. Если смотреть больше нечего, закрываем окно. Во время свайпа ждём остановки для
+    // новой раскладки.
     fun apply(delta: MessageDelta) {
         if (closing || delta.chat.id != model.chatID) return
         requestGeneration++
@@ -641,6 +704,8 @@ class MediaGalleryController(
         }
     }
 
+    // Помечаем галерею закрытой, останавливаем запрос и движение страниц, затем закрываем диалог.
+    // Обработчик закрытия получает явный признак возврата в чат.
     fun close(returnToChat: Boolean = true) {
         if (closing) return
         closing = true
@@ -654,6 +719,9 @@ class MediaGalleryController(
         finishClose(returnToChat)
     }
 
+    // Освобождаем страницы, фоновые чтения и подписку ровно один раз. При возврате передаём ленте
+    // готовый кадр и владение продолжающимся обычным видео. При уходе из чата отпускаем лишние
+    // картинки.
     private fun finishClose(returnToChat: Boolean) {
         if (cleaned) return
         cleaned = true
@@ -708,17 +776,24 @@ class MediaGalleryController(
         private var lastX = 0f
         private var oldStride = 0
         val stride
+            // Расстояние между началами страниц равно ширине области плюс зазор. По нему измеряем
+            // долю жеста и ставим соседние страницы.
             get() = width + (20 * d).toInt()
 
         val busy
+            // Считаем область занятой во время касания, инерции или смещения от центра. В этот
+            // момент новый ответ хранилища не должен переставлять страницы.
             get() = dragging || !scroller.isFinished || width > 0 && abs(scrollX - stride) > 1
 
+        // Настраиваем отсечение страниц по краям окна. Так за пределами видимой области не
+        // появятся соседние кадры.
         init {
             clipChildren = true
             setWillNotDraw(false)
         }
 
-        // Точно измеряет каждую удерживаемую страницу по ширине и высоте этой области
+        // Выдаём каждой удерживаемой странице точный размер окна. Ширина подписи или самого фото
+        // не влияет на расстояние свайпа.
         override fun onMeasure(w: Int, h: Int) {
             setMeasuredDimension(MeasureSpec.getSize(w), MeasureSpec.getSize(h))
             for (page in pages.values) page.view.measure(
@@ -727,6 +802,8 @@ class MediaGalleryController(
             )
         }
 
+        // Переставляем страницы после смены размера и восстанавливаем долю смещения от прежнего
+        // шага. Так поворот или пересчёт окна не перескакивает на другой кадр.
         override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
             val fraction = if (oldStride > 0) scrollX.toDouble() / oldStride else 1.0
             layoutPages()
@@ -734,6 +811,8 @@ class MediaGalleryController(
             oldStride = stride
         }
 
+        // Расставляем видимые и соседние страницы по вычисленному шагу. Центр показывает текущий
+        // файл, боковые места готовы к свайпу.
         private fun layoutPages() {
             for (page in pages.values) {
                 val x = page.slot * stride
@@ -741,6 +820,8 @@ class MediaGalleryController(
             }
         }
 
+        // Заново измеряем страницы после выбора и возвращаем прокрутку в центр. До первого
+        // расчёта ширины сохраняем только запрос новой раскладки.
         fun relayoutAndCentre() {
             if (width > 0) {
                 for (page in pages.values) page.view.measure(
@@ -755,6 +836,8 @@ class MediaGalleryController(
             invalidate()
         }
 
+        // Отменяем движение и возвращаем системе измеритель скорости касания. Закрытая галерея
+        // больше не должна получать продолжение свайпа.
         fun cancelMotion() {
             scroller.abortAnimation()
             dragging = false
@@ -763,7 +846,8 @@ class MediaGalleryController(
             velocity = null
         }
 
-        // Не позволяет перелистнуть за первый или последний элемент модели
+        // Ограничиваем смещение реально существующими соседями. У первого и последнего вложения
+        // свайп не уходит в пустое место.
         private fun bounds(): IntRange {
             val selected = model.selectedIndex ?: 0
             return (if (selected > 0) 0 else stride)..(if (selected + 1 < model.entries.size)
@@ -771,6 +855,8 @@ class MediaGalleryController(
                 else stride)
         }
 
+        // Начинаем новое измерение скорости и заканчиваем старое движение. Если предыдущий жест
+        // не закончен, переносим остаток смещения на ближайшую страницу.
         private fun begin(e: MotionEvent) {
             downX = e.x
             downY = e.y
@@ -785,6 +871,8 @@ class MediaGalleryController(
             resumeGesture()
         }
 
+        // Забираем только достаточно длинный горизонтальный жест одним пальцем. Масштабирование и
+        // движение увеличенного фото остаются у самой страницы.
         override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -819,13 +907,17 @@ class MediaGalleryController(
             return false
         }
 
+        // Выполняем системное нажатие и переключаем видимость подписей и кнопок. Короткое касание
+        // не превращается в перелистывание.
         override fun performClick(): Boolean {
             super.performClick()
             toggleControls()
             return true
         }
 
-        // После отмены возвращается к центру и запускает короткое завершение движения.
+        // Двигаем окно в пределах соседей, а при отпускании выбираем цель по скорости и
+        // положению. Системная отмена возвращает в центр. Как только цель ясна, продолжаем
+        // короткое движение без удержания измерителя.
         override fun onTouchEvent(e: MotionEvent): Boolean {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -887,6 +979,8 @@ class MediaGalleryController(
             return true
         }
 
+        // Передаём проигрывателю долю смещения только во время жеста или его завершения.
+        // Программная перестановка страниц сама по себе не начинает воспроизведение.
         override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
             super.onScrollChanged(l, t, oldl, oldt)
             if ((dragging || settling) && stride > 0) {
@@ -894,6 +988,8 @@ class MediaGalleryController(
             }
         }
 
+        // Применяем следующий шаг движения и просим перерисовку. После последнего шага один раз
+        // фиксируем новую страницу и применяем отложенную историю.
         override fun computeScroll() {
             if (scroller.computeScrollOffset()) {
                 scrollTo(scroller.currX, 0)

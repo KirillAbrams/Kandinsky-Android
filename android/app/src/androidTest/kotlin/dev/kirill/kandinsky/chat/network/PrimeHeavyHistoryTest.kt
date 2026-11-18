@@ -1,3 +1,6 @@
+// Читаем все страницы большой истории и подготавливаем их в местной базе конкретного проверочного
+// аккаунта.
+
 package dev.kirill.kandinsky.chat.network
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -9,6 +12,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PrimeHeavyHistoryTest {
+    // Запрашиваем не больше 128 строк за раз и проверяем, что указатель идёт к старым записям. В
+    // местной базе в конце должно быть десять тысяч сообщений шести видов.
     @Test
     fun cacheTenThousandServerRowsInBoundedPages() {
         val i = InstrumentationRegistry.getInstrumentation()

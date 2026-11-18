@@ -1,3 +1,6 @@
+// Окно истории на андроиде хранит до трёх порций сообщений вокруг интересующей области. Номер
+// запроса и проверка номера чата не дают устаревшему ответу подменить новую историю.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -11,6 +14,9 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
     private var request: Cancellation? = null
     private val pages = ArrayDeque<List<Message>>()
     val loadedRows: List<Message>
+        // Собираем строки из всех порций, оставляя самую новую редакцию каждого сообщения, и
+        // сортируем по порядку чата. Соседние запросы могут пересекаться, поэтому одинаковое
+        // сообщение должно остаться одним.
         get() =
             pages
                 .flatten()
@@ -22,8 +28,12 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
                 .sortedBy { it.order }
 
     val loadedCount: Int
+        // Считаем уникальные сообщения после объединения. Сумма размеров порций завысила бы число
+        // при пересечении.
         get() = loadedRows.size
 
+    // Отменяем прежнее чтение и сохраняем новый номер. При ответе проверяем, что окно не закрыто
+    // и запрос всё ещё последний, затем передаём результат вызывающему коду.
     fun request(value: PageRequest, callback: (Result<HistoryPage>) -> Unit): Cancellation {
         val repo = repository
         if (closed || value.chatID != chatID || repo == null) {
@@ -46,6 +56,8 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
         return token
     }
 
+    // Проверяем номер запроса, номер чата и допустимое число строк. После добавления оставляем
+    // три порции, поэтому частая прокрутка не копит старую историю.
     fun apply(page: HistoryPage, chatID: ChatID, generation: Int) {
         if (
             closed ||
@@ -59,6 +71,8 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
         while (pages.size > 3) pages.removeFirst()
     }
 
+    // Подменяем более старую копию во всех порциях, где сообщение уже есть. Число удерживаемых
+    // строк при этом не растёт.
     fun refreshKnownRow(message: Message) {
         for (i in pages.indices) {
             val page = pages[i]
@@ -67,6 +81,8 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
         }
     }
 
+    // Прежде чем использовать готовые строки, проверяем их чат, размер и отсутствие повторов.
+    // Упорядочиваем их и раскладываем небольшими порциями для повторного открытия участка.
     fun seedKnownRows(rows: List<Message>) {
         if (
             closed ||
@@ -80,6 +96,8 @@ class PageWindow(val chatID: ChatID, private val repository: ChatRepository? = n
         ordered.chunked(128).forEach { pages.addLast(it) }
     }
 
+    // Закрываем окно, отменяем чтение и освобождаем порции. Новый номер не даёт уже начатому
+    // ответу восстановить закрытую историю.
     fun close() {
         closed = true
         generation++

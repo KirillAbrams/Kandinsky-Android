@@ -1,3 +1,6 @@
+// Управляет черновиком, положением чтения и отправкой одного чата на Андроиде. Сводит запись на
+// телефоне и возвращение результата на экран.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.os.Handler
@@ -9,8 +12,8 @@ import java.util.UUID
 class ConversationState(private val repository: ChatRepository) {
     private val pendingRetrySlots = mutableSetOf<String>()
 
-    // Номер повтора зависит от задания и предыдущей попытки. После потери ответа телефон сможет
-    // восстановить тот же номер.
+    // Разрешает только один ожидающий повтор для результата без файла. Номер вычисляется из места
+    // и запуска, поэтому после потери ответа остаётся тем же.
     fun beginSlotRetry(slot: StudioGeneration.Slot): UUID? {
         if (!slot.canRetry) return null
         val id = slot.id
@@ -26,6 +29,8 @@ class ConversationState(private val repository: ChatRepository) {
         return java.util.UUID(buffer.long, buffer.long)
     }
 
+    // Убирает отметку ожидающего повтора. По завершении прежняя отметка не должна блокировать
+    // допустимое действие.
     fun finishSlotRetry(id: String) {
         pendingRetrySlots.remove(id)
     }
@@ -39,6 +44,8 @@ class ConversationState(private val repository: ChatRepository) {
         private set
 
     var anchor: ReadingAnchor? = null
+        // При изменении точки чтения снимает прежнюю ожидающую запись и ставит новую. Положению
+        // не надо ждать следующего изменения текста.
         set(value) {
             if (field == value) return
             field = value
@@ -85,7 +92,8 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
-    // Поздний ответ хранилища может прийти уже после ухода с экрана.
+    // Читает черновик и опору прокрутки, затем отмечает прочтение. Состояние становится готовым
+    // только после успешного чтения и пока экран открыт.
     fun open(chatID: ChatID, callback: (Result<Unit>) -> Unit) {
         closed = false
         isReady = false
@@ -119,6 +127,8 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
+    // Восстанавливает заготовку без номера чата и даёт редактировать её. Серверная история может
+    // появиться позже при отправке или выборе файла.
     fun openStudioDraft(restored: Draft? = null) {
         if (closed || chatID != null) return
         if (restored != null) draft = restored
@@ -126,13 +136,15 @@ class ConversationState(private val repository: ChatRepository) {
         onChange?.invoke()
     }
 
-    // Первая отправка получает номер чата после подтверждения сервера.
+    // Запоминает полученный номер только для готовой заготовки без прежней привязки. Поздний
+    // ответ не заменит номер уже открытого чата.
     fun bindStudioDraft(id: ChatID) {
         if (closed || !isReady || chatID != null) return
         chatID = id
     }
 
-    // Печать сразу видна на экране. Запись откладываем, чтобы сохранять несколько нажатий вместе.
+    // Обновляет ввод и его версию, сохраняя номер незавершённой отправки и очередь файлов.
+    // Короткая задержка объединяет ввод нескольких символов в одну запись.
     fun editDraft(value: Draft) {
         if (closed || !isReady) return
         draft =
@@ -149,6 +161,8 @@ class ConversationState(private val repository: ChatRepository) {
         onChange?.invoke()
     }
 
+    // Сохраняет изменившиеся настройки в черновике и откладывает запись до паузы. Повтор того же
+    // выбора не запускает лишнюю работу.
     fun updateGenerationOptions(value: KandinskyOptions) {
         if (closed || !isReady || draft.generationOptions == value) return
         draft = draft.copy(generationOptions = value)
@@ -158,7 +172,8 @@ class ConversationState(private val repository: ChatRepository) {
         onChange?.invoke()
     }
 
-    // Перед уходом записываем черновик и место чтения, даже если таймер сохранения ещё не сработал.
+    // Снимает отложенные записи и сохраняет текущий ввод. Вслед за ним пишет более свежую точку
+    // чтения, если пользователь прокрутил чат во время ожидания.
     fun flush(callback: (Result<Unit>) -> Unit) {
         handler.removeCallbacks(debounce)
         handler.removeCallbacks(positionWrite)
@@ -172,6 +187,8 @@ class ConversationState(private val repository: ChatRepository) {
         repository.saveDraft(id, value) { result ->
             if (result.isFailure) callback(result)
             else {
+                // После записи черновика и заготовки читает нынешнюю точку и просит сохранить её.
+                // При сбое возвращает ошибку записи вместо перезаписи места.
                 fun saved(result: Result<Unit>) {
                     // Пока записывался черновик, пользователь мог прокрутить дальше.
                     val position = anchor
@@ -183,10 +200,12 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
+    // Передаёт отправку общему методу без дополнительных настроек. Обычный ввод использует те же
+    // проверки и сохранение номера.
     fun send(callback: (Result<Unit>) -> Unit = {}) = send(null, callback)
 
-    // Сохраняем номер отправки до обращения к сети. При потере ответа ту же команду можно
-    // отправить.
+    // Сохраняет команду перед отправкой и использует ту же команду при повторе. После ответа
+    // очищает только отправленный ввод, оставляя текст, появившийся позже.
     fun send(generationOptions: KandinskyOptions?, callback: (Result<Unit>) -> Unit = {}) {
         if (draft.pendingMediaBatch != null) return sendMediaBatch(callback = callback)
         val id = chatID
@@ -220,6 +239,8 @@ class ConversationState(private val repository: ChatRepository) {
         val command = draft.pendingSend!!
         val revision = draft.pendingRevision ?: draft.revision
         onChange?.invoke()
+        // Снимает отметку отправки и передаёт итоговую ошибку или успех. Экран снова может
+        // принять действие после завершения.
         fun finish(result: Result<Unit>) {
             lastError = result.exceptionOrNull()
             isSending = false
@@ -256,7 +277,8 @@ class ConversationState(private val repository: ChatRepository) {
         }
     }
 
-    // Каждый файл получает постоянный номер до отправки. После сбоя продолжаем ту же группу.
+    // Проверяет состав группы и сохраняет её с постоянными номерами. Начинает следующую команду
+    // лишь после записи остатка, чтобы можно было продолжить после закрытия.
     fun sendMediaBatch(commands: List<SendCommand>? = null, callback: (Result<Unit>) -> Unit = {}) {
         val id = chatID
         if (!isReady || isSending || closed || id == null || draft.pendingSend != null)
@@ -291,12 +313,16 @@ class ConversationState(private val repository: ChatRepository) {
         lastError = null
         handler.removeCallbacks(debounce)
         onChange?.invoke()
+        // Завершает передачу группы с учётом результата. Не оставляет экран в режиме ожидания,
+        // когда очередь закончилась или возник сбой.
         fun finish(result: Result<Unit>) {
             isSending = false
             lastError = result.exceptionOrNull()
             onChange?.invoke()
             callback(result)
         }
+        // Берёт первое ожидающее действие и после успеха сохраняет остаток. Если запись остатка
+        // упала, возвращает исходную очередь для безопасного повтора.
         fun drain() {
             if (closed) return finish(Result.failure(RepoException(RepoError.CANCELLED)))
             val queue = draft.pendingMediaBatch ?: return finish(Result.success(Unit))
@@ -332,6 +358,8 @@ class ConversationState(private val repository: ChatRepository) {
         flush { if (it.isSuccess) drain() else finish(it) }
     }
 
+    // Закрывает новые действия, просит сохранить накопленные данные и отсоединяет уведомления.
+    // Уход со страницы не должен терять последний ввод.
     fun close() {
         closed = true
         handler.removeCallbacks(debounce)
@@ -341,6 +369,8 @@ class ConversationState(private val repository: ChatRepository) {
         onDelta = null
     }
 
+    // Определяет вид сообщения по файлу и его метке. По этому виду экран позже решит, как
+    // показать строку.
     private fun kind(a: AttachmentDraft?): MessageKind =
         when {
             a == null -> MessageKind.TEXT

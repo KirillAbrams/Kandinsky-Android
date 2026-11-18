@@ -1,3 +1,6 @@
+// Проверяет копирование и удаление через хранилище Андроида, включая соседнюю точку чтения и
+// состояние после открытия базы снова.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -10,6 +13,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MessageActionsTest {
+    // Сравнивает выбор соседней строки после удаления точки и неизменность точки, которую не
+    // удаляли. Правка истории не должна сбрасывать позицию без причины.
     @Test
     fun deletedReadingAnchorChoosesNeighbor() {
         val rows = (1L..3L).map { IndexedRow(it, OrderKey(it, it), 44.0, 1) }
@@ -44,8 +49,12 @@ class MessageActionsTest {
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    // Передаёт действие в поток окна с ожиданием. Состояние и обработчики используются там же,
+    // где в обычном приложении.
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
+    // Проверяет точное копирование текста, удаление ссылки из черновика и сохранность следующего
+    // сообщения. После нового открытия база всё ещё отдаёт оставшуюся строку.
     @Test
     fun promptCopyAndRemovalPreserveDraftAndFollowingHistory() {
         var harness =

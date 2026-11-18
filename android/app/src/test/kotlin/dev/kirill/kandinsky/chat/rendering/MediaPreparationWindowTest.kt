@@ -1,9 +1,14 @@
+// Проверяем, как ширина запаса подготовки вложений зависит от скорости, направления и размера
+// экрана.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import org.junit.Assert.*
 import org.junit.Test
 
 class MediaPreparationWindowTest {
+    // Меняем высоту области между замерами движения. Обе стороны запаса должны сразу укладываться
+    // в три высоты экрана.
     @Test
     fun leadStaysWithinThreeShortViewportsBeforeTheNextMotionSample() {
         val window = MediaPreparationWindow()
@@ -19,6 +24,8 @@ class MediaPreparationWindowTest {
         assertTrue(window.before <= 180)
     }
 
+    // Проверяем быстрый ход в обе стороны, перенос координат и ожидание без движения. Запас
+    // растёт в нужном направлении, а после остановки возвращается к меньшему значению.
     @Test
     fun directionSpeedIdleAndRebaseStayBounded() {
         val window = MediaPreparationWindow()

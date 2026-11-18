@@ -1,3 +1,7 @@
+// На андроиде два фоновых потока измеряют строки, а отдельное хранилище удерживает готовую
+// разметку с пределом по числу и памяти. Видимая строка проходит перед дальними, чтобы прокрутка
+// не ждала старого направления.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.os.Handler
@@ -29,6 +33,8 @@ class TextLayoutWorker {
         val cancelled: AtomicBoolean,
         val completion: (Int, PreparedText?) -> Unit,
     ) : Runnable {
+        // Готовим строку, если задача и очередь ещё живы, а результат передаём в поток экрана.
+        // Повторно проверяем отмену перед выдачей, чтобы не удержать готовый рисунок зря.
         override fun run() {
             val resource = if (cancelled.get() || closed.get()) null else PreparedText(message, key)
             main.post {
@@ -40,6 +46,8 @@ class TextLayoutWorker {
         }
     }
 
+    // Обновляем набор видимых ключей и переставляем в начало те задачи, которые ещё в очереди.
+    // Работник может уже забрать задачу, поэтому перед перестановкой проверяем её удаление.
     fun prioritizeVisible(keys: Set<TextLayoutKey>) {
         if (keys == visibleKeys) return
         visibleKeys = keys
@@ -51,6 +59,9 @@ class TextLayoutWorker {
         }
     }
 
+    // Отдаём задачу в ограниченную очередь с номером сцены. При полном запасе видимая строка
+    // может убрать дальнюю, а отмена убирает ожидающий расчёт и сообщает о завершении без
+    // результата.
     fun prepare(
         message: Message,
         key: TextLayoutKey,
@@ -79,6 +90,8 @@ class TextLayoutWorker {
         }
     }
 
+    // Помечаем очередь закрытой, останавливаем работников и отсылаем отмену ещё не взятым
+    // задачам. Активные работы сами проверят закрытие перед передачей.
     fun close() {
         closed.set(true)
         val pending = pool.shutdownNow()
@@ -99,10 +112,12 @@ class FragmentLayoutCache {
 
     var limit = 32 * 1024 * 1024
 
-    // Успешное чтение делает запись недавно использованной, чтобы при следующем вытеснении сначала
-    // ушли более старые обращения
+    // Берём готовую строку по её ключу. Порядок доступа обновляется, чтобы частые обращения
+    // пережили следующее сокращение памяти.
     fun value(key: TextLayoutKey) = values[key]
 
+    // Заменяем прежнюю разметку того же ключа и считаем стоимость новой. Слишком большой рисунок
+    // пропускаем, затем проверяем предел общего объёма.
     fun insert(value: PreparedText) {
         revision++
         values.remove(value.key)?.let { bytes -= it.byteCost }
@@ -112,6 +127,8 @@ class FragmentLayoutCache {
         trim()
     }
 
+    // Отпускаем записи с самым давним обращением при превышении числа или объёма. Номер
+    // содержимого меняется, чтобы лента пересмотрела готовое окно.
     fun trim() {
         val i = values.entries.iterator()
         while ((bytes > limit || values.size > 256) && i.hasNext()) {
@@ -121,6 +138,8 @@ class FragmentLayoutCache {
         }
     }
 
+    // Убираем все рисунки и сбрасываем счётчик памяти. Меняем номер набора, поскольку старые
+    // записи больше не пригодны.
     fun clear() {
         revision++
         values.clear()

@@ -1,3 +1,6 @@
+// Проверки восстановления на андроиде после отказа записи и смены владельца видео или камеры. Они
+// ловят незакрытые временные файлы, потерю черновика и пересечение двух проигрывателей.
+
 package dev.kirill.kandinsky.chat.recovery
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,8 +20,12 @@ class RecoveryTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Выполняем проверочное действие в потоке экрана и дожидаемся результата. Владелец видео и
+    // его команды используют тот же поток.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Читаем состояние в потоке экрана до срока. Если система не подготовила или не сняла ресурс,
+    // проверка завершается с ошибкой.
     private fun waitFor(condition: () -> Boolean) {
         val end = android.os.SystemClock.uptimeMillis() + 8000
         var ready = false
@@ -29,6 +36,8 @@ class RecoveryTest {
         assertTrue("Native release/preparation exceeded8seconds", ready)
     }
 
+    // Подтверждаем, что исходное видео содержит звук, и запускаем его как результат генерации. И
+    // первый показ, и дальнейшее состояние должны оставаться беззвучными.
     @Test
     fun studioVideoWithAudioAutoplaysMuted() {
         val source = "media/video-00.mp4"
@@ -96,6 +105,8 @@ class RecoveryTest {
         }
     }
 
+    // Просим два владельца начать воспроизведение вокруг одного момента. Замер пика проверяет,
+    // что следующий не получил рабочий проигрыватель до освобождения первого.
     @Test
     fun twoRuntimesCannotCreateOverlappingNativePlayers() {
         val h = RepositoryHarness.open(File(context.cacheDir, "recovery-" + UUID.randomUUID()))
@@ -174,6 +185,8 @@ class RecoveryTest {
         }
     }
 
+    // Получаем настоящий отказ записи во временной базе и сверяем откат. Старое сообщение и
+    // черновик остаются, а точный повтор после освобождения места создаёт одну запись.
     @Test
     fun realSQLiteFullRollsBackAndExactRetryWorks() {
         val h = RepositoryHarness.open(File(context.cacheDir, "actual-full-" + UUID.randomUUID()))
@@ -245,6 +258,8 @@ class RecoveryTest {
         h.close()
     }
 
+    // Останавливаем запись файла на середине из-за нехватки места. Временный файл должен уйти, а
+    // сохранённые байты и ссылка старого вложения остаться.
     @Test
     fun partialStagingNoSpaceCleansTempAndPreservesCommittedBytes() {
         val h = RepositoryHarness.open(File(context.cacheDir, "partial-write-" + UUID.randomUUID()))
@@ -298,6 +313,8 @@ class RecoveryTest {
         h.close()
     }
 
+    // Завершаем съёмку с подтверждённой остановкой и запрашиваем её в другом экземпляре. После
+    // подтверждения новое разрешение может выдаться сразу.
     @Test
     fun acknowledgedCaptureReleaseAllowsImmediateCrossRuntimeHandoff() {
         val first = MediaAdmission()
@@ -325,6 +342,8 @@ class RecoveryTest {
         )
     }
 
+    // Меняем владельца общих уведомлений и закрываем предыдущую ленту. Она снимает только свои
+    // связи, а после закрытия последней ленты обработчиков больше нет.
     @Test
     fun closedScrollHostUnsubscribesOnlyItsOwnPlaybackObservers() {
         val h =

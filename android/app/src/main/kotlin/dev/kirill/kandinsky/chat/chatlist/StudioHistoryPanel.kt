@@ -1,3 +1,6 @@
+// Показывает список чатов, поиск, архив и команды аккаунта на Андроиде. Сохранённые карточки
+// видны без сети, а отдельные запросы догружают поиск и архив.
+
 package dev.kirill.kandinsky.chat.chatlist
 
 import android.app.AlertDialog
@@ -35,6 +38,8 @@ import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.rendering.KandinskyPalette
 import org.json.JSONObject
 
+// Получает оформление и необязательный набор сетевых действий. Единая сборка панели даёт
+// показать её без подключения и затем использовать тот же вид для действующего аккаунта.
 class StudioHistoryPanel private constructor(
     context: Context,
     private val session: Session?,
@@ -50,8 +55,12 @@ class StudioHistoryPanel private constructor(
         val deleted: (Long) -> Unit,
     )
 
+    // Создаёт панель для показа без сетевой службы. Команды, которые требуют действующего входа,
+    // тогда недоступны.
     constructor(context: Context) : this(context, null)
 
+    // Собирает службу, выбранный чат и команды перехода в одно состояние панели. После закрытия
+    // действия вернутся к владельцу главного окна.
     constructor(
         context: Context,
         network: NetworkSync,
@@ -101,15 +110,25 @@ class StudioHistoryPanel private constructor(
     private var compact = false
     private val adapter =
         object : BaseAdapter() {
+            // Возвращает число готовых элементов, включая заголовки и нижнюю строку. Список
+            // сможет запросить только существующие позиции.
             override fun getCount() = items.size
 
+            // Возвращает элемент на выбранной позиции текущей выдачи. Его вид определяет, как
+            // список покажет строку.
             override fun getItem(position: Int) = items[position]
 
+            // Берёт номер чата для его карточки, а заголовкам и подсказкам даёт отдельные
+            // отрицательные номера. Служебная строка не выдаётся за настоящий чат.
             override fun getItemId(position: Int) =
                 (items[position] as? Item.Thread)?.value?.id ?: (-position - 1L)
 
+            // Объявляет три вида строк для повторного использования. При быстрой прокрутке список
+            // не подставит заголовок вместо карточки.
             override fun getViewTypeCount() = 3
 
+            // Относит элемент к заголовку, чату или нижней подсказке. Список получает правильное
+            // представление при повторной привязке.
             override fun getItemViewType(position: Int) =
                 when (items[position]) {
                     is Item.Heading -> 0
@@ -117,9 +136,13 @@ class StudioHistoryPanel private constructor(
                     is Item.Footer -> 2
                 }
 
+            // Разрешает нажатие на чат и на нижнюю строку только при доступной загрузке.
+            // Заголовок или надпись ожидания не запустят запрос.
             override fun isEnabled(position: Int) =
                 items[position] is Item.Thread || (items[position] as? Item.Footer)?.canLoad == true
 
+            // Использует подходящую старую строку или создаёт новую. Заново привязывает данные и
+            // нажатия, иначе на экране могло бы остаться действие от другого чата.
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
                 when (val item = items[position]) {
                     is Item.Thread ->
@@ -149,6 +172,8 @@ class StudioHistoryPanel private constructor(
                 }
         }
 
+    // Создаёт панель со знаком, поиском, архивом, списком и настройками аккаунта. Запоминает
+    // верхние и нижние кнопки, чтобы при нехватке места включить их в прокрутку.
     init {
         orientation = VERTICAL
         setBackgroundColor(Color.WHITE)
@@ -156,6 +181,8 @@ class StudioHistoryPanel private constructor(
         identity(this, "chats.library")
         val brand =
             object : View(context) {
+                // Рисует знак в начале строки с учётом плотности экрана. Он сохраняет отступ и
+                // размер на разных телефонах.
                 override fun onDraw(canvas: Canvas) {
                     val density = resources.displayMetrics.density
                     KandinskyPalette.studioBrand(
@@ -237,6 +264,8 @@ class StudioHistoryPanel private constructor(
         }
         search.addTextChangedListener(
             object : TextWatcher {
+                // Оставляет уведомление перед изменением пустым. Поиск нужен по уже введённому
+                // тексту, поэтому исходная строка не вызывает запрос.
                 override fun beforeTextChanged(
                     s: CharSequence?,
                     start: Int,
@@ -244,13 +273,14 @@ class StudioHistoryPanel private constructor(
                     after: Int,
                 ) = Unit
 
-                // Ждём короткую паузу в наборе, чтобы не отправлять отдельный поиск на каждую
-                // букву.
+                // Планирует обновление списка после небольшой паузы в наборе. Быстрая печать не
+                // посылает запрос на каждый символ.
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     reload(true)
                 }
 
-                // Дополнительный запрос не создаёт, поскольку он уже назначен при изменении текста.
+                // Не назначает ещё одну загрузку, поскольку обновление уже запланировано при
+                // изменении. Так на одну правку приходится один новый поиск.
                 override fun afterTextChanged(s: Editable?) = Unit
             }
         )
@@ -357,6 +387,8 @@ class StudioHistoryPanel private constructor(
         footerControls = (listIndex + 1 until childCount).map(::getChildAt)
     }
 
+    // При малой высоте переносит кнопки в начало и конец прокрутки, а при достаточной возвращает
+    // на прежние места. Поля и действия тогда доступны даже при открытой клавиатуре.
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val availableHeight = MeasureSpec.getSize(heightMeasureSpec) - paddingTop - paddingBottom
         val needsCompactLayout = MeasureSpec.getMode(heightMeasureSpec) != MeasureSpec.UNSPECIFIED &&
@@ -372,7 +404,7 @@ class StudioHistoryPanel private constructor(
                     removeView(view)
                     scrollingFooter.addView(view)
                 }
-                // На низком экране кнопки прокручиваются вместе с историей; строки остаются в ListView.
+                // На низком экране кнопки прокручиваются вместе с историей. Строки остаются в системном списке.
                 history.addHeaderView(scrollingHeader, null, false)
                 history.addFooterView(scrollingFooter, null, false)
             } else {
@@ -392,8 +424,12 @@ class StudioHistoryPanel private constructor(
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
+    // Переводит размеры в точки экрана с округлением. Отступы и зоны нажатий остаются соразмерны
+    // на разных телефонах.
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
 
+    // Создаёт текстовый элемент с нужным размером, цветом и выравниванием. Заголовки и кнопки
+    // получают общие исходные свойства.
     private fun label(size: Float) =
         TextView(context).apply {
             textSize = size
@@ -401,21 +437,29 @@ class StudioHistoryPanel private constructor(
             gravity = Gravity.CENTER_VERTICAL
         }
 
+    // Готовит заливку и переводит радиус в точки экрана. Закругления сохраняют одинаковый
+    // вид на устройствах с разной плотностью.
     private fun rounded(color: Int, radius: Int) =
         GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(radius).toFloat()
         }
 
+    // Получает отдельный рисунок, задаёт его размер и цвет. Изменение одного значка не
+    // перекрашивает другие копии ресурса.
     private fun icon(resource: Int, size: Int, color: Int = KandinskyPalette.studioInk) =
         context.getDrawable(resource)?.mutate()?.apply {
             setBounds(0, 0, dp(size), dp(size))
             setTint(color)
         }
 
+    // Даёт элементу устойчивое имя для служебного поиска и проверки. Изменение текста кнопки не
+    // меняет способ найти её на экране.
     private fun identity(view: View, id: String) {
         view.accessibilityDelegate =
             object : AccessibilityDelegate() {
+                // Передаёт системе заданное имя и сообщает, какие элементы действуют как кнопки.
+                // Служба озвучивания отличит нажатие от подписи.
                 override fun onInitializeAccessibilityNodeInfo(
                     host: View,
                     info: AccessibilityNodeInfo,
@@ -427,6 +471,8 @@ class StudioHistoryPanel private constructor(
             }
     }
 
+    // Применяет изменившиеся отступы окна, оставляя место для системных полос и клавиатуры.
+    // Повтор тех же значений не вызывает лишнюю раскладку.
     override fun updateInsets(top: Int, bottom: Int) {
         if (top != this.top || bottom != this.bottom) {
             this.top = top
@@ -435,6 +481,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Подписывается на изменения сохранённого списка и начинает чтение. У события есть живой
+    // получатель только пока панель находится в окне.
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         val network = session?.network ?: return
@@ -447,6 +495,8 @@ class StudioHistoryPanel private constructor(
         reload()
     }
 
+    // Снимает подписку, отменяет местное чтение и отложенный поиск, закрывает диалог. Старый
+    // ответ не должен обновить снятую панель.
     override fun onDetachedFromWindow() {
         revision++
         session?.network?.onStudioRecentChanged = null
@@ -458,12 +508,16 @@ class StudioHistoryPanel private constructor(
         super.onDetachedFromWindow()
     }
 
+    // Снимает фокус с поиска и просит систему скрыть клавиатуру. При выборе чата или закрытии
+    // панели ввод больше не закрывает экран.
     fun hideKeyboard() {
         search.clearFocus()
         (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
             .hideSoftInputFromWindow(windowToken, 0)
     }
 
+    // Меняет подпись, знак и озвучивание для перехода в архив либо обратно. Пользователь видит
+    // действие, которое сейчас доступно.
     private fun updateArchive() {
         archiveTile.text = if (archive) "Все чаты" else "Архив"
         archiveTile.setCompoundDrawablesRelative(
@@ -480,11 +534,16 @@ class StudioHistoryPanel private constructor(
         archiveTile.contentDescription = if (archive) "Все чаты" else "Архив"
     }
 
+    // Возвращает введённую строку без начальных и конечных пробелов. Пустые пробелы не превращают
+    // недавний список в поиск.
     private fun query() = search.text.toString().trim()
 
+    // Определяет режим недавнего списка по отсутствию архива и поисковой строки. От этого
+    // зависит, можно ли прочитать карточки с телефона.
     private fun showingRecent() = !archive && query().isEmpty()
 
-    // При смене поиска отменяем прежнюю загрузку, чтобы старые результаты не заменили новые.
+    // Сбрасывает границу, ошибки и прежние строки, отменяет ожидающий поиск. Номер новой выдачи
+    // не даст ответу от прежнего фильтра перезаписать результат.
     private fun reload(debounce: Boolean = false) {
         main.removeCallbacks(requestSearch)
         recentRead?.cancel()
@@ -506,9 +565,8 @@ class StudioHistoryPanel private constructor(
         if (debounce) main.postDelayed(requestSearch, 240) else loadPage()
     }
 
-    // Читает сохранённый каталог недавних чатов вместо повторного запроса первых страниц при
-    // открытии
-    // панели.
+    // Берёт сохранённые карточки и запоминает их номера и границу продолжения. Ответ принимается
+    // только пока открыта та же панель с тем же запросом.
     private fun loadRecent() {
         val network = session?.network ?: return
         recentRead?.cancel()
@@ -536,6 +594,8 @@ class StudioHistoryPanel private constructor(
             }
     }
 
+    // Запрашивает порцию для текущего режима и добавляет чаты без повторов. При закрытой панели
+    // или смене поиска ответ оставляет новый список в покое.
     private fun loadPage() {
         val network = session?.network ?: return
         if (loading || !more && !failed || !isAttachedToWindow) return
@@ -569,6 +629,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Собирает заголовки, карточки и нижнюю подсказку о состоянии. Сообщает списку об обновлении
+    // только когда готовые элементы действительно изменились.
     private fun refreshRows() {
         val next = buildList {
             if (archive) add(Item.Heading("Архив"))
@@ -599,6 +661,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Закрывает панель для текущего чата, открывает местный недавний сразу, а найденный на
+    // сервере сначала записывает в местный список. Два одновременных выбора не запускаются.
     private fun select(row: StudioThread) {
         val session = session ?: return
         if (mutating) return
@@ -619,6 +683,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Показывает команды над выбранной строкой и передаёт каждую с номером этого чата. В архиве
+    // не предлагает закрепление.
     private fun menu(anchor: View, row: StudioThread) {
         PopupMenu(context, anchor).apply {
             menu.add(0, 1, 0, "Переименовать")
@@ -638,6 +704,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Открывает текущее название, ограничивает длину и отправляет непустую строку после
+    // подтверждения. Пустая подпись не заменит прежнее название.
     private fun rename(row: StudioThread) {
         val edit =
             EditText(context).apply {
@@ -659,6 +727,8 @@ class StudioHistoryPanel private constructor(
                 .show()
     }
 
+    // Передаёт изменение через сетевую службу и после ответа перечитывает список. Блокирует
+    // второй запрос изменения до завершения первого.
     private fun change(row: StudioThread, change: JSONObject) {
         val network = session?.network ?: return
         if (mutating) return
@@ -669,6 +739,8 @@ class StudioHistoryPanel private constructor(
         }
     }
 
+    // Просит отдельное подтверждение и удаляет именно выбранный чат. Если он был открыт, сообщает
+    // владельцу окна, иначе перечитывает список.
     private fun confirmDelete(row: StudioThread) {
         val session = session ?: return
         pendingDialog =
@@ -693,6 +765,8 @@ class StudioHistoryPanel private constructor(
                 .show()
     }
 
+    // Читает текст разрешения из ресурсов и показывает его в панели. Пользователь может открыть
+    // условия использования значков без сети.
     private fun showLicenses() {
         val license = resources.openRawResource(R.raw.heroicons_license).bufferedReader()
             .use { it.readText() }
@@ -703,6 +777,8 @@ class StudioHistoryPanel private constructor(
             .show()
     }
 
+    // Показывает короткое сообщение о неудачном действии. Пользователь получает причину
+    // отсутствия результата и может повторить.
     private fun showError() {
         Toast.makeText(
                 context,

@@ -1,3 +1,6 @@
+// Проверяем постоянство номеров объектов для управления экраном и уведомление системы при смене
+// состава сообщений.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.RectF
@@ -12,7 +15,8 @@ import org.junit.Test
 class AccessibilityIdentityTest {
     private val i = InstrumentationRegistry.getInstrumentation()
 
-    // Вытесненный номер не должен нажать уже другое сообщение или вызвать его действие.
+    // Убираем соседнее сообщение и проверяем, что оставшийся объект сохранил номер. Старый номер
+    // не должен открывать другое сообщение или вызывать его действие.
     @Test
     fun visibleIdentitySurvivesNeighborRemovalAndOldIDCannotActivateDifferentMessage() {
         i.runOnMainSync {
@@ -73,6 +77,8 @@ class AccessibilityIdentityTest {
         }
     }
 
+    // Подключаем службу управления экраном и обновляем список объектов. Система должна получить
+    // событие об изменении дерева, чтобы перечитать его состав.
     @Test
     fun structuralChangesPublishNativeSubtreeInvalidation() {
         // Проверка системных событий требует явно подключённой службы управления экраном
@@ -99,6 +105,8 @@ class AccessibilityIdentityTest {
             var type = 0
             val parent =
                 object : FrameLayout(i.targetContext) {
+                    // Сохраняем вид события у родителя и подтверждаем его приём. Это позволяет
+                    // отличить изменение дерева от обычного события выбора.
                     override fun requestSendAccessibilityEvent(
                         child: View,
                         event: AccessibilityEvent,

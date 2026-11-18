@@ -1,3 +1,7 @@
+// Подготовка первого кадра на андроиде задерживает открытие истории до готовности видимых строк и
+// сцены. Медиа получают короткое время на подготовку, чтобы длинная загрузка не удерживала
+// пользователя на пустом экране.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -6,8 +10,8 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.*
 import kotlin.math.*
 
-// Завершение происходит после проверки текста и сцены, чтобы экран не открывался раньше нужного
-// содержимого.
+// Отменяем прежнее ожидание, а закрытой истории сразу возвращаем отмену. Для новой сохраняем
+// получателя результата и назначаем повторную проверку после срока медиа.
 internal fun ChatScrollHost.awaitInitialFrame(completion: (Result<Unit>) -> Unit) {
     finishInitialFrame(Result.failure(RepoException(RepoError.CANCELLED)))
     if (closed) {
@@ -20,6 +24,8 @@ internal fun ChatScrollHost.awaitInitialFrame(completion: (Result<Unit>) -> Unit
     schedule()
 }
 
+// Снимаем отложенный вызов и передаём результат одному ожидающему. Очистка ссылки до передачи
+// защищает от второго завершения.
 internal fun ChatScrollHost.finishInitialFrame(result: Result<Unit>) {
     val callback = initialFrame
     initialFrame = null
@@ -27,6 +33,8 @@ internal fun ChatScrollHost.finishInitialFrame(result: Result<Unit>) {
     callback?.invoke(result)
 }
 
+// Проверяем наличие подготовленных строк и видимых фрагментов сцены. После срока медиа могут
+// догрузиться позже, но неполный текст по-прежнему задерживает открытие.
 internal fun ChatScrollHost.publishInitialFrame(fragments: List<SceneFragment>) {
     if (initialFrame == null) return
     val visible =

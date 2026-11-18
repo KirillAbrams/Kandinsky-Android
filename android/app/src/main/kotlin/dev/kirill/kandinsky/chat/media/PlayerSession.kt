@@ -1,3 +1,6 @@
+// Управляет системным проигрывателем в рабочем потоке и передаёт состояние в поток экрана.
+// Поддерживает местный файл и чтение видео по частям.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.media.MediaPlayer
@@ -27,6 +30,8 @@ internal class PlayerSession(
 
     private val clock =
         object : Runnable {
+            // Пока ролик играет, считывает время и продолжительность и повторяет сообщение через
+            // четверть секунды. Пауза и закрытие прекращают обновления.
             override fun run() {
                 val p = native ?: return
                 if (!closing && prepared && p.isPlaying) {
@@ -38,10 +43,14 @@ internal class PlayerSession(
             }
         }
 
+    // Заворачивает готовый файл в обычный источник и передаёт общему открытию. Местный ролик идёт
+    // тем же путём, что и сетевой.
     fun open(file: File) {
         open(MediaPlaybackSource(file = file))
     }
 
+    // Настраивает проигрыватель, подключает файл или части и готовит видео вне потока экрана.
+    // Передаёт готовность, перемотку, буферизацию и отказ только пока сеанс жив.
     fun open(source: MediaPlaybackSource) {
         this.source = source
         worker.post {
@@ -101,6 +110,8 @@ internal class PlayerSession(
         }
     }
 
+    // Запускает уже подготовленное видео и включает отчёт времени, если он нужен экрану. Убирает
+    // прежний таймер, чтобы обновления не дублировались.
     fun resume() {
         worker.post {
             val p = native
@@ -115,6 +126,8 @@ internal class PlayerSession(
         }
     }
 
+    // Останавливает отчёт и ставит проигрыватель на паузу, затем возвращает текущую позицию.
+    // Позже можно продолжить с того же места.
     fun pause(position: ((Long) -> Unit)? = null) {
         worker.post {
             worker.removeCallbacks(clock)
@@ -127,6 +140,8 @@ internal class PlayerSession(
         }
     }
 
+    // Передаёт новую позицию в рабочую очередь и завершает прежний ожидающий ответ отказом.
+    // Неподготовленный или закрытый проигрыватель не обещает перемотку.
     fun seek(ms: Long, completion: (Boolean) -> Unit) {
         worker.post {
             val p = native
@@ -146,6 +161,8 @@ internal class PlayerSession(
         }
     }
 
+    // Просит снова вывести кадр около текущей позиции, если видео стоит. При незаконченной
+    // перемотке откладывает обновление, иначе новый кадр мог бы оказаться не с того места.
     private fun refreshFrame(p: MediaPlayer) {
         if (!closing && prepared) {
             if (seekDone != null) {
@@ -158,6 +175,8 @@ internal class PlayerSession(
         }
     }
 
+    // Меняет поверхность на рабочем потоке и при необходимости обновляет кадр на паузе. После
+    // ответа старый вывод можно освободить.
     fun attach(surface: Surface?, completion: () -> Unit) {
         worker.post {
             if (!closing && attachedOutput !== surface)
@@ -173,6 +192,9 @@ internal class PlayerSession(
         }
     }
 
+    // Закрывает чтение, затем снимает поверхность, слушателей и проигрыватель. Возвращает
+    // последнюю позицию, завершает отложенную перемотку отказом и сообщает, что ресурсы
+    // освобождены.
     fun release(position: ((Long) -> Unit)? = null, completed: () -> Unit) {
         if (closing) {
             worker.post { main.post(completed) }

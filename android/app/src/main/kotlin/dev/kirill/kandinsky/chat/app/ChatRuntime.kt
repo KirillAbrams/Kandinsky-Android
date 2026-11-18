@@ -1,3 +1,6 @@
+// Собирает базу, историю и службы вложений на Андроиде. При наличии сетевого входа добавляет
+// загрузку оригиналов и обмен, а местные проверки могут работать со своей базой.
+
 package dev.kirill.kandinsky.chat.app
 
 import android.content.Context
@@ -28,6 +31,8 @@ internal class ChatRuntime(
             ?: SQLiteChatRepository(store)
     val media = MediaStore(store, studioOriginals = network != null)
 
+    // Подключает загрузку, проигрывание и поиск уже скачанных файлов к местному хранилищу. Без
+    // этой связи сетевой чат не сможет открыть сохранённый оригинал так же, как местный.
     init {
         network?.let { sync ->
             val remote = NetworkMedia(store, sync.api, cacheLimitBytes = 256L * 1024 * 1024)
@@ -44,6 +49,8 @@ internal class ChatRuntime(
     val playback = MediaCoordinator(admission, media)
 
     companion object {
+        // Доводит до конца прежнюю очистку, затем читает сохранённый вход. Если его нет,
+        // проверяет приглашение, запрашивает профиль и кладёт его в защищённое хранилище.
         fun restoreProfile(context: Context, invitation: () -> String?): NetworkProfile? {
             val credentials = NetworkCredentials(context)
             LocalAccountErasure.finish(context, credentials)
@@ -65,6 +72,9 @@ internal class ChatRuntime(
             }
         }
 
+        // Ставит сетевые таблицы на очереди готовой базы и только при успехе соединяет историю с
+        // журналом и обменом. Вызывающий экран получает ошибку вместо наполовину готового
+        // аккаунта.
         fun openAccount(
             store: SQLiteStore,
             profile: NetworkProfile,
@@ -81,6 +91,8 @@ internal class ChatRuntime(
         }
     }
 
+    // Останавливает обмен, проигрывание, хранилище файлов и очередь выдачи ресурсов, затем
+    // закрывает базу. Иначе фоновые службы могли бы пережить выход из аккаунта.
     fun close() {
         network?.close()
         playback.close()

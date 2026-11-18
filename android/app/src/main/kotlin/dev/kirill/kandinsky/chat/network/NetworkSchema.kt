@@ -1,9 +1,15 @@
+// Создаёт местные таблицы сетевой связи и сохраняет отметки повторов. При обновлении чинит
+// порядок прежних неотправленных сообщений без переписывания принятой истории.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
 import androidx.core.database.sqlite.transaction
 
 object NetworkSchema {
+    // Создаёт недостающие таблицы одной записью и оставляет только известную версию. После
+    // проверки переносит старые отправки. Отказ оставляет схему в прежнем состоянии вместо
+    // частично готовой базы.
     fun install(database: SQLiteDatabase) {
         database.transaction {
             for (statement in statements) database.execSQL(statement)
@@ -17,8 +23,8 @@ object NetworkSchema {
         }
     }
 
-    // Переносим старые неотправленные сообщения в конец очереди и обновляем строки затронутых
-    // чатов.
+    // Ищет отправки со старым порядком и без номера сервера, переносит их в конец и обновляет
+    // видимые версии. Затем пересчитывает последнее сообщение только у затронутых чатов.
     private fun repairQueuedOrder(database: SQLiteDatabase) {
         val legacyRows =
             """

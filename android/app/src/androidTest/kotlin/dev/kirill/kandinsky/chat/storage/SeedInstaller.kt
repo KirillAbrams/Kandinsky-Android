@@ -1,3 +1,6 @@
+// Устанавливает длинную историю и её файлы в отдельную проверочную базу телефона. Сверяет состав
+// и отмечает успешную запись, чтобы повторный запуск был безопасным.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.content.res.AssetManager
@@ -16,12 +19,13 @@ import java.util.UUID
 import org.json.JSONObject
 
 class SeedInstaller(private val store: SQLiteStore, private val assets: AssetManager) {
-    // Использует постоянные правила записи, чтобы результат сравнивался с описанием источника
-    // независимо от
-    // языка устройства.
+    // Записывает байты отпечатка в едином виде. Иначе настройки языка могли бы изменить строку и
+    // помешать сверке с описанием файла.
     private fun hex(bytes: ByteArray) =
         bytes.joinToString("") { String.format(Locale.ROOT, "%02x", it.toInt() and 255) }
 
+    // Читает файл небольшими порциями, вычисляет отпечаток и возвращает строку для сравнения.
+    // Проверка крупного вложения не загружает весь файл в память.
     private fun sha(file: File, buffer: ByteArray): String {
         val hash = MessageDigest.getInstance("SHA-256")
         FileInputStream(file).use { input ->
@@ -34,6 +38,9 @@ class SeedInstaller(private val store: SQLiteStore, private val assets: AssetMan
         return hex(hash.digest())
     }
 
+    // Сверяет описание, записывает или проверяет файлы, затем добавляет чаты, сообщения и отметку
+    // готовности. Общая запись базы сохраняет историю целиком, а отметка не даёт создать её
+    // дважды.
     fun installIfNeeded(
         version: String = "v1",
         callback: (Result<Unit>) -> Unit,

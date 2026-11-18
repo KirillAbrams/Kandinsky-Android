@@ -1,3 +1,6 @@
+// Складывает изменения сообщений в общую порцию перед обновлением экрана. Слияние выполняется в
+// потоке интерфейса, чтобы записи не менялись из нескольких потоков.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.os.Handler
@@ -15,6 +18,9 @@ class NetworkUIBatch(private val deliver: (List<MessageDelta>) -> Unit) {
         if (deltas.isNotEmpty()) deliver(deltas)
     }
 
+    // Сохраняет последнюю версию каждой изменённой строки и собирает удаления. Планирует одну
+    // выдачу на ближайший промежуток кадра, иначе серия ответов заставила бы экран
+    // перестраиваться много раз.
     fun offer(deltas: List<MessageDelta>) {
         check(Looper.myLooper() == Looper.getMainLooper())
         for (delta in deltas) {
@@ -45,7 +51,8 @@ class NetworkUIBatch(private val deliver: (List<MessageDelta>) -> Unit) {
         }
     }
 
-    // После закрытия прежняя отложенная порция больше не должна обновлять представление.
+    // Снимает назначенную выдачу и очищает накопленные изменения. После ухода с экрана прежние
+    // строки не должны вернуться при срабатывании таймера.
     fun close() {
         main.removeCallbacks(flush)
         pending.clear()

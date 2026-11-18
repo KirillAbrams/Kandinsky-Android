@@ -1,3 +1,6 @@
+// Управляет съёмкой, выбором и передачей исходников в чате Андроида. Хранит работу, которую можно
+// отменить, и следит, чтобы старый ответ не менял новый черновик.
+
 package dev.kirill.kandinsky.chat.attachments
 
 import android.app.Activity
@@ -54,14 +57,22 @@ internal class ChatAttachmentCoordinator(
         private set
 
     val isUploading
+        // Отмечает, что файл ещё передаётся. Этот признак нужен для хода загрузки и защиты от
+        // повторного запуска.
         get() = activeTransfer != null
 
     val isBusy
+        // Учитывает подготовку, передачу и проверку сохранённого файла. Пока идёт любое из этих
+        // действий, новый выбор может испортить порядок работы.
         get() = pendingImport != null || isUploading || checkingSource != null
 
     val canPick
+        // Разрешает выбор лишь в свободном состоянии и без открытого системного окна. Повторное
+        // нажатие не откроет второй выбор.
         get() = !isBusy && !documentPending
 
+    // Проверяет, не принят ли снимок черновика сервером, и продолжает только текущий файл. Новый
+    // сигнал о связи позволяет повторить попытку после обрыва.
     fun resumePendingUpload(reconnected: Boolean = false) {
         val network = this.network ?: return
         val source = state.draft.attachmentDrafts.firstOrNull() ?: return
@@ -82,16 +93,22 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Просит камеру прекратить работу, если она открыта. Переход к другому экрану не оставляет
+    // съёмку активной.
     fun stopCapture() {
         camera?.cancel()
     }
 
+    // Отменяет передачу, снимает её отметку и обновляет экран. Черновик остаётся доступным для
+    // следующей попытки.
     fun pausePendingUpload() {
         activeTransfer?.cancel()
         activeTransfer = null
         refresh()
     }
 
+    // Отменяет камеру, чтение, передачу и ожидаемый выбор. Убирает копию без связи с черновиком,
+    // а исходники черновика удаляет только при отказе от него.
     fun close(discardDraft: Boolean) {
         stopCapture()
         pendingImport?.cancel()
@@ -111,6 +128,8 @@ internal class ChatAttachmentCoordinator(
         if (discardDraft && drafts.isNotEmpty()) media.discardUnpublishedImports(drafts)
     }
 
+    // Открывает выбор камеры, снимка или ролика и добавляет недавние файлы после чтения списка.
+    // Действие принимается только пока этот чат открыт.
     fun showPicker() {
         val sheet = StudioGenerationSheet(activity, options())
         sheet.showAttachments { source ->
@@ -127,6 +146,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Передаёт съёмке запрос разрешения и принимает результат для подготовки исходника. Обычную
+    // отмену не выдаёт за ошибку камеры.
     private fun openCamera() {
         val capture =
             PhotoCaptureController(
@@ -146,10 +167,14 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Передаёт подготовленную копию дальше, если чат ещё открыт. Иначе просит убрать файл без
+    // владельца.
     private fun uploadIfOpen(file: AttachmentDraft) {
         if (isActive()) upload(file) else media.discardUnpublishedImport(file)
     }
 
+    // Запрашивает один доступный для чтения снимок или ролик через систему. Снимает ожидание при
+    // ответе или отсутствии программы выбора, чтобы кнопка не зависла.
     private fun pickDocument(source: AttachmentSource) {
         documentPending = true
         refresh()
@@ -174,6 +199,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Читает только разрешённый системой поток и подготавливает ролик или снимок. После
+    // завершения снимает отметку подготовки и передаёт результат текущему чату.
     private fun importDocument(uri: Uri, source: AttachmentSource) {
         val resolver = activity.contentResolver
         val open = {
@@ -192,6 +219,8 @@ internal class ChatAttachmentCoordinator(
             } else media.stageStudioPhoto(open, complete)
     }
 
+    // Начинает использование недавнего файла и сначала готовит чат. Если экран ушёл или выбор
+    // отменён, загрузка для этого файла больше не начинается.
     private fun selectRecent(upload: StudioUpload) {
         val network = this.network ?: return
         if (!canPick || !isActive()) return
@@ -209,6 +238,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Сначала связывает серверный файл с чатом, затем скачивает его во временную папку. При
+    // ошибке или закрытии убирает временную копию.
     private fun downloadRecent(network: NetworkSync, upload: StudioUpload, download: MediaCancellation) {
         val chat = state.chatID ?: run {
             pendingImport = null
@@ -238,6 +269,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Принимает скачанные байты в местное хранилище и запоминает связь с серверным номером. После
+    // этого снимок можно взять в черновик, а ролик открыть для просмотра.
     private fun importRecent(network: NetworkSync, upload: StudioUpload, temporary: File) {
         pendingImport =
             media.stageSelection({ temporary.inputStream() }, upload.mime) { result ->
@@ -263,6 +296,8 @@ internal class ChatAttachmentCoordinator(
             }
     }
 
+    // При снятии исходника отменяет текущую передачу и подготовку. Для нового снимка выбирает
+    // генерацию видео, а после снятия не оставляет режим улучшения без файла.
     fun replacePhoto(photo: AttachmentDraft?) {
         if (photo == null) {
             pendingImport?.cancel()
@@ -276,6 +311,8 @@ internal class ChatAttachmentCoordinator(
         replaceSource(photo, model)
     }
 
+    // Подменяет исходник и подходящие настройки в черновике. Сохранение нового ввода должно
+    // завершиться до просьбы убрать прежние файлы.
     private fun replaceSource(source: AttachmentDraft?, model: String) {
         val options = options()
         val previous = state.draft.attachmentDrafts
@@ -294,6 +331,8 @@ internal class ChatAttachmentCoordinator(
         if (previous.isNotEmpty()) state.flush { media.discardUnpublishedImports(previous) }
     }
 
+    // Проверяет предел размера и длины ролика и готовит ход передачи. Фото сохраняет в черновике
+    // перед обращением к серверу, чтобы оно пережило обрыв.
     private fun upload(file: AttachmentDraft) {
         val network = this.network
         val isPhoto = file.mime.startsWith("image/")
@@ -321,6 +360,8 @@ internal class ChatAttachmentCoordinator(
             }
         }
         refresh()
+        // Отправляет готовый файл с номером чата на рабочем потоке. Ответ относится к той же
+        // передаче, иначе позднее завершение могло бы изменить новый выбор.
         fun transmit() {
             val chat = state.chatID ?: run {
                 finishUpload(transfer, file, kept = false)
@@ -384,6 +425,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Запоминает номер файла сервера и его копии для предпросмотра. Только сохранённую связь
+    // живой экран использует дальше для фото или просмотра видео.
     private fun rememberUpload(
         network: NetworkSync,
         transfer: MediaCancellation,
@@ -405,6 +448,8 @@ internal class ChatAttachmentCoordinator(
         }
     }
 
+    // Отличает сбой сети от других ошибок. При обрыве оставляет фото в черновике для повтора, а
+    // остальные отказы показывает пользователю.
     private fun uploadFailed(transfer: MediaCancellation, file: AttachmentDraft, error: Throwable) {
         val offline =
             error is java.net.UnknownHostException ||
@@ -416,10 +461,13 @@ internal class ChatAttachmentCoordinator(
         finishUpload(transfer, file, keep)
     }
 
+    // Подбирает подпись ошибки по виду файла. Пользователь видит, какая передача не удалась.
     private fun uploadError(file: AttachmentDraft) =
         if (file.mime.startsWith("image/")) "Не удалось загрузить фото"
         else "Не удалось загрузить видео"
 
+    // Завершает только ту передачу, которая ещё принадлежит экрану, и обновляет состояние. Копию
+    // удаляет, когда её не нужно хранить и она не используется черновиком.
     private fun finishUpload(transfer: MediaCancellation, file: AttachmentDraft, kept: Boolean) {
         if (activeTransfer === transfer) {
             transfer.finish()
@@ -430,6 +478,8 @@ internal class ChatAttachmentCoordinator(
             media.discardUnpublishedImport(file)
     }
 
+    // Открывает загруженный ролик и предлагает улучшение при подходящих размерах и длине. Перед
+    // выбором проверяет наличие модели и освобождает неиспользованный исходник.
     private fun preview(file: AttachmentDraft, media: MediaStore) {
         val attachment =
             Attachment(

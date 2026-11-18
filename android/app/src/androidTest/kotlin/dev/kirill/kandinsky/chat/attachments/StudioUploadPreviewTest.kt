@@ -1,3 +1,6 @@
+// Проверяет окно видео на изолированной сборке Андроида и местном ролике. Следит за одним
+// проигрывателем при развороте и за его освобождением после выбора.
+
 package dev.kirill.kandinsky.chat.attachments
 
 import android.content.Intent
@@ -28,6 +31,8 @@ import org.junit.Test
 class StudioUploadPreviewTest {
     private val instrument = InstrumentationRegistry.getInstrumentation()
 
+    // Подаёт местный ролик, проверяет первый кадр и разворот той же поверхности. После улучшения
+    // или обычного закрытия сверяет вызванную команду и освобождение проигрывателя.
     @Test
     fun sourceVideoKeepsItsPlayerAcrossLayoutsAndClosesWithTheChosenAction() {
         val context = instrument.targetContext
@@ -150,10 +155,16 @@ class StudioUploadPreviewTest {
         }
     }
 
+    // Читает устойчивое имя элемента через сведения, доступные системному управлению. Обычная
+    // подпись может меняться при развороте.
     private fun View.accessibilityID(): String? = createAccessibilityNodeInfo().viewIdResourceName
 
+    // Находит единственный элемент окна по имени. Если есть две копии или элемент потерялся,
+    // проверка завершится с ошибкой.
     private fun View.control(id: String): View = allViews.single { it.accessibilityID() == id }
 
+    // Ждёт, пока окно принимает ввод, затем посылает системное действие назад. Оно не попадёт
+    // случайно в чат под панелью.
     private fun pressBack(window: View) {
         await("Окно предпросмотра получает системный ввод") { window.hasWindowFocus() }
         val command = instrument.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK")
@@ -162,6 +173,8 @@ class StudioUploadPreviewTest {
         }
     }
 
+    // Проверяет условие в потоке экрана до короткого предела. Долгая загрузка выдаст сообщение о
+    // недостигнутом состоянии вместо бесконечного ожидания.
     private fun await(message: String, condition: () -> Boolean) {
         val deadline = SystemClock.uptimeMillis() + 8_000
         do {

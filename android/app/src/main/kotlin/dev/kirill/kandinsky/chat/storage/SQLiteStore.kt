@@ -1,3 +1,6 @@
+// Открывает местную базу на рабочем потоке и принимает ограниченное число команд. Результаты
+// возвращаются в поток экрана, где их можно безопасно показать.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.database.sqlite.*
@@ -9,6 +12,8 @@ import java.io.File
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
 
+// Запоминает папку, настройки проверочных сбоев и создаёт очередь на один рабочий поток.
+// Соединение появится только после открытия файла, поэтому создание оболочки не читает базу.
 class SQLiteStore private constructor(val root: File, val faults: RepositoryFaults) {
     private val main = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
@@ -25,6 +30,8 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
     private var database: SQLiteDatabase? = null
 
     companion object {
+        // Открывает файл базы, включает проверку связей и обновляет таблицы. Возвращает готовое
+        // соединение, а при сбое закрывает файл и прекращает работу очереди.
         fun open(
             root: File,
             faults: RepositoryFaults = RepositoryFaults(),
@@ -61,6 +68,8 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
             return Cancellation { cancel.set(true) }
         }
 
+        // Сводит ошибки базы, нехватку места и отмену к ошибкам приложения. Без такого перевода
+        // экран не сможет отличить неверные данные от обычного сбоя чтения.
         internal fun map(t: Throwable): Throwable =
             when (t) {
                 is RepoException -> t
@@ -72,6 +81,9 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
             }
     }
 
+    // Ставит работу в ограниченную очередь и проверяет отмену перед обращением к базе. При
+    // заполненной или закрытой очереди тоже возвращает ответ, иначе экран мог бы ждать
+    // бесконечно.
     fun <T> submit(action: (SQLiteDatabase) -> T, callback: (Result<T>) -> Unit): Cancellation {
         val cancelled = AtomicBoolean(false)
         if (closed.get()) {
@@ -101,8 +113,8 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
         return Cancellation { cancelled.set(true) }
     }
 
-    // Ранее принятые действия завершаются перед закрытием, поэтому соединение не исчезает посреди
-    // записи.
+    // Останавливает приём новых команд, ждёт завершения уже принятых и закрывает файл. Повторные
+    // вызовы ждут тот же результат, поэтому запись не прерывается посередине.
     fun close(callback: (Result<Unit>) -> Unit): Cancellation {
         closeResult.whenComplete { _, error ->
             main.post {

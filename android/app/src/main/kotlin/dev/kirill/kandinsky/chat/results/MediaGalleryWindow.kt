@@ -1,3 +1,6 @@
+// Хранит текущий и ближайшие файлы одного чата для перелистывания. Сохраняет выбор при
+// добавлении страниц и ограничивает общий размер окна.
+
 package dev.kirill.kandinsky.chat.results
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -14,6 +17,8 @@ data class MediaGalleryEntry(
     val isIncoming: Boolean,
 ) {
     val id
+        // Собирает постоянный номер из сообщения и результата либо позиции в альбоме. С ним новый
+        // снимок страницы может заменить тот же файл без дубля.
         get() =
             "$messageID/" +
                 if (attachment.id.startsWith("net-") && attachment.id.contains("-result-"))
@@ -21,8 +26,12 @@ data class MediaGalleryEntry(
                 else attachmentIndex.toString()
 
     val isVideo
+        // Определяет видео по типу вложения. Это помогает выбрать просмотр ролика вместо
+        // отдельного показа снимка.
         get() = attachment.mime.startsWith("video/")
 
+    // Сверяет свойства местного файла, важные для вывода. Если эти поля совпадают повторная
+    // подготовка не нужна.
     fun hasSameMedia(other: MediaGalleryEntry) =
         attachment.relativePath == other.attachment.relativePath &&
             attachment.mime == other.attachment.mime &&
@@ -32,6 +41,8 @@ data class MediaGalleryEntry(
             attachment.orientation == other.attachment.orientation
 
     companion object {
+        // Собирает фото и видео из сообщений подходящих видов в порядке вложений. Другие строки
+        // не занимают места в галерее.
         fun entries(row: Message): List<MediaGalleryEntry> {
             if (row.kind !in listOf(MessageKind.PHOTO, MessageKind.VIDEO, MessageKind.GIF))
                 return emptyList()
@@ -68,9 +79,13 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         entries.firstOrNull { it.attachmentIndex == attachmentIndex }?.id
             ?: entries.firstOrNull()?.id
     val selectedIndex
+        // Находит номер позиции по постоянному имени выбранного файла. При вставке более старых
+        // кадров прежний выбор не сдвинется на другое изображение.
         get() = entries.indexOfFirst { it.id == selectedID }.takeIf { it >= 0 }
 
     val selected
+        // Возвращает выбранный файл, если его позиция ещё есть. Пустое окно не возвращает
+        // произвольный элемент.
         get() = selectedIndex?.let { entries[it] }
 
     var hasOlder = true
@@ -80,26 +95,34 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         private set
 
     val neighbours
+        // Даёт выбранный файл и по одному соседу с двух сторон. Просмотр готовит только ближайшие
+        // страницы.
         get() =
             selectedIndex?.let { entries.subList(maxOf(0, it - 1), minOf(entries.size, it + 2)) }
                 ?: emptyList()
 
     val needsPage
+        // Просит следующую порцию при приближении к краю, если за ним есть данные. При
+        // достигнутом конце лишняя загрузка не начинается.
         get() =
             selectedIndex?.let { it < 4 && hasOlder || entries.size - 1 - it < 4 && hasNewer }
                 ?: false
 
+    // Обрезает исходный набор до рабочего размера сразу при открытии. Даже большой альбом не
+    // раздувает начальное окно.
     init {
         trim()
     }
 
+    // Принимает новый выбор только из известных файлов. Неудачный переход сохраняет текущий кадр.
     fun select(id: String): Boolean {
         if (entries.none { it.id == id }) return false
         selectedID = id
         return true
     }
 
-    // Страницу другого чата отклоняет, чтобы просмотр не смешал разные истории.
+    // Проверяет принадлежность чату, соединяет старые и новые файлы по номерам и обновляет
+    // признаки продолжения. Одна страница не приносит дубли и чужие записи.
     fun merge(page: HistoryPage): Boolean {
         if (page.rows.any { it.chatID != chatID }) return false
         val incoming = page.rows.flatMap { MediaGalleryEntry.entries(it) }.sortedWith(order)
@@ -119,6 +142,8 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         return true
     }
 
+    // Удаляет исчезнувшие файлы, заменяет изменённые строки и при необходимости выбирает соседний
+    // кадр. Галерея остаётся согласованной с историей чата.
     fun apply(delta: MessageDelta) {
         if (delta.chat.id != chatID) return
         val previous = selected
@@ -134,6 +159,8 @@ class MediaGalleryWindow(seed: Message, attachmentIndex: Int = 0) {
         trim()
     }
 
+    // Оставляет часть истории вокруг выбора и отмечает обе обрезанные стороны. Позже пользователь
+    // может вернуться к этим файлам через подгрузку.
     private fun trim() {
         if (entries.size <= MAXIMUM_ENTRIES) return
         val lower =

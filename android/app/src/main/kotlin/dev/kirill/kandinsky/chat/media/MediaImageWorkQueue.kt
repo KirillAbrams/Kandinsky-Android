@@ -1,3 +1,6 @@
+// Разделяет поиск файла, ожидание сети и чтение пикселей. Поэтому готовое фото может начать
+// обработку, пока другое ещё загружается.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.os.Handler
@@ -17,6 +20,8 @@ internal class MediaImageWorkQueue {
     private val requests = mutableMapOf<UUID, MediaCancellation>()
     private var closed = false
 
+    // Сначала ищет файл на телефоне, затем при допуске запускает скачивание, а потом подготовку.
+    // Отмена общего запроса прекращает текущий поиск, передачу или чтение.
     fun submit(
         priority: Int,
         fetch: MediaCancellation,
@@ -31,6 +36,8 @@ internal class MediaImageWorkQueue {
         val identity = UUID.randomUUID()
         val request = MediaCancellation()
         requests[identity] = request
+        // Убирает завершённый запрос и останавливает связанное чтение файла. Если экран уже
+        // отменил работу, закрывает полученные пиксели и возвращает отмену.
         fun finish(result: Result<ImagePixels>) {
             requests.remove(identity)
             fetch.cancel()
@@ -40,6 +47,8 @@ internal class MediaImageWorkQueue {
                 completion(Result.failure(MediaException(MediaError.CANCELLED)))
             }
         }
+        // Проверяет отмену и просит поток экрана учесть будущие пиксели перед чтением. Без свежей
+        // проверки памяти параллельная работа могла бы занять уже обещанное место.
         fun prepare(source: Pair<File, String>) {
             if (closed || request.isCancelled) {
                 finish(Result.failure(MediaException(MediaError.CANCELLED)))
@@ -105,6 +114,8 @@ internal class MediaImageWorkQueue {
         return request
     }
 
+    // Запрещает новые работы и снимает активные запросы, затем закрывает поиск, скачивание и
+    // чтение. Ресурсы не остаются в очередях после ухода экрана.
     fun close() {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (closed) return

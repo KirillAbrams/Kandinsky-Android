@@ -1,3 +1,6 @@
+// Подготавливаем на устройстве известное начало опубликованной истории и сверяем его состав с
+// ожидаемым набором.
+
 package dev.kirill.kandinsky.chat.network
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -10,6 +13,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PrimePublishedCorpusHistoryTest {
+    // Проверяем заранее выбранного владельца и чат, затем скачиваем номера с первого по
+    // десятитысячный страницами. Сверяем полноту и число сообщений каждого вида, не меняя более
+    // новые записи.
     @Test
     fun cacheTheVerifiedPublishedPrefixInBoundedPages() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

@@ -1,3 +1,6 @@
+// Связывает видимые команды сообщений Андроида с копированием, удалением, жалобой и повтором.
+// Закрывает диалоги вместе со своим экраном.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Activity
@@ -38,20 +41,28 @@ class ConversationUIController(
     var reportGeneration: ((MessageID, StudioReportReason, (Result<Unit>) -> Unit) -> Unit)? = null
     private val generationActionsInFlight = mutableSetOf<MessageID>()
 
+    // Передаёт изменения хранилища тому, кто показывает чат. После успешного действия экран может
+    // обновить только затронутую строку.
     init {
         actions.onDelta = onDelta
     }
 
+    // Проверяет направление и статус доставки. Отменить отправку можно у своего запроса, который
+    // ещё ждёт или завершился ошибкой.
     private fun canCancel(message: Message) =
         message.direction == MessageDirection.OUTGOING &&
             message.delivery in listOf(MessageDelivery.PENDING, MessageDelivery.FAILED)
 
+    // Вызывает копирование по номеру сообщения и сообщает о сбое. Выбранный вид действия остаётся
+    // связан с той же строкой.
     fun perform(kind: MessageAction, message: Message) {
         when (kind) {
             MessageAction.COPY -> actions.copy(message.id) { it.exceptionOrNull()?.let(::failed) }
         }
     }
 
+    // Спрашивает отдельное подтверждение отмены, пока окно живо. Пользователь может оставить
+    // запрос для дальнейшей отправки.
     private fun confirmPendingRemoval(message: Message) {
         if (closed || activity.isDestroyed) return
         dialog =
@@ -65,6 +76,8 @@ class ConversationUIController(
                 .show()
     }
 
+    // Подбирает действия по направлению, состоянию и доступным службам. Держит отметку отправки
+    // жалобы до ответа и показывает итог только на действующем экране.
     fun menu(message: Message) {
 
         if (message.direction == MessageDirection.OUTGOING) {
@@ -117,6 +130,8 @@ class ConversationUIController(
         return
     }
 
+    // Вычисляет номер повтора для выбранного результата и передаёт его службе. Отметка снимается
+    // по ответу, даже если попытка снова не удалась.
     fun retrySlot(message: MessageID, slot: StudioGeneration.Slot) {
         val request = retrySlotAction ?: return
         if (closed) return
@@ -127,7 +142,8 @@ class ConversationUIController(
         }
     }
 
-    // Один запрос на удаление может прийти с нескольких устройств.
+    // Передаёт номер сообщения и при необходимости файла, защищаясь от второго действия по той же
+    // строке. После ответа освобождает её для дальнейших команд.
     fun removeGenerationContent(id: MessageID, blob: String?) {
         val request = deleteGenerationContent ?: return
         if (closed || !generationActionsInFlight.add(id)) return
@@ -137,6 +153,8 @@ class ConversationUIController(
         }
     }
 
+    // Объясняет удаление запроса и связанных результатов и ждёт согласия. При отмене даже сетевой
+    // запрос не создаётся.
     private fun confirmPromptRemoval(message: Message) {
         dialog =
             AlertDialog.Builder(activity)
@@ -147,6 +165,8 @@ class ConversationUIController(
                 .show()
     }
 
+    // Отправляет заданное действие для строки и снимает отметку при ответе. Пока она есть,
+    // повторное нажатие не обратится к службе.
     fun performGenerationAction(id: MessageID, action: StudioGenerationAction) {
         val request = generationAction ?: return
         if (closed || !generationActionsInFlight.add(id)) return
@@ -156,6 +176,8 @@ class ConversationUIController(
         }
     }
 
+    // Показывает сообщение о неудаче только живому экрану. После закрытия уведомление не
+    // прерывает работу другого окна.
     private fun failed(t: Throwable) {
         if (!closed && !activity.isDestroyed)
             Toast.makeText(
@@ -166,6 +188,8 @@ class ConversationUIController(
                 .show()
     }
 
+    // Скрывает клавиатуру и заменяет прежний диалог панелью команд. Открытые окна не
+    // накладываются друг на друга.
     private fun sheet(title: String? = null, items: List<KandinskySheetAction>) {
         if (closed || activity.isDestroyed) return
         activity.currentFocus?.let {
@@ -178,6 +202,8 @@ class ConversationUIController(
         dialog = KandinskyActionSheet(activity, title, items).also { it.show() }
     }
 
+    // Запрещает дальнейшие действия и закрывает открытый диалог. Команды прежнего чата больше не
+    // должны открывать панели.
     fun close() {
         closed = true
         dialog?.dismiss()

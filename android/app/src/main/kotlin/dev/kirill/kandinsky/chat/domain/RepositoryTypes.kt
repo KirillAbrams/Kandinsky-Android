@@ -1,3 +1,6 @@
+// Здесь собраны параметры чтения истории, её границы и причины отказа хранилища.
+// Проверки могут назначить сбой на нужном шаге, чтобы проверить повтор операции после отказа.
+
 package dev.kirill.kandinsky.chat.domain
 
 import java.util.concurrent.atomic.AtomicReference
@@ -30,6 +33,8 @@ data class PageRequest(
 data class HistoryPage(val rows: List<Message>, val before: OrderKey?, val after: OrderKey?)
 
 fun interface Cancellation {
+    // Останавливает начатую работу, когда запрос уже не нужен.
+    // Хранилище может прекратить чтение или передачу вместо ожидания полного результата.
     fun cancel()
 }
 
@@ -44,9 +49,13 @@ enum class RepoFault {
 class RepositoryFaults {
     private val next = AtomicReference<RepoFault?>()
 
+    // Назначает следующий сбой отдельной записью, которую другие потоки видят целиком.
+    // Проверка может воспроизвести отказ именно на выбранном шаге.
     fun arm(fault: RepoFault) {
         next.set(fault)
     }
 
+    // Снимает отметку, только если дошли до назначенного шага.
+    // Сравнение и снятие происходят вместе, поэтому два потока не применят один сбой дважды.
     fun consume(fault: RepoFault) = next.compareAndSet(fault, null)
 }

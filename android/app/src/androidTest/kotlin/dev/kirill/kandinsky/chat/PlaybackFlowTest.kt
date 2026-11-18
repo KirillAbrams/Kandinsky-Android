@@ -1,3 +1,5 @@
+// Проверяем раскрытие видео в отдельный просмотр и возврат к той же переписке.
+
 package dev.kirill.kandinsky.chat
 
 import androidx.test.uiautomator.By
@@ -7,6 +9,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackFlowTest {
+    // Находим раскрываемое видео в существующей медиаленте, открываем и закрываем проигрыватель.
+    // Он должен уйти с экрана, а форма разговора снова быть видна.
     @Test
     fun videoOpensInFullscreenAndReturnsToConversation() {
         val ui = AppFlowDriver()

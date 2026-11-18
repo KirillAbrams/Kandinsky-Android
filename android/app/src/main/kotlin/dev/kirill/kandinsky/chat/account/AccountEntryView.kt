@@ -1,3 +1,6 @@
+// Строит прокручиваемую форму входа Андроида и связывает её с моделью шагов. Экран показывает
+// подсказки и передаёт ввод, не управляя сетевым запросом напрямую.
+
 package dev.kirill.kandinsky.chat.account
 
 import android.app.Activity
@@ -17,13 +20,19 @@ import dev.kirill.kandinsky.chat.network.NetworkProfile
 import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.rendering.KandinskyPalette
 
+// Получает оформление, модель действий и необязательную команду возврата. Единый способ
+// создания поддерживает и рабочую форму, и показ без готового входа.
 class AccountEntryView private constructor(
     context: Context,
     private val model: AccountEntryViewModel?,
     cancel: (() -> Unit)?,
 ) : ScrollView(context), KandinskyInsetHost {
+    // Создаёт вид формы без службы входа. Кнопки запроса тогда недоступны, что подходит для
+    // показа до готовности службы.
     constructor(context: Context) : this(context, null, null)
 
+    // Создаёт модель с сетевой службой и защищёнными записями и передаёт её форме. После
+    // успешного входа экран отдаст профиль показывающему окну.
     constructor(
         activity: Activity,
         api: NetworkAPI,
@@ -47,9 +56,13 @@ class AccountEntryView private constructor(
     private val toggle = Button(context)
     private val d = resources.displayMetrics.density
 
+    // Назначает элементу устойчивое имя доступности. Автоматическую проверку можно привязать к
+    // элементу даже при изменении видимой подписи.
     private fun id(view: View, value: String) {
         view.accessibilityDelegate =
             object : View.AccessibilityDelegate() {
+                // Сохраняет обычные сведения системы и подставляет заданное имя. Элемент остаётся
+                // доступен озвучиванию и проверкам.
                 override fun onInitializeAccessibilityNodeInfo(
                     host: View,
                     info: android.view.accessibility.AccessibilityNodeInfo,
@@ -60,6 +73,8 @@ class AccountEntryView private constructor(
             }
     }
 
+    // Размещает знак, поля, команды и сохранённые входы в прокручиваемой колонке. Связывает
+    // действия с моделью, чтобы при смене шага не пришлось создавать другой экран.
     init {
         setBackgroundColor(Color.WHITE)
         isFillViewport = true
@@ -69,6 +84,8 @@ class AccountEntryView private constructor(
         body.addView(column, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
         column.setPadding((24 * d).toInt(), (28 * d).toInt(), (24 * d).toInt(), (24 * d).toInt())
         column.isFocusableInTouchMode = true
+        // Ставит элемент в колонку с одинаковым нижним отступом. Новая кнопка сохранённого входа
+        // не нарушит расстояние между полями.
         fun add(view: View) {
             column.addView(
                 view,
@@ -77,12 +94,16 @@ class AccountEntryView private constructor(
         }
         add(
             object : View(context) {
+                // Даёт знаку минимальное место и имя для служб доступности. По нему можно узнать
+                // приложение даже без чтения самой картинки.
                 init {
                     minimumHeight = (62 * d).toInt()
                     contentDescription = "Кандинский"
                     id(this, "account.brand")
                 }
 
+                // Выбирает допустимые размеры знака из желаемой ширины и высоты. Родительская
+                // форма получает реальные границы перед рисованием.
                 override fun onMeasure(widthSpec: Int, heightSpec: Int) {
                     setMeasuredDimension(
                         resolveSize((196 * d).toInt(), widthSpec),
@@ -90,6 +111,8 @@ class AccountEntryView private constructor(
                     )
                 }
 
+                // Рисует знак в масштабе экрана. На телефонах с разной плотностью он занимает
+                // одинаковое место в форме.
                 override fun onDraw(canvas: Canvas) {
                     KandinskyPalette.studioBrand(canvas, 85 * d, 8 * d, d, large = true)
                 }
@@ -110,6 +133,8 @@ class AccountEntryView private constructor(
                 setTextColor(Color.rgb(76, 89, 103))
             }
         )
+        // Задаёт полям общую высоту, отступы, фон и цвета. Без общего оформления разные шаги
+        // могли бы прыгать при замене одного поля другим.
         fun field(view: EditText) {
             view.setTextColor(Color.rgb(23, 32, 42))
             view.setHintTextColor(Color.rgb(106, 118, 132))
@@ -172,6 +197,8 @@ class AccountEntryView private constructor(
         id(toggle, "account.toggle")
         toggle.setOnClickListener { model?.toggleRegistration() }
         add(toggle)
+        // Оформляет второстепенную кнопку в одну строку и укорачивает слишком длинную подпись.
+        // Она не должна вытеснять основное действие формы.
         fun secondary(button: Button) {
             button.isAllCaps = false
             button.setTextColor(KandinskyPalette.studioInk)
@@ -217,6 +244,8 @@ class AccountEntryView private constructor(
         update()
     }
 
+    // Ограничивает ширину колонки свободным местом и верхним пределом для широкого экрана. Поля
+    // не выходят за края и остаются читаемыми.
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val available =
             (MeasureSpec.getSize(widthSpec) - paddingLeft - paddingRight - (48 * d).toInt())
@@ -227,6 +256,8 @@ class AccountEntryView private constructor(
         super.onMeasure(widthSpec, heightSpec)
     }
 
+    // Устанавливает поля, заголовок и подписи для нового шага, очищает пароль и код при переходе.
+    // Пока запрос идёт, основные кнопки не запускают его повторно.
     private fun update() {
         val step = model?.step ?: AccountEntryStep.LOGIN
         val busy = model == null || model.isBusy
@@ -259,6 +290,8 @@ class AccountEntryView private constructor(
         }
     }
 
+    // Передаёт модели почту, пароль и код из полей и отмечает повтор отправки письма. У экрана и
+    // клавиатуры остаётся один порядок проверки.
     private fun enter(resending: Boolean = false) {
         model?.submit(
             email = emailField.text.toString(),
@@ -268,10 +301,14 @@ class AccountEntryView private constructor(
         )
     }
 
+    // Оставляет место сверху и снизу под системные полосы и клавиатуру. Иначе часть формы могла
+    // бы стать недоступной.
     override fun updateInsets(top: Int, bottom: Int) {
         setPadding(0, top, 0, bottom)
     }
 
+    // Передаёт закрытие модели, чтобы работа с прежней формой остановилась. Она больше не сможет
+    // принять запоздалый ответ.
     fun close() {
         model?.close()
     }

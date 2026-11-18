@@ -1,3 +1,6 @@
+// Ограничивает обычный просмотр, тихие ролики и камеру на уровне приложения. Передача права ждёт
+// настоящего выхода прежнего владельца.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.os.Handler
@@ -36,23 +39,33 @@ class MediaAdmission : CaptureAdmission {
     companion object {
         private val main = Handler(Looper.getMainLooper())
 
+        // Требует поток экрана перед изменением общих прав. Это не даёт двум потокам выдать одно
+        // место одновременно.
         private fun checkMain() {
             check(Looper.myLooper() == Looper.getMainLooper())
         }
 
+        // Возвращает право в том же потоке, где его выдали. Если закрытие пришло из фона, ставит
+        // возврат в очередь экрана.
         private fun releaseOnMain(action: () -> Unit) {
             if (Looper.myLooper() == Looper.getMainLooper()) action() else main.post(action)
         }
 
         val previewOwnerCount
+            // Читает общее количество открытых тихих просмотров. Очередь может учесть занятые
+            // места до запуска следующего.
             get() = ProcessMediaGate.previews.size
 
         val previewsAllowed
+            // Проверяет, что большой просмотр и камера свободны и съёмка не ждёт. При ожидающей
+            // съёмке новые тихие места уже закрыты.
             get() =
                 ProcessMediaGate.playback == null &&
                     ProcessMediaGate.capture == null &&
                     ProcessMediaGate.pendingCapture == null
 
+        // Проверяет предел и добавляет остановку для тихого ролика. Когда последний возвращает
+        // место, уведомляет того, кто ждал полной остановки.
         fun reservePreview(studioAlbum: Boolean = false, stop: () -> Unit): PlaybackLease? {
             checkMain()
             if (!previewsAllowed || ProcessMediaGate.previews.size >= (if (studioAlbum) 4 else 2))
@@ -70,6 +83,8 @@ class MediaAdmission : CaptureAdmission {
             }
         }
 
+        // Запоминает получателя под отдельным номером. Экран сможет снова попросить подготовку
+        // после освобождения места.
         fun observePreviewAvailability(action: () -> Unit): UUID {
             checkMain()
             val id = UUID.randomUUID()
@@ -77,22 +92,27 @@ class MediaAdmission : CaptureAdmission {
             return id
         }
 
+        // Снимает подписку в потоке экрана. Старый элемент не удерживается общим списком
+        // получателей.
         fun removePreviewObserver(id: UUID) {
             checkMain()
             ProcessMediaGate.observers.remove(id)
         }
 
-        // Обработчик может отписаться во время вызова. Поэтому обходим копию списка.
+        // Обходит копию подписок, только если места снова доступны. Подписчик может снять себя,
+        // не пропуская других.
         private fun notifyPreviewAvailability() {
             if (previewsAllowed) ProcessMediaGate.observers.values.toList().forEach { it() }
         }
 
-        // Обходит копию набора, поскольку остановка может освободить место и изменить исходный
-        // список.
+        // Вызывает остановку у копии списка. Старые места могут вернуться сразу, не ломая обход
+        // оставшихся.
         private fun stopPreviews() {
             ProcessMediaGate.previews.values.toList().forEach { it() }
         }
 
+        // Убирает действие после выхода, если номер совпал с ожидавшим. Поздняя отмена не стирает
+        // другой запрос.
         private fun clearDrain(id: UUID) {
             if (ProcessMediaGate.drain?.first == id) ProcessMediaGate.drain = null
         }
@@ -112,12 +132,15 @@ class MediaAdmission : CaptureAdmission {
     var captureActiveCount = 0
         private set
 
-    // После закрытия владельца новый обработчик не устанавливается.
+    // Передаёт запросу камеры способ дождаться остановки большого просмотра. Для закрытого
+    // владельца обработчик не сохраняется.
     fun installPlaybackStopper(stop: (() -> Unit) -> Unit) {
         checkMain()
         if (!closed) stopper = stop
     }
 
+    // Ставит отказ в очередь экрана и допускает отмену до выдачи. Получатель получает только один
+    // исход.
     private fun <T> rejected(error: MediaError, completion: (Result<T>) -> Unit): Cancellation {
         val token = MediaCancellation()
         token.onCancel {
@@ -127,6 +150,8 @@ class MediaAdmission : CaptureAdmission {
         return token
     }
 
+    // Занимает общий номер просмотра, просит тихие ролики закрыться и ждёт. При отмене снимает
+    // ожидание и освобождает только свой номер.
     fun requestPlayback(completion: (Result<PlaybackLease>) -> Unit): Cancellation {
         checkMain()
         if (closed) return rejected(MediaError.CANCELLED, completion)
@@ -168,6 +193,8 @@ class MediaAdmission : CaptureAdmission {
         return token
     }
 
+    // Выдаёт право, когда не осталось тихих владельцев и камера не ждёт. После возврата права
+    // общая очередь может продолжить.
     private fun tryGrantPlayback() {
         val p = pendingPlayback ?: return
         if (
@@ -209,6 +236,8 @@ class MediaAdmission : CaptureAdmission {
         }
     }
 
+    // Бронирует ожидающую съёмку, закрывает тихий показ и просит подтверждение остановки большого
+    // просмотра. Снимает ожидание при отмене до выдачи камеры.
     override fun acquire(
         kind: CaptureKind,
         completion: (Result<CaptureLease>) -> Unit,
@@ -261,9 +290,8 @@ class MediaAdmission : CaptureAdmission {
         return token
     }
 
-    // Выдаёт ожидающее разрешение записи только после подтверждения остановки и освобождения
-    // конкурирующих
-    // владельцев.
+    // Проверяет подтверждение остановки и отсутствие других владельцев. Потом выдаёт разрешение
+    // камере и помнит его до закрытия съёмки.
     private fun tryGrant() {
         val p = pendingCapture ?: return
         if (
@@ -312,6 +340,8 @@ class MediaAdmission : CaptureAdmission {
         }
     }
 
+    // Прекращает выдачу новых прав и отменяет ожидающие и текущие действия просмотра. Запоздалый
+    // экран не продолжит запуск.
     fun close() {
         checkMain()
         if (closed) return
@@ -328,22 +358,30 @@ internal class PreviewLifetime(private var lease: PlaybackLease?) {
     private var work = 0
     private var retired = false
 
+    // При открытом праве добавляет одну работу просмотра. Закрытый просмотр не начинает чтение
+    // снова.
     fun begin() {
         check(!retired)
         work++
     }
 
+    // Снимает одну законченную работу и пробует вернуть место. Если закрытие уже запрошено,
+    // последняя работа открывает путь следующей.
     fun end() {
         check(work > 0)
         work--
         releaseIfRetired()
     }
 
+    // Отмечает конец использования, чтобы право вернулось после оставшихся операций. Это не даёт
+    // открыть новый проигрыватель, пока прежний закрывается.
     fun retire() {
         retired = true
         releaseIfRetired()
     }
 
+    // Возвращает место после снятия просмотра и завершения всех работ, затем убирает ссылку.
+    // Место освобождается только один раз.
     private fun releaseIfRetired() {
         if (retired && work == 0) {
             lease?.release()

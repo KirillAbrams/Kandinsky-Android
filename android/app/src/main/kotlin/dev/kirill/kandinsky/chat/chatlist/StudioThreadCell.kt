@@ -1,3 +1,6 @@
+// Хранит оформление и действия одной строки списка Андроида. Одну и ту же строку можно привязать
+// к новому чату после прокрутки.
+
 package dev.kirill.kandinsky.chat.chatlist
 
 import android.content.Context
@@ -26,6 +29,8 @@ class StudioThreadCell(context: Context) : FrameLayout(context) {
     private val actions = ImageView(context)
     private var generating = false
 
+    // Создаёт подсветку, значок, индикатор и отдельные области названия и действий. Ограничение
+    // одной строкой удерживает список от скачков высоты.
     init {
         layoutParams = AbsListView.LayoutParams(-1, dp(44))
         setBackgroundColor(Color.WHITE)
@@ -49,6 +54,8 @@ class StudioThreadCell(context: Context) : FrameLayout(context) {
         for (view in listOf(highlight, marker, busy, title, actions)) addView(view)
     }
 
+    // Заменяет название, озвучивание, видимость знаков и обработчики для нового чата. Без полной
+    // привязки действие могло бы обратиться к уже прокрученному чату.
     fun bind(
         row: StudioThread,
         selected: Boolean,
@@ -72,22 +79,30 @@ class StudioThreadCell(context: Context) : FrameLayout(context) {
         requestLayout()
     }
 
+    // Включает показ индикатора при присоединении к окну, если чат занят. Повторное появление
+    // строки отражает актуальное состояние.
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         updateAnimation()
     }
 
+    // Скрывает индикатор при снятии строки с окна. Вне списка ему не нужно продолжать движение.
     override fun onDetachedFromWindow() {
         busy.visibility = GONE
         super.onDetachedFromWindow()
     }
 
+    // Проверяет наличие строки в окне и занятость. Индикатор доступен только при обоих условиях.
     private fun updateAnimation() {
         busy.visibility = if (generating && isAttachedToWindow) VISIBLE else GONE
     }
 
+    // Назначает точные размеры значку, индикатору, названию и меню. Ширину текста считает из
+    // свободного места, чтобы цели нажатий не наложились.
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        // Передаёт каждому элементу точную ширину и высоту не меньше единицы. Так даже тесная
+        // строка имеет допустимые размеры для раскладки.
         fun measure(view: View, width: Int, height: Int) {
             view.measure(
                 MeasureSpec.makeMeasureSpec(width.coerceAtLeast(1), MeasureSpec.EXACTLY),
@@ -105,6 +120,8 @@ class StudioThreadCell(context: Context) : FrameLayout(context) {
         measure(actions, dp(44), measuredHeight)
     }
 
+    // Размещает элементы по их отдельным областям и оставляет меню справа. Название остаётся
+    // доступным отдельно от кнопки действий.
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val width = right - left
         val height = bottom - top
@@ -116,9 +133,15 @@ class StudioThreadCell(context: Context) : FrameLayout(context) {
         actions.layout(actionsRight - dp(44), 0, actionsRight, height)
     }
 
+    // Подбирает левый отступ в зависимости от индикатора генерации. Без него название начиналось
+    // бы поверх индикатора.
     private fun titleLeft() = dp(if (generating) 40 else 16)
 
+    // Оставляет справа место под меню и при необходимости значок закрепления. Текст не заходит на
+    // независимые кнопки.
     private fun titleRightInset() = dp(if (marker.isVisible) 86 else 64)
 
+    // Пересчитывает размеры под плотность экрана с округлением. Зона нажатия сохраняет привычный
+    // размер на разных телефонах.
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
 }

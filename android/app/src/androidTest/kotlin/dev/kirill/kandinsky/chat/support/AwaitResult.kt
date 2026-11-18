@@ -1,3 +1,5 @@
+// Позволяем проверкам дождаться результата хранилища и заметить повторное завершение.
+
 package dev.kirill.kandinsky.chat.support
 
 import android.os.Looper
@@ -8,6 +10,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 
+// Запускаем операцию вне основного потока, ждём ответ до пяти секунд и проверяем единственный
+// вызов. Затем возвращаем значение или передаём ошибку операции проверке.
 fun <T> awaitResult(register: ((Result<T>) -> Unit) -> Cancellation): T {
     check(Looper.myLooper() != Looper.getMainLooper())
     val done = CountDownLatch(1)

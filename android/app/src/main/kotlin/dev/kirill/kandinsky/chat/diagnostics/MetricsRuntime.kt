@@ -1,3 +1,6 @@
+// Связывает замеры окна Андроида с записью отчёта. В отчёте есть длительности обработки и
+// параметры экрана, но он сам не показывает число реально видимых кадров.
+
 package dev.kirill.kandinsky.chat.diagnostics
 
 import android.os.*
@@ -24,6 +27,8 @@ object MetricsRuntime {
             ThreadPoolExecutor.DiscardOldestPolicy(),
         )
 
+    // Собирает замеры и частоты в один отчёт, затем заменяет файл целиком на рабочем потоке.
+    // Оставляет только последнее ожидающее задание, чтобы замеры не создали длинную очередь.
     fun export() {
         if (!enabled) return
         val file = output ?: return
@@ -81,6 +86,8 @@ class WindowFrameProbe(private val window: Window) : AutoCloseable {
             MetricsRuntime.recorder.peak("frame_listener_dropped_reports", dropped)
         }
 
+    // Считывает доступные частоты окна и подключает системную выдачу замеров к отдельному потоку.
+    // Сбор не занимает поток, который рисует чат.
     init {
         (window.decorView.display ?: window.windowManager.defaultDisplay)?.let {
             MetricsRuntime.displayRefreshHz = it.refreshRate
@@ -90,6 +97,8 @@ class WindowFrameProbe(private val window: Window) : AutoCloseable {
         window.addOnFrameMetricsAvailableListener(listener, Handler(thread.looper))
     }
 
+    // Снимает наблюдение, завершает рабочий поток и сохраняет последний отчёт. Вне окна новые
+    // замеры больше не поступают.
     override fun close() {
         window.removeOnFrameMetricsAvailableListener(listener)
         thread.quitSafely()

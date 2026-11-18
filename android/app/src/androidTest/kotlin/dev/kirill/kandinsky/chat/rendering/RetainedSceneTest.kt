@@ -1,3 +1,6 @@
+// Проверяем первое рисование, обновление и закрытие сцены чата. Сверяем, какие слои сохраняются,
+// когда меняется положение или приходит новая запись.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
@@ -14,6 +17,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RetainedSceneTest {
+    // Заранее готовим рисунки запроса и ответа, затем открываем историю с неточными оценками
+    // высоты. Уже на первом кадре четыре результата должны разместиться ниже точной границы
+    // запроса.
     @Test
     fun firstAlbumFrameUsesMeasuredPromptHeightWhenLayoutsAreAlreadyCached() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -65,6 +71,8 @@ class RetainedSceneTest {
             )
         val repo =
             object : dev.kirill.kandinsky.chat.storage.ChatRepository by h.repo {
+                // Возвращаем две строки с заранее заниженными высотами. Проверка воспроизводит
+                // начальное открытие, при котором настоящая разметка уже лежит в памяти.
                 override fun index(
                     chatID: ChatID,
                     callback: (Result<List<IndexedRow>>) -> Unit,
@@ -92,6 +100,8 @@ class RetainedSceneTest {
                     return Cancellation {}
                 }
 
+                // Передаём страницу с запросом и группой результатов сразу. Сетевое ожидание в
+                // этом случае не должно определять, какой кадр появится первым.
                 override fun history(
                     request: PageRequest,
                     callback: (Result<HistoryPage>) -> Unit,
@@ -147,7 +157,8 @@ class RetainedSceneTest {
         }
     }
 
-    // Поздняя доставка прежнего ответа не должна восстановить закрытый чат или число его сообщений.
+    // Закрываем чат, пока ответ со списком строк удерживается, и доставляем его позже. Открытие
+    // должно завершиться с отменой один раз, а номер и число строк не должны восстановиться.
     @Test
     fun closingDuringInitialMetadataCancelsOpeningExactlyOnce() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -160,6 +171,8 @@ class RetainedSceneTest {
         var release: (() -> Unit)? = null
         val repo =
             object : dev.kirill.kandinsky.chat.storage.ChatRepository by h.repo {
+                // Запрашиваем реальный результат хранилища и откладываем передачу в экран.
+                // Поздний ответ позволяет проверить защиту после закрытия без случайной задержки.
                 override fun index(chatID: ChatID, callback: (Result<List<IndexedRow>>) -> Unit) =
                     h.repo.index(chatID) { result ->
                         release = { callback(result) }
@@ -197,6 +210,8 @@ class RetainedSceneTest {
         }
     }
 
+    // Удерживаем первый ответ и обновляем историю через хранилище. Более свежий список должен
+    // закончить открытие и разблокировать форму, а старый ответ не должен завершить его повторно.
     @Test
     fun newerSyncIndexStillCompletesAnOpeningWhoseFirstIndexWasDelayed() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -214,6 +229,8 @@ class RetainedSceneTest {
         var first = true
         val repo =
             object : dev.kirill.kandinsky.chat.storage.ChatRepository by h.repo {
+                // Задерживаем только первое чтение строк, остальные отправляем через обычное
+                // хранилище. Так новый ответ может обогнать первый для проверки порядка.
                 override fun index(
                     chatID: ChatID,
                     callback: (Result<List<IndexedRow>>) -> Unit,
@@ -274,7 +291,8 @@ class RetainedSceneTest {
         }
     }
 
-    // Сверка с внешним значением не должна менять текст и область текущего составления.
+    // Запускаем составной ввод и передаём новое состояние формы. Текст и выделение сохраняются до
+    // завершения ввода, затем обычное обновление снова заменяет значение.
     @Test
     fun nativeComposingRangeSurvivesStateRefresh() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
@@ -305,6 +323,8 @@ class RetainedSceneTest {
         }
     }
 
+    // Собираем входящую строку с указанным текстом и постоянными остальными данными. Это
+    // позволяет менять длину и состав текста без изменения номера сообщения.
     private fun message(text: String) =
         Message(
             1,
@@ -320,9 +340,8 @@ class RetainedSceneTest {
             emptyList(),
         )
 
-    // Многократно перемещает те же фрагменты и требует сохранения системного узла без повторной
-    // записи
-    // рисунка.
+    // Многократно двигаем готовые части без новой записи рисунка. Проверяем прежний системный
+    // объект и отклонение результата от старого экрана после закрытия.
     @Test
     fun positionOnlyRetainsNodesAndRejectsLateLayout() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -331,6 +350,8 @@ class RetainedSceneTest {
             val key = TextLayoutKey(1, 1, 200, 17, 1)
             val resource = PreparedText(message("مرحبا 👨‍👩‍👧‍👦 é text\n".repeat(80)), key)
             assertTrue(resource.blocks.size > 5)
+            // Собираем список частей с текущим номером сцены и заданным вертикальным сдвигом.
+            // Используем ту же разметку, чтобы отличить перемещение от перерисовки.
             fun snapshot(y: Float) =
                 SceneSnapshot(
                     scene.ticket,
@@ -390,6 +411,8 @@ class RetainedSceneTest {
         }
     }
 
+    // Двигаем готовый текст на дробные расстояния и измеряем его системные слои. Содержимое
+    // сохраняет ширину и высоту, а смещение текста и меток совпадает.
     @Test
     fun fractionalScrollMovesNativeLayersWithoutResizingTheirContent() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
@@ -399,6 +422,8 @@ class RetainedSceneTest {
             )
             val width = resource.width
             val height = resource.blocks.first().height
+            // Строим прямоугольник той же части текста на другой высоте. Фиксированные размеры
+            // позволяют обнаружить случайное округление при движении.
             fun fragment(y: Float) =
                 SceneFragment(resource, 0, android.graphics.RectF(18f, y, 18f + width, y + height))
             val node = MessageNode(fragment(0f))
@@ -423,6 +448,8 @@ class RetainedSceneTest {
         }
     }
 
+    // Добавляем запись обычным путём в хранилище и ждём, пока экран обновится. Прежний слой
+    // должен остаться тем же, а новый рисунок готовится только для добавленной строки.
     @Test
     fun repositoryDeltaRetainsUnchangedNativeNodesThroughFullCoordinator() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -454,6 +481,8 @@ class RetainedSceneTest {
             host = ChatScrollHost(activity)
             activity.setContentView(host)
         }
+        // Проверяем готовность сцены на основном потоке в пределах шести секунд. Если она не
+        // успела, дальнейшее сравнение объектов останавливается.
         fun waitFor(condition: () -> Boolean) {
             val end = SystemClock.uptimeMillis() + 6000
             var ready = false
@@ -483,6 +512,8 @@ class RetainedSceneTest {
                 RetainedChatScene::class.java.getDeclaredField("nodes").apply {
                     isAccessible = true
                 }
+            // Получаем действительный системный слой первого сообщения из сцены. По ссылке и
+            // наличию рисунка проверяем, что старый слой пережил обновление.
             fun nativeNode(): android.graphics.RenderNode {
                 val node = (nodesField.get(scene) as Map<*, *>)[FragmentID(ids.first(), 0)]!!
                 val field = node.javaClass.getDeclaredField("native").apply { isAccessible = true }
@@ -525,11 +556,16 @@ class RetainedSceneTest {
         }
     }
 
+    // Записываем одинаковую видимую полосу при малом и большом числе фрагментов. Невидимые строки
+    // не должны заметно увеличивать память записи рисунка.
     @Test
     fun clippedBackdropSubmissionIsIndependentOfOffscreenRows() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             val resource =
                 PreparedText(message("line\n".repeat(5000)), TextLayoutKey(1, 9, 200, 17, 1))
+            // Готовим сцену с заданным числом частей, рисуем только обрезанную полосу и читаем
+            // оценку памяти системного слоя. Одинаковая область рисования даёт сравнимый
+            // результат.
             fun recordedBytes(count: Int): Long {
                 val scene = RetainedChatScene()
                 val root = android.graphics.RenderNode("bounded strip")

@@ -1,3 +1,6 @@
+// Проверяем хранилище изображений и роликов на андроиде. Сценарии сверяют чёткие кадры, очередь и
+// сохранение файлов, а также проверяют, что ошибки и закрытие возвращают занятую память.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -21,6 +24,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaStoreTest {
+    // Берём одиннадцать старых маленьких кадров и измеряем перепады яркости до и после
+    // подготовки. Ступеньки должны сгладиться, а размеры и общая яркость остаться близкими.
     @Test
     fun legacyInlineJpegsDisplaySoftGradients() {
         val h = RepositoryHarness.open(File(context.cacheDir, "soft-inline-preview-" + UUID.randomUUID()))
@@ -28,6 +33,8 @@ class MediaStoreTest {
         val records = TestFixtures.assets.open("real-media/tiny-preview-probe.json")
             .bufferedReader().use { JSONObject(it.readText()).getJSONArray("records") }
 
+        // Считываем точки и переводим цвет в приближение яркости, учитывая каналы с разным весом.
+        // Так можно сравнить видимые ступеньки независимо от оттенка.
         fun luminance(bitmap: Bitmap): IntArray {
             val pixels = IntArray(bitmap.width * bitmap.height)
             bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
@@ -36,6 +43,8 @@ class MediaStoreTest {
                     android.graphics.Color.blue(c)) / 10
             }.toIntArray()
         }
+        // Складываем резкие перепады яркости по горизонтали и вертикали у внутренних точек. Чем
+        // меньше результат, тем мягче меняются соседние тона.
         fun curvature(data: IntArray, width: Int, height: Int): Int {
             var total = 0
             for (y in 1 until height - 1) for (x in 1 until width - 1) {
@@ -47,6 +56,8 @@ class MediaStoreTest {
             return total
         }
 
+        // Измеряем общий перепад яркости между соседними точками. Сравнение до и после
+        // показывает, насколько изменился мелкий контраст.
         fun energy(data: IntArray, width: Int, height: Int): Long {
             var total = 0L
             for (y in 0 until height - 1) for (x in 0 until width - 1) {
@@ -112,6 +123,8 @@ class MediaStoreTest {
         }
     }
 
+    // Готовим размытый кадр и скрываем приложение вне перехода. Проверяем нулевую память и
+    // отсутствие маленького кадра при следующем поиске.
     @Test
     fun leavingStudioOutsideNavigationReleasesCachedBlurPixels() {
         val h = RepositoryHarness.open(File(context.cacheDir, "background-blur-" + UUID.randomUUID()))
@@ -136,6 +149,8 @@ class MediaStoreTest {
         }
     }
 
+    // Замещаем подготовку прежнего ближайшего ролика новой. Проверяем, что готовые соседние
+    // рисунки ещё доступны и их размеры ограничены.
     @Test
     fun videoPreparationChangesNearestRowWithoutDroppingPreparedPosters() {
         val h = RepositoryHarness.open(File(context.cacheDir, "video-nearest-" + UUID.randomUUID()))
@@ -197,6 +212,8 @@ class MediaStoreTest {
         }
     }
 
+    // Отмечаем заранее прочитанные части длинного ролика и сверяем их предел. После этого читаем
+    // начало и конец без нового получения того же диапазона.
     @Test
     fun videoPreparationWarmsBoundedStartAndTailForTheNextPlayer() {
         val h = RepositoryHarness.open(File(context.cacheDir, "video-warm-" + UUID.randomUUID()))
@@ -241,6 +258,8 @@ class MediaStoreTest {
         }
     }
 
+    // Удерживаем подготовку чужого файла и показываем другое фото. Видимый запрос быстро получает
+    // место, а старый получает отмену.
     @Test
     fun foregroundPhotoPreemptsOtherPrefetch() {
         val h = RepositoryHarness.open(File(context.cacheDir, "prefetch-priority-" + UUID.randomUUID()))
@@ -291,6 +310,8 @@ class MediaStoreTest {
         }
     }
 
+    // Подключаем видимую строку к уже начатому чтению. Получатели должны разделить одну карту
+    // точек и один запрос.
     @Test
     fun visiblePhotoJoinsPrefetchWithoutAnotherDownloadOrDecode() {
         val h = RepositoryHarness.open(File(context.cacheDir, "prefetch-share-" + UUID.randomUUID()))
@@ -336,6 +357,8 @@ class MediaStoreTest {
         }
     }
 
+    // Сначала показываем подготовленную маленькую картинку при задержанном исходнике. Доставка
+    // остаётся активной до появления чёткого фото.
     @Test
     fun preparedStudioBlurDoesNotFinishDeliveryBeforeOriginalPixels() {
         val h = RepositoryHarness.open(File(context.cacheDir, "studio-blur-" + UUID.randomUUID()))
@@ -388,6 +411,9 @@ class MediaStoreTest {
             h.close()
         }
     }
+    // Заполняем запас больше шестидесяти четырёх кадров и проверяем его предел. Изменённый
+    // исходник не может взять старую картинку, а после снятия удерживаемой копии память
+    // освобождается.
     @Test
     fun studioTinyCacheHas64EntriesAndReleasesOwnersOnWarningAndClose() {
         val h = RepositoryHarness.open(File(context.cacheDir, "tiny-bound-" + UUID.randomUUID()))
@@ -426,6 +452,8 @@ class MediaStoreTest {
             }
         } finally { main { media.close() }; h.close() }
     }
+    // Готовим кадр заранее и удерживаем следующее чтение. При первом показе уже должен быть тот
+    // же маленький рисунок без ожидания новой очереди.
     @Test
     fun warmBlurredPreviewIsPresentDuringFirstBindWithTinyDecoderBlocked() {
         val h = RepositoryHarness.open(File(context.cacheDir, "first-blur-" + UUID.randomUUID()))
@@ -484,6 +512,8 @@ class MediaStoreTest {
             h.close()
         }
     }
+    // Заполняем память соседними кадрами и показываем четыре чётких результата. Проверяем
+    // качество, общий предел и быстрый возврат уже готового альбома.
     @Test
     fun visibleAlbumDoesNotFailBehindPreparedNeighbors() {
         val h = RepositoryHarness.open(File(context.cacheDir, "neighbors-" + UUID.randomUUID()))
@@ -509,6 +539,8 @@ class MediaStoreTest {
             Attachment(name, "remote/$name", "image/png", original.length(),
                 1280, 1280, 1, null, name)
         }
+        // Собираем фрагмент на заданной высоте и отмечаем, относится ли он к альбому. Сцена
+        // получает различимые соседние и видимые файлы.
         fun fragment(id: Long, attachments: List<Attachment>, y: Float, album: Boolean): SceneFragment {
             val generation = if (album) StudioGeneration(
                 StudioGeneration.Stage.SUCCEEDED, "image", "1:1", null, null,
@@ -525,6 +557,8 @@ class MediaStoreTest {
         val neighbors = (0 until 3).map {
             fragment((it + 1).toLong(), listOf(photos[it]), -1900f + it * 600, false)
         }
+        // Читаем готовность в потоке экрана до предельного срока. Ускоренная проверка не
+        // принимает неоконченный фоновый расчёт за готовность.
         fun waitFor(predicate: () -> Boolean): Boolean {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
             while (System.nanoTime() < deadline) {
@@ -594,6 +628,8 @@ class MediaStoreTest {
         }
     }
 
+    // Удерживаем два сетевых чтения и отдельно запрашиваем местный чёткий кадр. Срок проверяет,
+    // что он не встал за чужими передачами.
     @Test
     fun localSharpDecodeDoesNotWaitBehindUnrelatedNetworkReads() {
         val h = RepositoryHarness.open(File(context.cacheDir, "local-priority-" + UUID.randomUUID()))
@@ -638,16 +674,22 @@ class MediaStoreTest {
         }
     }
 
+    // Даём повреждённый оригинал и ждём отказ чтения. Промежуточное изображение после ошибки не
+    // должно занимать память.
     @Test
     fun corruptOriginalReleasesItsDecodeMemory() {
         checkRejectedOriginal(pressureDuringFetch = false)
     }
 
+    // Во время получения большого исходника уменьшаем предел памяти. Следующее чтение должно
+    // отказать до выделения карты точек.
     @Test
     fun memoryWarningDuringFetchRejectsAnOversizedDecodeWithoutAllocatingPixels() {
         checkRejectedOriginal(pressureDuringFetch = true)
     }
 
+    // Удерживаем получение файла и по сценарию меняем доступную память. После выпуска проверяем
+    // точную причину отказа и отсутствие занятого рисунка.
     private fun checkRejectedOriginal(pressureDuringFetch: Boolean) {
         val h = RepositoryHarness.open(File(context.cacheDir, "rejected-original-" + UUID.randomUUID()))
         val media = MediaStore(h.store, studioOriginals = true)
@@ -695,6 +737,8 @@ class MediaStoreTest {
         }
     }
 
+    // Показываем ход генерации и готовый ответ с ещё не прочитанным фото. Тот же индикатор
+    // остаётся до чёткого кадра и снимается после него.
     @Test
     fun studioPhotoKeepsTheSameIndicatorUntilPixelsArePresented() {
         val h =
@@ -719,6 +763,8 @@ class MediaStoreTest {
                 null,
                 "first",
             )
+        // Строим две стадии одной карточки по признаку готовности. Рамка и номер ячейки остаются
+        // общими, чтобы сравнить её индикатор.
         fun snapshot(ready: Boolean): SceneSnapshot {
             val cells =
                 listOf(
@@ -805,6 +851,8 @@ class MediaStoreTest {
         }
     }
 
+    // Открываем новый чат с четырьмя фото, пока старый альбом ещё держит свои кадры. После
+    // очистки памяти повторяем и сверяем детализацию и предел.
     @Test
     fun fourPhotoAlbumsCanOverlapDuringChatNavigation() {
         val h =
@@ -828,6 +876,8 @@ class MediaStoreTest {
         val next = RetainedChatScene()
         val reopened = RetainedChatScene()
         val afterPressure = RetainedChatScene()
+        // Создаём четыре вложения с отдельными номерами для указанной сцены. Старые и новые
+        // рисунки можно различить во время перекрытия.
         fun snapshot(scene: RetainedChatScene, id: Long, prefix: String): SceneSnapshot {
             val photos =
                 (0 until 4).map { index ->
@@ -891,6 +941,8 @@ class MediaStoreTest {
         val oldReady = CountDownLatch(1)
         val nextReady = CountDownLatch(1)
         val pressureReady = CountDownLatch(1)
+        // Читаем готовность каждой из четырёх ячеек по очереди. Это обнаружит отсутствие
+        // отдельного кадра даже у видимого альбома.
         fun ready(scene: RetainedChatScene, id: Long) = (0 until 4).map { scene.imageReady(id, it) }
         try {
             main {
@@ -919,6 +971,8 @@ class MediaStoreTest {
             )
             main {
                 assertTrue(next.loadActions().isEmpty())
+                // Берём кадры каждой ячейки и сверяем размер оригинального рисунка. Копии после
+                // сравнения закрываются и не влияют на следующий замер.
                 fun assertOriginalDetail(scene: RetainedChatScene, id: Long) {
                     repeat(4) { index ->
                         val frame = checkNotNull(scene.preview(id, index))
@@ -984,6 +1038,8 @@ class MediaStoreTest {
         }
     }
 
+    // Проверяем обычный предел и возможность занять четыре места для видимой карточки
+    // результатов. Пятое место уже недоступно.
     @Test
     fun visibleStudioAlbumCanReserveFourVideoPreviews() {
         main {
@@ -1002,6 +1058,8 @@ class MediaStoreTest {
         }
     }
 
+    // Сохраняем выбранный файл и попытку отправки, затем проверяем повреждённое намерение. Живые
+    // ссылки сохраняются, а восстановление убирает только осиротевшие файлы.
     @Test
     fun selectionIntentProtectsOriginalsAndCorruptionStopsRecoveryBeforeDeletion() {
         val h =
@@ -1009,6 +1067,8 @@ class MediaStoreTest {
                 File(context.cacheDir, "selection-ownership-" + UUID.randomUUID())
             )
         val media = MediaStore(h.store)
+        // Создаём выбранное вложение через штатную подготовку в отдельном каталоге. Это даёт
+        // реальную ссылку для проверки восстановления и очистки.
         fun selection() =
             awaitResult<AttachmentDraft> { cb ->
                 main {
@@ -1122,8 +1182,12 @@ class MediaStoreTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Выполняем команду хранилища в потоке экрана. Проверка дожидается окончания команды перед
+    // чтением состояния.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Находим имя настоящего фото в описании материалов. Подготовка использует тот же исходник во
+    // всех сценариях.
     private fun photoName(): String {
         val a =
             JSONObject(
@@ -1136,6 +1200,8 @@ class MediaStoreTest {
             .getString("fileName")
     }
 
+    // Просим обработать выбранное фото и ждём результат фоновой подготовки. Можно передать другой
+    // источник, чтобы проверить ошибку чтения.
     private fun stage(
         media: MediaStore,
         open: () -> java.io.InputStream = { TestFixtures.assets.open("media/" + photoName()) },
@@ -1144,6 +1210,8 @@ class MediaStoreTest {
         Cancellation {}
     }
 
+    // Запускаем восстановление временного хранилища и дожидаемся ответа. Только затем проверяем
+    // существование файлов.
     private fun recover(media: MediaStore) {
         awaitResult<Unit> { cb ->
             main { media.recover(cb) }
@@ -1151,12 +1219,15 @@ class MediaStoreTest {
         }
     }
 
+    // Отправляем одно подготовленное фото с заданным номером команды. Тот же номер позволяет
+    // проверить повтор после потери ответа.
     private fun sendPhoto(repo: ChatRepository, draft: AttachmentDraft, token: String): MessageDelta =
         awaitResult { cb ->
             repo.send(SendCommand(token, 2, MessageKind.PHOTO, attachments = listOf(draft)), cb)
         }
 
-    // Путь, размеры, ориентация и длительность сохраняются без повторного чтения исходника.
+    // Собираем вложение из сведений черновика без нового обращения к файлу. Связь с исходником и
+    // поворот сохраняются.
     private fun attachment(d: AttachmentDraft) =
         Attachment(
             d.id,
@@ -1170,6 +1241,8 @@ class MediaStoreTest {
             d.thumbnailKey,
         )
 
+    // После появления чёткого фото даём маленький рисунок того же результата. Виден должен
+    // остаться прежний чёткий кадр.
     @Test
     fun transferredPhotoIsNotReplacedByALateMicroPreview() {
         val h = RepositoryHarness.open(File(context.cacheDir, "preview-order-" + UUID.randomUUID()))
@@ -1232,6 +1305,8 @@ class MediaStoreTest {
         }
     }
 
+    // Отменяем ожидающий ручной запуск при ещё занятом месте предпросмотра. Разрешение камере
+    // выдаётся только после реального закрытия прежнего владельца.
     @Test
     fun cancelledManualReservationAndCaptureStillWaitForRetiringNativePreview() {
         val first = MediaAdmission()
@@ -1291,11 +1366,15 @@ class MediaStoreTest {
         }
     }
 
+    // Готовим маленький кадр для ленты и открываем полноэкранный просмотр. Сверяем порядок
+    // запросов и большой результат, который должен прийти из оригинала.
     @Test
     fun viewerDecodeUsesOriginalAndDoesNotReuseTimelinePreview() {
         val h =
             RepositoryHarness.open(File(context.cacheDir, "viewer-original-" + UUID.randomUUID()))
         val media = MediaStore(h.store)
+        // Пишем картинку с заранее заданными размерами во временный каталог. Разные размеры
+        // помогают отличить оригинал от кадра ленты.
         fun imageFile(name: String, w: Int, height: Int): File {
             val f = File(h.root, name)
             val b = Bitmap.createBitmap(w, height, Bitmap.Config.ARGB_8888)
@@ -1355,11 +1434,15 @@ class MediaStoreTest {
         }
     }
 
+    // Показываем оригинальное фото в ленте и галерее, затем возвращаемся. Проверяем прежнюю
+    // детализацию и ограниченный расход памяти.
     @Test
     fun studioPhotoTimelineAndGalleryReuseOriginalPixels() {
         val h =
             RepositoryHarness.open(File(context.cacheDir, "studio-original-" + UUID.randomUUID()))
         val media = MediaStore(h.store, studioOriginals = true)
+        // Создаём подготовленный файл известного размера. Его ширина и высота служат исходными
+        // значениями для сверки рисунка.
         fun fixture(name: String, width: Int, height: Int): File {
             val file = File(h.root, name)
             val image = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -1460,7 +1543,9 @@ class MediaStoreTest {
         }
     }
 
-    // Повтор того же намерения с прежним неполным форматом не должен создавать новое сообщение.
+    // Сохраняем маленький кадр вместе с сообщением и повторяем старую команду с неполными
+    // сведениями. Номер сообщения сохраняется, а кнопка передачи правильно исчезает после чёткого
+    // кадра.
     @Test
     fun metadataSurvivesStorageLegacyRetryAndBlockedThumbnail() {
         val h = RepositoryHarness.open(File(context.cacheDir, "metadata-" + UUID.randomUUID()))
@@ -1521,7 +1606,8 @@ class MediaStoreTest {
         h.close()
     }
 
-    // Закрытый владелец не должен принять позднюю выдачу, ответ отмены остаётся единственным.
+    // Удерживаем место воспроизведения при запросе камеры. Выдаём его только после подтверждения
+    // остановки. Поздний ответ закрытому владельцу возвращает одну отмену.
     @Test
     fun captureAdmissionWaitsForProvenReleaseAndRejectsLateGrant() {
         val admission = MediaAdmission()
@@ -1584,6 +1670,8 @@ class MediaStoreTest {
         assertEquals(0, late.captureActiveCount)
     }
 
+    // Имитируем ошибку записи и потерю ответа после сохранения. Оригинал со ссылкой остаётся,
+    // повтор не удваивает сообщение, а база проходит проверку целостности.
     @Test
     fun crashRecoveryDiskFullAndLostReplyPreserveReferencedOriginal() {
         val h = RepositoryHarness.open(File(context.cacheDir, "media-" + UUID.randomUUID()))
@@ -1614,8 +1702,8 @@ class MediaStoreTest {
         h.close()
     }
 
-    // Устаревшая привязка передачи кадра не должна принять результат и должна освободить его один
-    // раз.
+    // Читаем уменьшенное настоящее фото и отдельно проверяем повреждение, запрет доступа и старый
+    // кадр. Ошибки различаются, а непринятый рисунок освобождается.
     @Test
     fun realImageDownsampleCorruptionPermissionAndStaleMailbox() {
         val h = RepositoryHarness.open(File(context.cacheDir, "media-" + UUID.randomUUID()))
@@ -1680,6 +1768,8 @@ class MediaStoreTest {
         var closeCount = 0
             private set
 
+        // Отмечаем первое закрытие проверочного рисунка и освобождаем его память. Счётчик
+        // подтверждает уход результата после отмены.
         @Synchronized
         fun close() {
             if (closeCount == 0) {
@@ -1690,8 +1780,8 @@ class MediaStoreTest {
         }
     }
 
-    // Каждый созданный результат должен освободиться один раз без успешной публикации после
-    // закрытия.
+    // Занимаем оба чтения и переполняем очередь. Она должна удержать шестнадцать ожидающих и
+    // закрыть возвращённые рисунки по одному разу.
     @Test
     fun decodeQueueHasTwoWorkersAndSixteenPending() {
         val queue = MediaDecodeQueue()
@@ -1730,6 +1820,8 @@ class MediaStoreTest {
         assertTrue(probes.all { it.closeCount == 1 })
     }
 
+    // Создаём картинки с разной записанной ориентацией и сверяем углы и размеры после чтения.
+    // Двойное отражение или поворот сразу изменят ожидаемые цвета.
     @Test
     fun allEightEXIFOrientationsAreAppliedOnce() {
         val h = RepositoryHarness.open(File(context.cacheDir, "orient-" + UUID.randomUUID()))
@@ -1810,6 +1902,8 @@ class MediaStoreTest {
         h.close()
     }
 
+    // Проверяем отказ доступа к исходнику и запрет выхода за рабочий каталог при восстановлении.
+    // Файл в другом каталоге сохраняет содержимое.
     @Test
     fun unreadableSourceAndRecoveryCannotFollowDirectorySymlink() {
         val h = RepositoryHarness.open(File(context.cacheDir, "permission-" + UUID.randomUUID()))
@@ -1846,6 +1940,8 @@ class MediaStoreTest {
         h.close()
     }
 
+    // Готовим несколько настоящих видов вложений, сохраняем сообщения и читаем их первые кадры.
+    // Хранилище должно сохранить вид и число файлов.
     @Test
     fun nativeMediaFormatsStagePersistAndDecodePosters() {
         val h = RepositoryHarness.open(File(context.cacheDir, "formats-" + UUID.randomUUID()))
@@ -1897,6 +1993,8 @@ class MediaStoreTest {
         h.close()
     }
 
+    // Подставляем готовый рисунок в системные команды показа и закрываем хранилище. Рисунок живёт
+    // до снятия слоя и затем освобождается один раз.
     @Test
     fun nativeDisplayListLeaseSurvivesCacheCloseUntilDetach() {
         val h = RepositoryHarness.open(File(context.cacheDir, "lease-" + UUID.randomUUID()))
@@ -1926,6 +2024,8 @@ class MediaStoreTest {
         h.close()
     }
 
+    // Закрываем историю после подготовки фото и сверяем расход памяти. Неиспользуемые рисунки
+    // должны уйти вместе с чатом.
     @Test
     fun chatCloseReleasesIdleDecodedCache() {
         val h = RepositoryHarness.open(File(context.cacheDir, "chat-cache-" + UUID.randomUUID()))
@@ -1968,8 +2068,8 @@ class MediaStoreTest {
         }
     }
 
-    // После такого прохода сохранённый декодированный набор не должен расти до всех просмотренных
-    // изображений.
+    // Читаем много разных кадров подряд и проверяем предел памяти. Быстрая прокрутка не должна
+    // сохранять все уже просмотренные изображения.
     @Test
     fun serialScrollBurstKeepsOnlySmallDecodedHotSet() {
         val h = RepositoryHarness.open(File(context.cacheDir, "hot-set-" + UUID.randomUUID()))

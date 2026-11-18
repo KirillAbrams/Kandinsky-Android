@@ -1,3 +1,6 @@
+// Создаём отдельную местную базу и обычное хранилище чатов для проверок. Доступны старая схема,
+// повторное открытие и контроль целостности.
+
 package dev.kirill.kandinsky.chat.support
 
 import android.database.sqlite.SQLiteDatabase
@@ -6,10 +9,14 @@ import dev.kirill.kandinsky.chat.storage.*
 import java.io.File
 
 class RepositoryHarness
+// Храним папку, открытую базу и настройки ошибок. Создаём рабочее хранилище поверх того же
+// соединения, чтобы проверки выполняли обычные операции приложения.
 private constructor(val root: File, val store: SQLiteStore, val faults: RepositoryFaults) {
     val repo = SQLiteChatRepository(store)
 
     companion object {
+        // Записываем старую схему и начальные данные напрямую в выбранную папку. Так проверка
+        // переноса получает настоящее старое состояние перед запуском текущих изменений.
         fun createLegacy(root: File) {
             root.mkdirs()
             val sql =
@@ -47,6 +54,8 @@ private constructor(val root: File, val store: SQLiteStore, val faults: Reposito
             }
         }
 
+        // Открываем отдельную базу и добавляем начальный чат, если он ещё отсутствует. Повторное
+        // открытие сохраняет прежние записи и счётчики.
         fun open(root: File, faults: RepositoryFaults = RepositoryFaults()): RepositoryHarness {
             val store = awaitResult<SQLiteStore> { SQLiteStore.open(root, faults, it) }
             awaitResult<Unit> { cb ->
@@ -65,18 +74,26 @@ private constructor(val root: File, val store: SQLiteStore, val faults: Reposito
         }
     }
 
+    // Ждём подтверждения закрытия базы. Следующая проверка может заново открыть файлы после
+    // завершения прежних действий.
     fun close() {
         awaitResult<Unit> { store.close(it) }
     }
 
+    // Закрываем соединение и открываем его снова в той же папке с теми же настройками ошибок. Это
+    // позволяет проверить данные после перезапуска хранилища.
     fun reopen(): RepositoryHarness {
         close()
         return open(root, faults)
     }
 
+    // Читаем число сообщений в указанном чате. Отдельный контрольный запрос помогает сравнить
+    // сохранённые строки с тем, что показала проверяемая операция.
     fun messageCount(chatID: Long): Int =
         rawScalar("SELECT COUNT(*) FROM messages WHERE chatId=$chatID")
 
+    // Открываем местную базу только для чтения и возвращаем первое целое число запроса. После
+    // чтения закрываем и ответ, и своё соединение.
     fun rawScalar(sql: String): Int =
         SQLiteDatabase.openDatabase(
                 File(root, "chat.sqlite3").path,
@@ -90,6 +107,8 @@ private constructor(val root: File, val store: SQLiteStore, val faults: Reposito
                 }
             }
 
+    // Читаем итог системной проверки целостности через своё соединение. Этот ответ нужен после
+    // переноса или нагрузки, когда одного числа сообщений мало.
     fun integrity(): String =
         SQLiteDatabase.openDatabase(
                 File(root, "chat.sqlite3").path,

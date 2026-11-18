@@ -1,3 +1,6 @@
+// Замеряем прокрутку настоящей серверной истории на устройстве и наблюдаем готовность экрана,
+// нагрузку и освобождение после выхода.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.Intent
@@ -16,6 +19,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NetworkScrollProbeTest {
+    // Открываем указанный чат и сверяем сохранённый профиль, затем листаем историю обычными
+    // жестами. Отчёт связывает кадры, доставку касаний и рост числа загруженных строк.
     @Test
     fun pageThroughRealServerHistory() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -60,6 +65,8 @@ class NetworkScrollProbeTest {
             preceding = checkNotNull(activity.window.callback)
             owned =
                 object : Window.Callback by preceding {
+                    // В фазе прокрутки сохраняем данные касания и проверяем, что оно относится к
+                    // замеру. Затем отдаём его штатному окну без подмены движения.
                     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                         if (phase.get() == "scroll") {
                             if (inputLedger.size < 20000)
@@ -104,6 +111,8 @@ class NetworkScrollProbeTest {
         i.runOnMainSync {
             activity.window.addOnFrameMetricsAvailableListener(listener, Handler(observer.looper))
         }
+        // Ищем настоящий экран истории обходом вложенных элементов. Он нужен для чтения положения
+        // и счётчиков текущей ленты.
         fun locate(view: View): ChatScrollHost? {
             if (view is ChatScrollHost) return view
             if (view is ViewGroup)
@@ -112,6 +121,8 @@ class NetworkScrollProbeTest {
                 }
             return null
         }
+        // Читаем нагрузку, память, нагрев, число слоёв и работающих проигрывателей. Положение
+        // истории читаем на основном потоке и сохраняем наблюдение в отчёт.
         fun sample() {
             val memory = Debug.MemoryInfo()
             Debug.getMemoryInfo(memory)
@@ -165,6 +176,8 @@ class NetworkScrollProbeTest {
             samples.put(value)
             File(output, "progress.json").writeText(value.toString())
         }
+        // В течение заданного времени снимаем показания раз в секунду без жестов. Отдельная фаза
+        // даёт сравнить покой до прокрутки и после неё.
         fun idle(name: String, seconds: Int) {
             phase.set(name)
             val start = System.nanoTime()

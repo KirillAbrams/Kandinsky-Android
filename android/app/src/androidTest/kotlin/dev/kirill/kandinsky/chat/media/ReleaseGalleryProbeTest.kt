@@ -1,3 +1,7 @@
+// Измерительная проверка полноэкранного просмотра на собственном устройстве в обычной выпускной
+// сборке. Она перелистывает существующий чат и сверяет выбранную позицию и число окон при
+// возврате.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.content.Intent
@@ -12,6 +16,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReleaseGalleryProbeTest {
+    // Запускаем наблюдение только с явным разрешением проверки. Открываем подготовленное
+    // вложение, выполняем движения в обе стороны и проверяем, что галерея остаётся в одном окне.
     @Test
     fun pageExistingPublicMediaForwardAndBack() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -34,6 +40,8 @@ class ReleaseGalleryProbeTest {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 }
             ) as dev.kirill.kandinsky.chat.app.MainActivity
+        // Ищем элемент по его постоянному имени с ограниченным ожиданием. Если не нашли,
+        // оставляем снимок для разбора того экрана, который действительно показан.
         fun find(id: String): UiObject2 =
             checkNotNull(device.wait(Until.findObject(By.res(id)), 15000)) {
                 device.takeScreenshot(
@@ -84,6 +92,8 @@ class ReleaseGalleryProbeTest {
                 .minBy { kotlin.math.abs(page.rows.indexOf(it) - page.rows.size / 2) }
         lateinit var host: dev.kirill.kandinsky.chat.rendering.ChatScrollHost
         i.runOnMainSync {
+            // Обходим вложенные виды, чтобы найти область истории после загрузки её указателя.
+            // Нужный узел может находиться под несколькими обёртками.
             fun descendants(v: android.view.View): List<android.view.View> =
                 if (v is android.view.ViewGroup)
                     (0 until v.childCount).flatMap {
@@ -124,9 +134,13 @@ class ReleaseGalleryProbeTest {
         find("viewer.pages")
         var windows = 0
         i.runOnMainSync { windows = WindowInspector.getGlobalWindowViews().size }
+        // Читаем имя выбранной страницы в потоке экрана. Оно позволяет отличить смену файла от
+        // одного движения пальца.
         fun selectedID(): String {
             var id = ""
             i.runOnMainSync {
+                // Собираем дочерние элементы открытого окна, чтобы определить текущую страницу по
+                // показу. Прямые дети могут содержать весь просмотр внутри одной области.
                 fun descendants(v: android.view.View): List<android.view.View> =
                     if (v is android.view.ViewGroup)
                         (0 until v.childCount).flatMap {
@@ -153,6 +167,8 @@ class ReleaseGalleryProbeTest {
                 check(!exists())
                 mkdirs()
             }
+        // Сохраняем снимок состояния на стороне проверки и отпускаем изображение. Это оставляет
+        // доказательство видимого кадра без удержания лишней памяти.
         fun shot(name: String) {
             val b = checkNotNull(i.uiAutomation.takeScreenshot())
             try {

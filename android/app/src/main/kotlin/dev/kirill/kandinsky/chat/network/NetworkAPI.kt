@@ -1,3 +1,7 @@
+// Выполняет сетевые запросы выбранного профиля, передаёт изображения и видео и открывает
+// постоянное соединение. Ограничения ответов и проверка файлов помогают сохранить память и
+// целостность данных.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.media.MediaCancellation
@@ -19,15 +23,20 @@ import org.json.JSONObject
 class NetworkFailure(val status: Int, val code: String) :
     IOException("Network request failed ($status, $code)")
 
+// Основное создание собирает профиль и необязательные подмены сети для обычной работы и проверок.
 class NetworkAPI private constructor(
     private val profile: NetworkProfile?,
     private val onRequestFinished: (() -> Unit)?,
     private val configuredClient: OkHttpClient?,
     private val configuredSockets: WebSocket.Factory?,
 ) {
+    // Создаёт обычный сетевой клиент с профилем и отметкой о законченном запросе. Связь готовится
+    // по мере первого использования.
     constructor(profile: NetworkProfile?, onRequestFinished: (() -> Unit)? = null) :
         this(profile, onRequestFinished, null, null)
 
+    // Подставляет заданный клиент и способ открыть постоянную связь. Это позволяет проверить
+    // запросы без рабочего сервера.
     internal constructor(
         profile: NetworkProfile?,
         client: OkHttpClient,
@@ -47,8 +56,9 @@ class NetworkAPI private constructor(
                 onRequestFinished?.let { finished ->
                     builder.eventListener(
                         object : EventListener() {
-                            // Этот сигнал относится к работе соединения и не означает завершение
-                            // генерации на сервере
+                            // Сообщает о завершении работы соединения. Ответ от сервера может
+                            // прийти раньше окончания генерации, поэтому сигнал лишь учитывает
+                            // сетевую передачу.
                             override fun callEnd(call: Call) {
                                 finished()
                             }
@@ -70,6 +80,8 @@ class NetworkAPI private constructor(
             .build()
     }
 
+    // Добавляет путь службы к адресу из сборки и прикладывает ключ профиля. Проверка начала пути
+    // защищает от ошибочной отправки по произвольному адресу.
     private fun request(path: String): Request.Builder {
         require(path.startsWith("/v1/"))
         return Request.Builder().url(NetworkProfile.ORIGIN + path).also { builder ->
@@ -77,18 +89,24 @@ class NetworkAPI private constructor(
         }
     }
 
+    // Выбирает обработку регистрации или восстановления и передаёт адресу сервера почту. Это не
+    // смешивает коды двух разных действий.
     fun requestEmailCode(email: String, recovery: Boolean) {
         initialize()
         val path = if (recovery) "/v1/demo/password-reset/request" else "/v1/demo/register/request"
         json(path, JSONObject().put("email", email))
     }
 
+    // Отправляет адрес, код и новый пароль, чтобы сервер подтвердил смену. Неудачный ответ
+    // возвращается вызывающей стороне.
     fun resetPassword(email: String, code: String, password: String) {
         initialize()
         val body = JSONObject().put("email", email).put("code", code).put("password", password)
         json("/v1/demo/password-reset/confirm", body)
     }
 
+    // Использует почту и пароль, а при наличии кода завершает регистрацию. Возвращает разобранный
+    // профиль, который можно сохранить для следующего запуска.
     fun signIn(email: String, password: String, registrationCode: String? = null): NetworkProfile {
         initialize()
         val path = if (registrationCode == null) "/v1/demo/login" else "/v1/demo/register"
@@ -97,15 +115,19 @@ class NetworkAPI private constructor(
         return NetworkProfile.decode(json(path, body))
     }
 
+    // Собирает метод и тело запроса, даже если выбранное действие передаёт сведения только в
+    // адресе. Общий разбор ответа проверяет границы и ошибки.
     fun json(path: String, value: JSONObject? = null, method: String? = null): JSONObject {
         val builder = request(path)
         val body = value?.toString()?.toRequestBody("application/json".toMediaType())
-        // OkHttp требует тело даже у POST, который передаёт только номер в адресе.
+        // Библиотека требует тело для отправки запроса. Номер уже передан в адресе.
         val requestBody = if (method == "POST" && body == null) ByteArray(0).toRequestBody() else body
         if (method != null) builder.method(method, requestBody) else if (body != null) builder.post(body)
         return executeJSON(builder.build())
     }
 
+    // Связывает отмену с запросом, читает ограниченный ответ порциями и проверяет состояние.
+    // Слишком большой ответ прерывается, чтобы не занять память целиком.
     private fun executeJSON(
         request: Request,
         transfer: MediaCancellation? = null,
@@ -140,6 +162,9 @@ class NetworkAPI private constructor(
         }
     }
 
+    // Проверяет размер и считает контрольную сумму файла небольшими порциями. Передаёт номер
+    // чата, исходника или устройства по необходимости. Для большого исходника выбирает соединение
+    // с более долгим ожиданием.
     fun upload(
         file: File,
         mime: String,
@@ -174,15 +199,24 @@ class NetworkAPI private constructor(
             if (transfer == null) original
             else
                 object : RequestBody() {
+                    // Берёт тип из исходного файла, который оборачивает счётчик отправки. Сервер
+                    // получает тот же тип, что и при отправке без подсчёта.
                     override fun contentType() = original.contentType()
 
+                    // Сообщает известное число байтов файла. По нему сервер проверяет полноту и
+                    // может показать ход передачи.
                     override fun contentLength() = size
 
+                    // Передаёт исходные байты через счётчик и сбрасывает его буфер в конце. Иначе
+                    // последняя порция могла бы не дойти после возврата из записи.
                     override fun writeTo(sink: BufferedSink) {
                         var sent = 0L
                         var last = 0L
                         val counted =
                             object : ForwardingSink(sink) {
+                                    // Записывает очередную порцию и добавляет её длину к
+                                    // счётчику. Сообщает долю с ограничением частоты и при
+                                    // завершении, чтобы не обновлять экран на каждом блоке.
                                     override fun write(source: Buffer, byteCount: Long) {
                                         super.write(source, byteCount)
                                         sent += byteCount
@@ -205,6 +239,9 @@ class NetworkAPI private constructor(
         )
     }
 
+    // Берёт готовый файл или пишет во временное место, пока проверяет длину и контрольную сумму.
+    // Отмена или отказ удаляют временный файл, а готовый появляется по постоянному пути только
+    // после проверки.
     fun download(
         blob: String,
         destination: File,
@@ -270,6 +307,8 @@ class NetworkAPI private constructor(
         }
     }
 
+    // Проверяет границы и читает только указанный отрезок без сжатия. Сверяет ответ и точное
+    // число байтов, чтобы проигрыватель не получил полный файл или обрыв вместо части.
     fun range(
         blob: String,
         start: Long,
@@ -318,14 +357,13 @@ class NetworkAPI private constructor(
         }
     }
 
-    // Использует ту же сессию владельца, что и обычные запросы, чтобы команды и история относились
-    // к одной учётной записи
+    // Открывает постоянное соединение от того же владельца, что и обычные запросы. Оно получает
+    // изменения именно для текущего сеанса.
     fun socket(listener: WebSocketListener): WebSocket =
         (configuredSockets ?: socketClient).newWebSocket(request("/v1/ws").build(), listener)
 
-    // Отдельное чтение участков видео тоже прекращается, чтобы закрытая учётная запись больше не
-    // продолжала
-    // старые запросы.
+    // Останавливает запросы, освобождает соединения и закрывает очередь, если клиент уже создан.
+    // Это прекращает и незавершённое чтение медиа.
     fun close() {
         if (clientInitialized) {
             client.dispatcher.cancelAll()
@@ -339,6 +377,8 @@ class NetworkAPI private constructor(
     // остановки
     private var clientInitialized = false
 
+    // Готовит клиент в рабочем потоке и помечает его созданным. Позднее закрытие не поднимет
+    // новый клиент только ради его остановки.
     fun initialize() {
         client
         clientInitialized = true

@@ -1,3 +1,6 @@
+// Проверяем быстрый поиск видимых строк, ограничение объёма загруженной истории и сохранение
+// точки чтения.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -6,9 +9,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HistoryIndexTest {
+    // Собираем строку с заданной высотой и номером, который задаёт порядок. По этим данным можно
+    // заранее вычислить положение.
     private fun row(id: Long, height: Double = 44.0) = IndexedRow(id, OrderKey(id, id), height, 1)
 
-    // После закрытия окно не должно принимать позднюю страницу.
+    // Добавляем запись выше, меняем высоту и проверяем удаление и запрет повторного номера. Окно
+    // ограничивает число строк и отклоняет страницу, пришедшую после закрытия.
     @Test
     fun prependDeleteResizeAndPageBounds() {
         val index = HistoryIndex()
@@ -54,9 +60,12 @@ class HistoryIndexTest {
         assertEquals(0, window.loadedCount)
     }
 
-    // Слишком большой, повторный или чужой набор не должен заменить действующие строки.
+    // Заполняем окно известными сообщениями и пробуем подать слишком большой набор, дубли и чужой
+    // чат. Сохранённые строки остаются на месте, а закрытое окно остаётся пустым.
     @Test
     fun seedKnownRowsPreservesBoundsAndRejectsInvalidOrClosedSeeds() {
+        // Создаём сообщение с заданным номером и владельцем истории. Возможность подставить
+        // другой чат нужна для проверки изоляции окна.
         fun message(id: Long, chat: Long = 4) =
             Message(
                 id,
@@ -88,6 +97,8 @@ class HistoryIndexTest {
         assertEquals(0, window.loadedCount)
     }
 
+    // Сверяем быстрый расчёт с заранее сохранёнными ответами операций. На ста тысячах строк
+    // проверяем достижение конца, предел числа видимых частей и очистку.
     @Test
     fun independentLinearOracleAndHundredThousandIndex() {
         val index = HistoryIndex()

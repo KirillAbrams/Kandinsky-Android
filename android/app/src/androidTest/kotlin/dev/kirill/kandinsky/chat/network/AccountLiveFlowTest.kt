@@ -1,3 +1,6 @@
+// Проверяет путь от запуска приложения Андроида до двух исходных чатов с помощью элементов
+// экрана. Для этого нужен уже сохранённый вход.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.Intent
@@ -10,6 +13,8 @@ import org.junit.Assume.assumeNotNull
 import org.junit.Test
 
 class AccountLiveFlowTest {
+    // Запускает приложение, открывает боковую панель и нажимает на оба названия по очереди.
+    // Появление поля ввода подтверждает переход в чат.
     @Test
     fun existingAccountCanOpenBothOriginalHistories() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()

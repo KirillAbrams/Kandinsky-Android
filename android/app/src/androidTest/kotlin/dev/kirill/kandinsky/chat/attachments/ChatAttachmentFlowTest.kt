@@ -1,3 +1,6 @@
+// Проверяет недавние вложения через обычную панель чата Андроида. Для запуска нужна история с
+// ранее загруженными файлами.
+
 package dev.kirill.kandinsky.chat.attachments
 
 import android.os.SystemClock
@@ -9,6 +12,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatAttachmentFlowTest {
+    // Выбирает и убирает снимок, затем проверяет уменьшение оставшегося времени ролика, разворот
+    // и возврат. Ввод снова виден без отправленного запроса.
     @Test
     fun recentPhotoCanBeRemovedAndRecentVideoPlaysWithoutSendingAPrompt() {
         val ui = AppFlowDriver()
@@ -16,6 +21,8 @@ class ChatAttachmentFlowTest {
         ui.openChat("Плотная медиалента")
         ui.find(By.res("chat.compose")).click()
 
+        // Находит действие для недавнего файла, при необходимости прокручивая панель. Так тест
+        // нажимает именно нужную строку.
         fun pickRecent(title: String) {
             ui.find(By.res("composer.plus")).click()
             val choice = By.desc(title)

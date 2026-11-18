@@ -1,3 +1,6 @@
+// Даты в ленте на андроиде хранят готовый рисунок подписи и фона. Прокрутка двигает его по
+// указанному месту, а системе доступности отдаёт прямоугольник с тем же текстом.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -19,8 +22,13 @@ class ScrollingDays {
     private var minute = Long.MIN_VALUE
     private var today = Calendar.getInstance()
     val liveCount
+        // Показываем число удерживаемых заголовков дня. Проверки убеждаются, что прокрутка
+        // освобождает ушедшие плашки.
         get() = nodes.size
 
+    // Обновляем понятие сегодняшнего дня, измеряем нужные даты и удаляем ушедшие. Записываем
+    // новый рисунок при смене текста, размера или оформления. Для оставшихся меняем только
+    // положение.
     fun apply(
         days: List<HistoryDay>,
         offset: Double,
@@ -88,10 +96,14 @@ class ScrollingDays {
         }
     }
 
+    // Рисуем готовые плашки для переданной области. Им не нужно повторно измерять или составлять
+    // подпись на каждом кадре.
     fun draw(c: Canvas) {
         for (node in nodes.values) c.drawRenderNode(node.native)
     }
 
+    // Рисуем фон и центрированную дату по виду чата. Рамка из измерения дальше используется и для
+    // озвучивания.
     private fun drawBadge(c: Canvas, node: Node, x: Float, y: Float, d: Float) {
         val radius = if (node.studio) 12 * d else node.height / 2f
         c.drawRoundRect(
@@ -115,6 +127,8 @@ class ScrollingDays {
         )
     }
 
+    // Освобождаем записи рисования всех плашек. Повторное открытие соберёт только даты новой
+    // видимой области.
     fun close() {
         nodes.values.forEach { it.native.discardDisplayList() }
         nodes.clear()

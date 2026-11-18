@@ -1,3 +1,6 @@
+// Ведёт черновик и сведения о принятых исходниках, обновляет строки загрузок и убирает удалённые
+// файлы. Раздельные этапы оставляют работу с файлами вне потока экрана.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -7,9 +10,13 @@ import java.util.UUID
 import org.json.JSONObject
 
 internal class SyncAttachments(private val sync: NetworkSync) {
+    // Читает сохранённый черновик в очереди базы. Экран получает его после открытия и может
+    // восстановить введённый текст.
     fun savedStudioDraft(completion: (Result<StudioDraftRecord?>) -> Unit) =
         sync.store.submit(StudioDraftStorage::load, completion)
 
+    // Загружает старую запись и заменяет её новой в одном изменении базы. Возвращает старый ввод,
+    // чтобы переключение черновика не лишило экран возможности его сохранить.
     fun beginStudioDraft(
         record: StudioDraftRecord,
         completion: (Result<StudioDraftRecord?>) -> Unit,
@@ -25,6 +32,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
             completion,
         )
 
+    // Записывает изменение только для всё ещё активного номера. Запоздалое сохранение с другого
+    // экрана не должно испортить новый черновик.
     fun saveStudioDraft(draft: Draft, identity: UUID, completion: (Result<Unit>) -> Unit) =
         sync.store.submit(
             { db ->
@@ -36,6 +45,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
             completion,
         )
 
+    // Убирает запись по проверенному номеру. Если пока шла отправка открыли другой черновик, его
+    // содержимое остаётся.
     fun finishStudioDraft(identity: UUID, completion: (Result<Unit>) -> Unit) =
         sync.store.submit(
             { db ->
@@ -50,6 +61,9 @@ internal class SyncAttachments(private val sync: NetworkSync) {
             completion,
         )
 
+    // Проверяет размер порции, поля и отсутствие одинаковых номеров, затем передаёт список
+    // экрану. Сверяет поколение соединения, чтобы позднее сообщение не вернуло прежние строки
+    // после входа.
     fun acceptStudioTransfers(value: JSONObject) {
         val connection = sync.connectionEpoch
         val rows = value.getJSONArray("uploads")
@@ -76,6 +90,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
         }
     }
 
+    // Запрашивает недавние файлы в рабочей очереди и возвращает номера и размеры в поток экрана.
+    // Это позволяет выбирать принятый исходник без загрузки его содержимого.
     fun recentStudioUploads(completion: (Result<List<StudioUpload>>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -95,6 +111,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
         }
     }
 
+    // Связывает местное вложение с номерами оригинала и копии в базе. Очередь отправки может
+    // найти эти сведения после перезапуска.
     fun rememberStudioUpload(
         attachmentID: String,
         blobID: String,
@@ -113,7 +131,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
         }
     }
 
-    // Номер вложения сохраняется и после нового входа, поэтому сервер узнает повторную загрузку.
+    // Передаёт оригинал под тем же номером в выбранный чат, затем для фото готовит копию, если
+    // отправку не отменили. Возвращает оба номера для отдельной записи в базу.
     fun uploadStudioSource(
         draft: AttachmentDraft,
         file: File,
@@ -134,6 +153,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
 
     private var removingMedia = false
 
+    // Извлекает порцию отметок, удаляет копии в рабочей очереди и только потом снимает прежние
+    // отметки. Если запись не прошла, будущий проход сможет повторить очистку.
     fun drainRemovedStudioMedia() {
         val media = sync.studioMedia ?: return
         if (sync.closed || removingMedia) return
@@ -182,6 +203,8 @@ internal class SyncAttachments(private val sync: NetworkSync) {
 internal object StudioDraftStorage {
     const val KEY = "studio.newDraft"
 
+    // Достаёт запись черновика, проверяет число байтов и разбирает номер и ввод. Пустая база
+    // здесь означает, что восстанавливать нечего.
     fun load(db: android.database.sqlite.SQLiteDatabase): StudioDraftRecord? =
         db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf(KEY)).use { rows ->
             if (!rows.moveToFirst()) null
@@ -196,6 +219,8 @@ internal object StudioDraftStorage {
             }
         }
 
+    // Собирает номер и ввод в одну запись и проверяет предел до сохранения. Слишком большой ввод
+    // не должен вытеснять место других данных.
     fun write(db: android.database.sqlite.SQLiteDatabase, record: StudioDraftRecord) {
         val raw =
             JSONObject()

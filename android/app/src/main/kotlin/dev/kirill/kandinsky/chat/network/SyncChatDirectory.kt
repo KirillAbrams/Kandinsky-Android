@@ -1,3 +1,6 @@
+// Обновляет список чатов, соединяет сетевые ответы с местной базой и уведомляет экран. Проверяет
+// номер соединения, чтобы старые ответы не применялись после восстановления связи.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.net.Uri
@@ -10,12 +13,17 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
     private var refreshing = false
     private var refreshPending = false
 
+    // Объединяет одновременные запросы обновления и запоминает известные номера и границу
+    // событий. При ошибке чтения просит восстановить соединение, чтобы следующий проход начинался
+    // с верного состояния.
     fun refreshStudioDirectory() {
         refreshPending = true
         if (refreshing || sync.closed || !sync.active) return
         refreshPending = false
         refreshing = true
         val connection = sync.connectionEpoch
+        // Снимает признак текущей загрузки списка и запускает новый проход, если за это время
+        // пришёл запрос. Иначе последнее обновление могло бы потеряться.
         fun complete() {
             refreshing = false
             if (refreshPending) refreshStudioDirectory()
@@ -35,6 +43,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Читает недавние чаты и отдельно проверяет известные номера, включая архивные. Передаёт
+    // снимок в базу только для действующего соединения и при отсутствии более нового запроса.
     private fun loadDirectory(
         known: List<Long>, connection: Int, startedAtCursor: Long, complete: () -> Unit,
     ) {
@@ -81,6 +91,9 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Отправляет постоянный номер черновика и проверяет, что сервер вернул карточку с номером
+    // чата. Сохраняет её и передаёт результат в поток экрана после записи, чтобы чат можно было
+    // сразу открыть.
     fun createStudioThread(threadID: UUID, completion: (Result<Long>) -> Unit) {
         sync.worker.post {
             if (sync.closed) {
@@ -122,9 +135,13 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Читает последнюю сохранённую страницу вне потока экрана. Телефон может показать прежний
+    // список, пока отвечает сервер.
     fun cachedStudioRecent(completion: (Result<StudioRecentPage>) -> Unit) =
         sync.store.submit(sync.cache::studioRecent, completion)
 
+    // Кодирует раздел и поисковую строку и запрашивает одну порцию. Возвращает карточки в поток
+    // экрана, чтобы чтение сети не прерывало прокрутку.
     fun studioThreads(
         view: String,
         query: String,
@@ -145,6 +162,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Принимает карточку из поиска или списка и передаёт её в общую запись. При закрытом сеансе
+    // работа не меняет экран прежнего владельца.
     fun admitStudioThread(thread: StudioThread, completion: (Result<Unit>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -152,6 +171,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Сохраняет карточку вместе с прежними служебными отметками списка. При успешной записи
+    // отправляет экрану изменения, а ошибка возвращается вызывающему коду.
     private fun mergeStudioThread(thread: StudioThread, completion: (Result<Unit>) -> Unit) {
         sync.database({
             sync.cache.mergeChats(
@@ -164,6 +185,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // Отправляет изменение выбранного чата и записывает ответ общей функцией обновления карточки.
+    // Если сервер отказал, передаёт ошибку и не показывает изменение как выполненное.
     fun changeStudioThread(id: Long, change: JSONObject, completion: (Result<Unit>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -178,6 +201,8 @@ internal class SyncChatDirectory(private val sync: NetworkSync) {
         }
     }
 
+    // После подтверждения сервером убирает местный чат и собирает удалённые строки одной записью.
+    // Событие после записи помогает экрану не показать прежние сообщения при возврате.
     fun deleteStudioThread(id: Long, completion: (Result<Unit>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post

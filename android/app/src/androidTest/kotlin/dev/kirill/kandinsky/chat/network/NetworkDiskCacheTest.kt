@@ -1,3 +1,6 @@
+// Проверяем чтение, обновление времени и очистку сохранённых файлов. Отдельные сценарии читают
+// настоящий диапазон видео через существующий аккаунт.
+
 package dev.kirill.kandinsky.chat.network
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,6 +20,8 @@ class NetworkDiskCacheTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Подготавливаем подключение, находим нужный чат и читаем до 128 его последних строк. Ответ
+    // нужен, чтобы выбрать реальный файл для сетевого сценария.
     private fun history(api: NetworkAPI, profile: NetworkProfile): org.json.JSONArray {
         api.initialize()
         val chat =
@@ -31,8 +36,8 @@ class NetworkDiskCacheTest {
         return api.json("/v1/chats/$chat/history?limit=128").getJSONArray("messages")
     }
 
-    // Время файла должно обновиться, чтобы нужная сохранённая копия не считалась давно
-    // неиспользуемой.
+    // Ставим файлу старое время и читаем его из местного хранилища. Байты должны совпасть, время
+    // обновиться, а число сетевых запросов остаться нулевым.
     @Test
     fun diskHitRefreshesLastUseWithoutOpeningNetwork() {
         val root = File(context.cacheDir, "disk-hit-" + UUID.randomUUID()).apply { mkdirs() }
@@ -53,7 +58,8 @@ class NetworkDiskCacheTest {
         }
     }
 
-    // По настоящему серверному вложению одновременно запрашивает один исходник из двух потоков.
+    // Одновременно запрашиваем оригинал в двух потоках и сверяем один сохранённый файл и одно
+    // скачивание. После очистки памяти файл должен снова открыться с диска.
     @Test
     fun concurrentRemoteOpensReuseFileAfterRamClear() {
         val profile = NetworkCredentials(context).load()
@@ -145,6 +151,8 @@ class NetworkDiskCacheTest {
         }
     }
 
+    // Удаляем оригинал, кадр и части одного вложения из местного хранилища. Соседний файл
+    // остаётся, а начатое чтение удалённого вложения больше не разрешено.
     @Test
     fun studioRemovalEvictsOriginalPosterAndRangesWithoutTouchingAnotherBlob() {
         val h =
@@ -156,6 +164,8 @@ class NetworkDiskCacheTest {
         val other = "c".repeat(32)
         val removal = checkNotNull(StudioMediaRemoval.parse(blob, preview))
         val relative = "remote/$blob.mp4"
+        // Создаём файл по заданному пути в местной папке проверки. Так можно отдельно разместить
+        // оригинал, уменьшенную копию и соседнее вложение.
         fun file(path: String) =
             File(h.root, "media/$path").apply {
                 parentFile!!.mkdirs()
@@ -185,6 +195,8 @@ class NetworkDiskCacheTest {
         }
     }
 
+    // С существующим входом читаем первые 4096 байт настоящего видео и сверяем его заголовок. Тот
+    // же запрос без входа должен завершиться ошибкой.
     @Test
     fun liveRangeUsesAuthenticated206AndRejectsMissingSession() {
         val profile =

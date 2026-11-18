@@ -1,3 +1,7 @@
+// Экран переписки на андроиде соединяет ленту, черновик и меню генерации. Он раскладывает поле и
+// нарисованные кнопки вокруг истории, передаёт их нажатия в состояние и отдельные обработчики.
+// Для средств доступности те же кнопки получает система озвучивания.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.app.Activity
@@ -29,15 +33,20 @@ internal class ConversationChrome(
     private val services: ConversationServices? = null,
     private val back: (() -> Unit)?,
 ) : ViewGroup(context), KandinskyInsetHost {
+    // Создаём вариант экрана без номера и обработчика возврата. Он нужен там, где показывается
+    // только оформление и поле, а открывать сохранённую переписку не требуется.
     constructor(context: Context) : this(context, 0L, back = null)
 
     private val timeline = ChatScrollHost(context)
     private var activeGenerationID: Long? = null
     private var generationLookup = 0
     private val isStoppingGeneration
+        // По номеру активного задания определяем, должна ли правая кнопка останавливать
+        // генерацию. По этому же признаку выбираем рисунок и название действия.
         get() = activeGenerationID != null
 
-    // Поздний ответ о задании может прийти после перехода в другой чат.
+    // Запрашиваем последнее активное задание у слоя связи. Принимаем ответ только с текущим
+    // номером проверки, иначе запоздалое чтение могло бы вернуть устаревшую кнопку остановки.
     private fun refreshActiveGeneration() {
         val network = services?.network ?: return
         if (chatID <= 0L) return
@@ -59,6 +68,8 @@ internal class ConversationChrome(
     private var networkTitle: String? = null
     private var networkStatus: String? = null
 
+    // Обновляем состояние связи и оповещаем владельца передачи. При обрыве он приостанавливает
+    // загрузку, а при восстановлении может продолжить её с сохранённого состояния.
     fun setNetworkStatus(value: String) {
         networkStatus = value
         if (value == "В сети") attachments?.resumePendingUpload(reconnected = true)
@@ -100,6 +111,9 @@ internal class ConversationChrome(
     private val studioUploadBar = RectF()
     var prepareSourceDraft: (((Result<Unit>) -> Unit) -> Unit)? = null
     private val transferProgress: Double?
+        // Берём ход местной передачи, если она идёт. Иначе делим все принятые байты с других
+        // устройств на их общий размер, чтобы один маленький файл не менял средний процент так же
+        // сильно, как большой.
         get() {
             if (attachments?.isUploading == true) return attachments.progress
             val network = services?.network ?: return null
@@ -112,6 +126,8 @@ internal class ConversationChrome(
         }
 
     private val transferTitle: String
+        // Подписываем полосу по источнику текущей передачи. Если загрузка идёт с другого
+        // телефона, человек видит, почему поле на этом устройстве ничего не отправляло.
         get() =
             if (attachments?.isUploading == true) "Загрузка файла"
             else "Загрузка на другом устройстве"
@@ -133,9 +149,14 @@ internal class ConversationChrome(
         private set
 
     val studioDraftTouched
+        // Проверяем, было ли поле открыто для ввода, менялся ли черновик или началось ли создание
+        // чата. Эти признаки помогают отличить нетронутый экран от уже начатой работы.
         get() = input.hasFocus() || (state?.draft?.revision ?: 0L) > 0L || isStartingThread
 
     val generationOptions
+        // Готовим переносимые настройки для следующего экрана. Режим улучшения привязан к
+        // конкретному видео, а исходное фото требует режима видео, поэтому эти случаи
+        // обрабатываем отдельно.
         get() =
             when {
                 options.model == "video_sr" -> KandinskyOptions()
@@ -143,6 +164,8 @@ internal class ConversationChrome(
                 else -> options
             }
 
+    // Возвращаем записанные параметры и восстанавливаем подпись модели. Защита на время
+    // присваивания предотвращает обратную запись и повторное уведомление о том же черновике.
     fun restoreGenerationOptions(value: KandinskyOptions) {
         restoringGenerationOptions = true
         try {
@@ -159,12 +182,15 @@ internal class ConversationChrome(
         invalidate()
     }
 
-    // Сервер создаст чат после первого запроса. До этого черновик уже доступен.
+    // Открываем поле до выдачи сервером номера чата. Модель состояния получает восстановленный
+    // черновик, если человек уже набирал запрос.
     fun openStudioDraft(restored: dev.kirill.kandinsky.chat.domain.Draft? = null) {
         historyReady = true
         state?.openStudioDraft(restored)
     }
 
+    // Переключаем признак создания первого чата и уведомляем экран. Так кнопки и поле сразу
+    // учитывают, что следующий переход ещё выполняется.
     fun setStartingThread(value: Boolean) {
         isStartingThread = value
         state?.onChange?.invoke()
@@ -217,6 +243,8 @@ internal class ConversationChrome(
             setPadding(0, 0, 0, 0)
             accessibilityDelegate =
                 object : View.AccessibilityDelegate() {
+                    // Даём системному полю ввода постоянное имя для средств доступности и
+                    // проверок. Обычные свойства поля по-прежнему заполняет система.
                     override fun onInitializeAccessibilityNodeInfo(
                         host: View,
                         info: AccessibilityNodeInfo,
@@ -238,6 +266,9 @@ internal class ConversationChrome(
     private val card = RectF()
     private var restoringGenerationOptions = false
     private var options = KandinskyOptions()
+        // Запоминаем текущие параметры и записываем осознанное изменение в черновик. При
+        // восстановлении сохранённого значения такую запись пропускаем, чтобы не зациклить
+        // уведомления.
         set(value) {
             field = value
             if (!restoringGenerationOptions) state?.updateGenerationOptions(value)
@@ -247,14 +278,23 @@ internal class ConversationChrome(
     private var modelCatalog: List<StudioModel>? = null
     private var loadingModels = false
     private val d
+        // Читаем плотность экрана для пересчёта размеров элементов. При одинаковом размере в
+        // настройках кнопки остаются сопоставимыми на экранах с разным числом точек.
         get() = resources.displayMetrics.density
 
     private val s
+        // Ограничиваем размер узора и припусков истории шириной экрана. На узком устройстве эти
+        // размеры уменьшаются вместе с доступным местом.
         get() = minOf(width / 384f, resources.displayMetrics.density)
 
     private val composerUnit
+        // Выбираем единицу размеров панели ввода из плотности и измеренной ширины. Панель поэтому
+        // помещается и на экране уже расчётной ширины.
         get() = minOf(d, measuredWidth / 390f)
 
+    // Соединяем ленту, загрузку вложений и изменения черновика. При переносе текста в поле
+    // проверяем, закончила ли его составлять клавиатура, и подавляем встречное уведомление. Иначе
+    // обновление состояния могло бы сбить ещё набираемое слово.
     init {
         services?.network?.onStudioTransfersChanged = {
             requestLayout()
@@ -318,6 +358,8 @@ internal class ConversationChrome(
         }
         input.addTextChangedListener(
             object : android.text.TextWatcher {
+                // Оставляем обязательный вызов наблюдателя пустым. Перед заменой поля новое
+                // значение ещё неизвестно, а старый текст уже есть в черновике.
                 override fun beforeTextChanged(
                     s: CharSequence?,
                     start: Int,
@@ -325,17 +367,24 @@ internal class ConversationChrome(
                     after: Int,
                 ) {}
 
+                // Записываем новый текст пользователя в черновик. Программное восстановление поля
+                // пропускаем, иначе та же правка вернулась бы в состояние повторно.
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     if (!applying && state != null) {
                         state.editDraft(state.draft.copy(text = s.toString()))
                     }
                 }
 
+                // Завершаем обязательный вызов наблюдателя без второй записи. Новый текст уже
+                // принят в момент изменения поля.
                 override fun afterTextChanged(s: android.text.Editable?) {}
             }
         )
     }
 
+    // Подключаем меню строк и действия генерации, затем открываем ленту на сохранённой позиции.
+    // Поле становится доступно после подготовки первого кадра. Ошибку открытия возвращаем
+    // вызвавшему экрану вместо состояния готовности.
     fun openHistory(
         repository: dev.kirill.kandinsky.chat.storage.ChatRepository,
         anchor: dev.kirill.kandinsky.chat.domain.ReadingAnchor?,
@@ -419,6 +468,8 @@ internal class ConversationChrome(
         }
     }
 
+    // Обновляем строки ленты и при перемене активного задания проверяем, какую генерацию ещё
+    // можно остановить. Если сервер скрыл текущий чат, уходим из него в список.
     fun apply(delta: dev.kirill.kandinsky.chat.domain.MessageDelta) {
         timeline.apply(delta)
         if (delta.chat.id == chatID && services?.network != null) {
@@ -433,6 +484,8 @@ internal class ConversationChrome(
         if (delta.chat.hidden) back?.invoke()
     }
 
+    // Восстанавливаем получение хода передачи и просим продолжить сохранённую загрузку. Пока
+    // экран был вне окна, он мог пропустить изменение процентов.
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         services?.network?.onStudioTransfersChanged = {
@@ -442,6 +495,8 @@ internal class ConversationChrome(
         attachments?.resumePendingUpload()
     }
 
+    // Признаём просроченными ответы о генерации и закрываем вложения, меню и фон. Убираем
+    // отложенную плашку ошибки, чтобы она не затронула уже снятый экран.
     override fun onDetachedFromWindow() {
         generationLookup++
 
@@ -455,17 +510,23 @@ internal class ConversationChrome(
         super.onDetachedFromWindow()
     }
 
+    // Передаём просьбу освободить память ленте и фону, затем просим перерисовать экран. Сами
+    // сохранённые сообщения при этом остаются в хранилище.
     fun trimMemory() {
         timeline.trimMemory()
         wallpaper.trimMemory()
         invalidate()
     }
 
+    // Разрешаем подготовку вложений только при видимой ленте на переднем плане. Для движущихся
+    // вложений возвращаем обычный режим, который затем уточняет список чатов.
     fun setMediaVisible(visible: Boolean) {
         timeline.setMediaVisible(visible && timeline.isHostForeground())
         timeline.setMovingMediaVisible(true)
     }
 
+    // Перед открытием списка скрываем клавиатуру и убираем фокус с поля. Видео под списком ставим
+    // на паузу, а после закрытия снова разрешаем показ.
     fun setHistoryDrawerVisible(visible: Boolean) {
         if (visible) {
             input.clearFocus()
@@ -476,7 +537,8 @@ internal class ConversationChrome(
         timeline.setMovingMediaVisible(!visible)
     }
 
-    // Сохраняем место чтения до того, как история уйдёт с экрана.
+    // Перед уходом закрываем камеру и клавиатуру, останавливаем ленту и сохраняем позицию. После
+    // снятия экрана правильное место чтения уже нельзя вычислить по видимой области.
     fun prepareForNavigation() {
         stopCapture()
         input.clearFocus()
@@ -487,14 +549,20 @@ internal class ConversationChrome(
         captureAnchor()
     }
 
+    // Просим владельца вложений остановить съёмку, если она ещё идёт. Закрытая переписка не
+    // должна продолжать держать камеру.
     fun stopCapture() {
         attachments?.stopCapture()
     }
 
+    // Снимаем текущую позицию из ленты и оставляем её в состоянии чата. Это значение используется
+    // при восстановлении после возврата.
     fun captureAnchor() {
         state?.anchor = timeline.readingAnchor()
     }
 
+    // Выводим подсказку о повторе, когда сохранить запрос не удалось. Человек видит, что нажатие
+    // можно повторить без нового набора текста.
     fun showError(error: Throwable) {
         android.widget.Toast.makeText(
                 context,
@@ -504,6 +572,8 @@ internal class ConversationChrome(
             .show()
     }
 
+    // При изменении верхнего или нижнего системного отступа заново раскладываем экран. При
+    // прежних значениях не тратим время на повторное измерение.
     override fun updateInsets(top: Int, bottom: Int) {
         if (this.top != top || this.bottom != bottom) {
             this.top = top
@@ -513,6 +583,8 @@ internal class ConversationChrome(
         }
     }
 
+    // Даём полю высоту строки с запасом под системный шрифт и оставляем минимальную область для
+    // набора. При крупном шрифте текст поэтому остаётся в пределах поля.
     private fun inputHeight(): Int {
         val fm = input.paint.fontMetrics
         return maxOf(
@@ -521,6 +593,8 @@ internal class ConversationChrome(
         )
     }
 
+    // Измеряем историю на весь экран, а поле и плашку ошибки с учётом ширины, шрифта и отступов.
+    // Текст ошибки может занять несколько строк, поэтому высоту считаем после переноса.
     override fun onMeasure(w: Int, h: Int) {
         setMeasuredDimension(MeasureSpec.getSize(w), MeasureSpec.getSize(h))
         val unit = composerUnit
@@ -568,6 +642,9 @@ internal class ConversationChrome(
         }
     }
 
+    // Размещаем историю, заголовок и панель ввода с учётом клавиатуры, файла и полосы передачи.
+    // Здесь же обновляем прямоугольники кнопок для касаний и озвучивания, чтобы видимое и
+    // доступное расположение совпадало.
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         val fieldHeight = input.measuredHeight
         val unit = composerUnit
@@ -692,6 +769,8 @@ internal class ConversationChrome(
         invalidate()
     }
 
+    // Ставим область нажатия вокруг центра нарисованной кнопки. Край кнопки файла ограничиваем
+    // соседним выбором модели, иначе две области перекрылись бы сильнее.
     private fun placeControl(control: NativeAction, x: Float, y: Float, enabled: Boolean) {
         val hit = 24 * d
         val right = if (control === attachmentControl) minOf(x + hit, modelFrame.left) else x + hit
@@ -700,6 +779,8 @@ internal class ConversationChrome(
         nodes.add(control)
     }
 
+    // Открываем выбор файла только для готового черновика без незаконченной отправки. Перед
+    // выбором скрываем клавиатуру, а сам файл принимает владелец вложений.
     private fun addAttachment() {
         if (
             state == null || services == null || !state.isReady || state.isSending ||
@@ -711,6 +792,8 @@ internal class ConversationChrome(
         if (services.network != null) attachments?.showPicker()
     }
 
+    // Если есть активное задание, передаём запрос на остановку. Иначе завершаем набор, проверяем
+    // содержимое и отправляем запрос через существующий либо ещё создаваемый чат.
     private fun submitOrStopGeneration() {
         val active = activeGenerationID
         if (active != null) {
@@ -727,6 +810,8 @@ internal class ConversationChrome(
         else state?.send(options) { it.exceptionOrNull()?.let(::showError) }
     }
 
+    // Переносим пример с магнолией в черновик. Он остаётся доступным для редактирования до
+    // первого нажатия отправки.
     private fun fillWelcomePrompt() {
         val state = state ?: return
         state.editDraft(
@@ -736,8 +821,12 @@ internal class ConversationChrome(
         )
     }
 
+    // Возвращаем системе список озвучиваемых нарисованных кнопок. Без него в дереве остались бы
+    // только настоящие дочерние поля.
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = ax
 
+    // Забираем начало касания над панелями и на приглашении пустого чата. Клавиатурное поле и
+    // область истории сохраняют свои касания для ввода и прокрутки.
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         if (e.action != MotionEvent.ACTION_DOWN) return false
         val insideInput = e.x >= input.left && e.x < input.right &&
@@ -746,6 +835,8 @@ internal class ConversationChrome(
             welcomeControl in nodes && welcomeControl.enabled && welcomeControl.rect.contains(e.x, e.y)
     }
 
+    // После отпускания ищем ближайшую активную кнопку под пальцем. Когда области соседних кнопок
+    // соприкасаются, расстояние до центра даёт однозначный выбор.
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_UP) {
             var nearest: NativeAction? = null
@@ -768,6 +859,8 @@ internal class ConversationChrome(
         return true
     }
 
+    // Забираем отложенное нажатие один раз и выполняем назначенное действие после системного
+    // вызова. Так кнопка сохраняет обычное поведение нажатия и не повторяет старую команду.
     override fun performClick(): Boolean {
         val action = pendingClick?.action
         pendingClick = null
@@ -776,6 +869,8 @@ internal class ConversationChrome(
         return handledByView || action != null
     }
 
+    // Разрешаем отправку текста, вложенного файла и уже сохранённой попытки. Пустой новый текст
+    // сам по себе не даёт запроса, но ожидающий повтор должен остаться доступным.
     private fun canSubmitDraft(): Boolean {
         val draft = state?.draft ?: return false
         return draft.pendingSend != null ||
@@ -784,6 +879,8 @@ internal class ConversationChrome(
             draft.attachmentDrafts.isNotEmpty()
     }
 
+    // Обновляем плашку с причиной ошибки, озвучиваем её и ставим новый срок закрытия. Снятие
+    // старого срока позволяет новой ошибке остаться видимой полные четыре секунды.
     private fun attachmentError(message: String) {
         if (!isAttachedToWindow) return
         removeCallbacks(clearStudioFeedback)
@@ -805,6 +902,8 @@ internal class ConversationChrome(
         postDelayed(clearStudioFeedback, 4000)
     }
 
+    // Различаем клавиатуру и нижнюю полосу системы на разных версиях андроида. Плашка стоит над
+    // клавиатурой или оставляет место для системной полосы, чтобы подпись оставалась читаемой.
     private fun feedbackInsets(): Pair<Int, Int> {
         val insets = rootWindowInsets
         val safe =
@@ -818,6 +917,8 @@ internal class ConversationChrome(
         return keyboard to if (keyboard > 0) 0 else safe
     }
 
+    // Показываем обычные модели и записываем новый выбор с прежними общими настройками. Исходный
+    // файл удаляем из черновика, если выбранный режим его больше не принимает.
     private fun chooseGenerationOptions() = withModels { models ->
         StudioGenerationSheet(context, options).showModels(models.filter { it.id != "video_sr" }) {
             model ->
@@ -836,6 +937,8 @@ internal class ConversationChrome(
         }
     }
 
+    // Берём ограничения модели для текущего вида запроса, с файлом или без. Возвращаем выбранные
+    // параметры экрану, чтобы число результатов и подпись сразу совпадали с новым запросом.
     private fun showGenerationSettings() = withModels { models ->
         val model = models.firstOrNull { it.id == options.model } ?: return@withModels
         val hasReference = state?.draft?.attachmentDrafts?.isNotEmpty() == true
@@ -855,6 +958,9 @@ internal class ConversationChrome(
         }
     }
 
+    // Убираем клавиатуру и показываем уже загруженный список либо ждём один запрос. Ответ
+    // использует только экран, который ещё находится в окне, иначе запоздавший список появился бы
+    // после ухода из чата.
     private fun withModels(present: (List<StudioModel>) -> Unit) {
         if (loadingModels) return
         input.clearFocus()
@@ -885,6 +991,8 @@ internal class ConversationChrome(
         }
     }
 
+    // Рисуем фон истории и приглашение на пустой переписке. Пример становится видимым после
+    // загрузки истории, когда известно, что она действительно пуста.
     override fun onDraw(c: Canvas) {
         // Фон студии непрозрачный, оставшиеся полосы рисует отдельное оформление
         if (services?.network == null) c.drawColor(Color.WHITE)
@@ -923,6 +1031,8 @@ internal class ConversationChrome(
         }
     }
 
+    // Обрезаем историю по видимой области и поверх неё рисуем непрозрачные панели, кнопки и ход
+    // передачи. Поле ввода и плашка идут последними, иначе их мог бы закрыть фон.
     override fun dispatchDraw(c: Canvas) {
         if (state != null) {
             if (services?.network == null) drawChild(c, timeline, drawingTime)
@@ -970,6 +1080,8 @@ internal class ConversationChrome(
         studioFeedback?.let { drawChild(c, it, drawingTime) }
     }
 
+    // Рисуем вид исходного файла и крестик в пределах рассчитанного ярлыка. Крестик совпадает с
+    // отдельной областью удаления, а обычная подпись не меняет черновик.
     private fun drawReferenceChip(c: Canvas) {
         val x = referenceChip.left
         val y = referenceChip.top
@@ -1007,6 +1119,8 @@ internal class ConversationChrome(
         c.drawLine(x + 94 * d, y + 19.5f * d, x + 85 * d, y + 28.5f * d, paint)
     }
 
+    // Рисуем значок приложения и кнопки в рассчитанных точках, выбирая отправку или остановку по
+    // состоянию задания. Длинное имя модели укорачиваем, чтобы рядом осталось место для стрелки.
     private fun drawSharpChrome(c: Canvas) {
 
         KandinskyPalette.studioBrand(c, header.centerX(), header.top + 16 * d, d)
@@ -1097,7 +1211,8 @@ internal class ConversationChrome(
         }
     }
 
-    // Сдвиг на половину толщины оставляет обводку внутри поля.
+    // Сдвигаем линию внутрь прямоугольника на половину толщины. Тогда обводка целиком входит в
+    // рассчитанный размер и не выступает в соседнюю кнопку.
     private fun drawComposerBorder(c: Canvas, frame: RectF) {
         paint.color = Color.rgb(226, 227, 223)
         paint.style = Paint.Style.STROKE

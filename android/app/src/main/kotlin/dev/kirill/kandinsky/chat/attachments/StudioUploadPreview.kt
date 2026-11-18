@@ -1,3 +1,6 @@
+// Показывает загруженное видео Андроида в панели и на всём экране. Разворот меняет расположение
+// одной поверхности и сохраняет текущее проигрывание.
+
 package dev.kirill.kandinsky.chat.attachments
 
 import android.app.Activity
@@ -31,6 +34,8 @@ class StudioUploadPreview(
 ) {
     private val density = activity.resources.displayMetrics.density
 
+    // Переводит размеры кнопок и рамок в точки текущего экрана. Управление остаётся удобным при
+    // другой плотности.
     private fun dp(value: Int) = (value * density).roundToInt()
 
     private val dialog = ComponentDialog(activity, android.R.style.Theme_Material_Light_NoActionBar)
@@ -113,6 +118,8 @@ class StudioUploadPreview(
     private var measuredWidth = 0
     private var measuredHeight = 0
 
+    // Передаёт прежний видеослой в окно предпросмотра и следит за размерами и системными
+    // полосами. Кнопка назад возвращает с полного экрана либо закрывает панель.
     fun show() {
         surface.beginPresentationMove()
         (surface.parent as? ViewGroup)?.removeView(surface)
@@ -173,6 +180,8 @@ class StudioUploadPreview(
         setExpanded(false)
     }
 
+    // Обновляет остаток времени только в панели и включает разворот после готовности
+    // проигрывателя. Пока видео не готово, нажатие не откроет пустой вид.
     fun update() {
         if (closed || isExpanded) return
         val duration = player.durationMs.takeIf { it > 0 } ?: attachment.durationMs ?: 0
@@ -184,6 +193,8 @@ class StudioUploadPreview(
         hitFrame.isClickable = ready
     }
 
+    // Скрывает элементы панели, меняет фон и закругление и перекладывает ту же поверхность.
+    // Переход не требует повторной подготовки ролика.
     private fun setExpanded(expanded: Boolean) {
         if (expanded && !player.isReady) return
         isExpanded = expanded
@@ -197,8 +208,8 @@ class StudioUploadPreview(
         val radius = if (expanded) 0f else dp(12).toFloat()
         surface.outlineProvider =
             object : ViewOutlineProvider() {
-                // Радиус соответствует свёрнутому либо развёрнутому виду, для которого создан
-                // обработчик
+                // Задаёт рамку обрезки с радиусом текущего режима просмотра. В панели углы
+                // скруглены, а полноэкранный слой занимает прямоугольник.
                 override fun getOutline(view: View, outline: android.graphics.Outline) {
                     outline.setRoundRect(0, 0, view.width, view.height, radius)
                 }
@@ -209,6 +220,8 @@ class StudioUploadPreview(
         update()
     }
 
+    // Вычисляет рамки после получения размеров окна. Для панели удерживает квадрат над нижней
+    // полосой, а полный экран отдаёт видео целиком.
     private fun layout() {
         val width = measuredWidth
         val height = measuredHeight
@@ -235,6 +248,8 @@ class StudioUploadPreview(
         enhance.layoutParams = frame(dp(142), dp(48), left, imageTop + square)
     }
 
+    // Снимает поверхность и отсоединяет проигрыватель до сообщения о результате. Повторное
+    // закрытие не выполнит улучшение или отмену второй раз.
     fun close(enhancing: Boolean = false) {
         if (closed) return
         closed = true
@@ -248,7 +263,8 @@ class StudioUploadPreview(
         onClose(enhancing)
     }
 
-    // Назначает доступную подпись, устойчивое имя и переданное действие нажатия
+    // Создаёт кнопку с рисунком, доступной подписью и действием. Оформление и имя назначаются
+    // вместе, чтобы системное управление нашло нужную команду.
     private fun icon(resource: Int, tint: Int, label: String, id: String, onTap: () -> Unit) =
         ImageButton(activity).apply {
             setImageResource(resource)
@@ -261,9 +277,13 @@ class StudioUploadPreview(
             setOnClickListener { onTap() }
         }
 
+    // Назначает элементу устойчивое имя через сведения доступности. Имя остаётся тем же при смене
+    // состояния или подписи.
     private fun View.identify(value: String) {
         accessibilityDelegate =
             object : View.AccessibilityDelegate() {
+                // Сохраняет обычные свойства элемента и добавляет заданное имя. Проверка может
+                // искать кнопку без привязки к тексту.
                 override fun onInitializeAccessibilityNodeInfo(
                     host: View,
                     info: AccessibilityNodeInfo,
@@ -274,7 +294,8 @@ class StudioUploadPreview(
             }
     }
 
-    // Переданные координаты сохраняет как отступы внутри родительской области
+    // Переводит размер и координаты в рамку с отступами от начала и верха. Все элементы окна
+    // рассчитываются от одной области.
     private fun frame(width: Int, height: Int, x: Int = 0, y: Int = 0) =
         FrameLayout.LayoutParams(width, height, Gravity.TOP or Gravity.START).apply {
             marginStart = x

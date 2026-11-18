@@ -1,3 +1,6 @@
+// Проверяет модель входа Андроида без экрана и сети. Управляет очередью вручную, чтобы
+// воспроизвести повтор и закрытие во время запроса.
+
 package dev.kirill.kandinsky.chat.account
 
 import dev.kirill.kandinsky.chat.network.NetworkFailure
@@ -35,15 +38,21 @@ class AccountEntryViewModelTest {
         selected = { calls += "selected" },
     )
 
+    // Передаёт заранее заданный адрес и пароль, затем исполняет очередную работу. Это позволяет
+    // проверить весь переход с правильным порядком ответа.
     private fun submit(code: String = "", resend: Boolean = false) {
         model.submit(" reader@example.org ", "example password", code, resend)
         completeScheduledWork()
     }
 
+    // Выполняет накопленные задачи в порядке добавления. Проверка может сначала закрыть форму или
+    // изменить условие, а затем вернуть ответ.
     private fun completeScheduledWork() {
         while (queued.isNotEmpty()) queued.removeFirst()()
     }
 
+    // Проверяет запрос двух разных кодов, неверный ввод и успешные переходы. Сверяет, что
+    // сохранение и выбор аккаунта произошли только после входа или регистрации.
     @Test fun registrationAndRecoveryKeepDifferentPurposes() {
         model.startRecovery()
         submit()
@@ -62,6 +71,8 @@ class AccountEntryViewModelTest {
             "register", "87654321", "saved", "selected"), calls)
     }
 
+    // Дважды отправляет форму и убеждается, что в очередь попала одна работа. После закрытия не
+    // допускает сохранения полученного профиля и выбора аккаунта.
     @Test fun duplicateSubmissionAndClosedScreenDoNotSaveProfile() {
         repeat(2) { model.submit("reader@example.org", "example password", "") }
         assertEquals(1, queued.size)
@@ -71,6 +82,8 @@ class AccountEntryViewModelTest {
         assertFalse("selected" in calls)
     }
 
+    // Проверяет подсказки для неверной почты и короткого пароля. Модель должна остаться на входе
+    // с пустой очередью и свободной кнопкой.
     @Test fun invalidInputKeepsTheLoginFormAndNeverUsesTheNetwork() {
         model.submit("reader", "valid-password", "")
         assertEquals("Введите электронную почту.", model.message)
@@ -82,6 +95,8 @@ class AccountEntryViewModelTest {
         assertEquals(AccountEntryStep.LOGIN, model.step)
     }
 
+    // Возвращает разные отказы и обрыв и сверяет подсказки. Ошибка должна освободить форму, не
+    // добавляя сохранения профиля.
     @Test fun failedLoginShowsActionableMessageAndNeverSavesSession() {
         val failures = mapOf(
             400 to "Код неверный или больше не действует.",
@@ -105,6 +120,8 @@ class AccountEntryViewModelTest {
         assertEquals(List(failures.size + 1) { "login" }, calls)
     }
 
+    // Прерывает чтение и запись профиля, затем повторяет с исправным хранилищем. Проверяет
+    // порядок сохранения и выбора, а также одно закрытие при повторной команде.
     @Test fun unreadableOrUnsavableProfileNeverReplacesTheCurrentAccount() {
         val displayed = mutableListOf<NetworkProfile>()
         readError = IOException("profile storage unavailable")

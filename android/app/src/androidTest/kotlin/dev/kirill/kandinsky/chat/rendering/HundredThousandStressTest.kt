@@ -1,3 +1,6 @@
+// Проверяем чтение ста тысяч записей местной истории с ограниченным окном и теми же файлами
+// вложений.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -12,6 +15,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HundredThousandStressTest {
+    // Загружаем большой набор и считаем строки и различные пути файлов. Читаем страницы по ключу,
+    // проверяем целостность и очищаем окно после закрытия, чтобы большая история не удерживала
+    // все строки.
     @Test
     fun nativeSQLiteKeysetBoundedWindowAndSameMediaPool() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

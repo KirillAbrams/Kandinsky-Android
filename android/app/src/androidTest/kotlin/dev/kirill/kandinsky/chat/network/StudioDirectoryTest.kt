@@ -1,3 +1,6 @@
+// Проверяет список чатов после событий обмена и чтение карточек прежнего вида. Отдельно следит за
+// признаками начала и конца генерации.
+
 package dev.kirill.kandinsky.chat.network
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -12,9 +15,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StudioDirectoryTest {
+    // Собирает карточку с заданными номером, временем и занятостью. Остальные поля постоянны,
+    // чтобы тест видел только нужное изменение.
     private fun chat(id: Long, time: Long, generating: Boolean) =
         StudioThread(id, "Чат $id", 0, 0, false, false, time, generating).wire()
 
+    // Оборачивает карточку в событие с заданной позицией обмена. Так можно повторить тот же ответ
+    // или передать более старый.
     private fun event(cursor: Long, row: JSONObject) = JSONObject()
         .put("cursor", cursor)
         .put("chats", JSONArray().put(row))
@@ -22,6 +29,8 @@ class StudioDirectoryTest {
             .put("seq", cursor).put("chatId", row.getLong("id"))
             .put("kind", "deleted").put("messageId", 999)))
 
+    // Проверяет, что событие поднимает чат и показывает занятость без загрузки сообщений. Ход
+    // работы и повтор завершения не должны заново обновлять список.
     @Test fun existingChatReceivesBusyStateAndPromotionWithoutLoadingHistory() {
         val root = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
             "directory-${UUID.randomUUID()}")
@@ -65,6 +74,8 @@ class StudioDirectoryTest {
         }
     }
 
+    // Читает старую карточку без признака занятости и времени, затем новую с обоими полями.
+    // Проверяет безопасные начальные и сохранённые значения.
     @Test fun oldPayloadDefaultsSafelyAndNewPayloadRoundTrips() {
         val old = StudioThread.from(JSONObject("""{"id":1,"title":"Старый","lastSeq":0,"unreadCount":0,"pinned":false,"archived":false}"""))
         assertEquals(0L, old.activityAtMs)
@@ -74,6 +85,8 @@ class StudioDirectoryTest {
         assertEquals(4000L, current.activityAtMs)
     }
 
+    // Ждёт ответ от очереди базы с ограничением по времени. Если ответа нет или запись упала,
+    // проверка завершается явной ошибкой.
     private fun <T> await(start: ((Result<T>) -> Unit) -> Unit): T {
         val done = CountDownLatch(1)
         var result: Result<T>? = null

@@ -1,3 +1,6 @@
+// Проверяем системное и запасное размытие по пикселям настоящего окна. Фон должен меняться вместе
+// с содержимым, а элемент перед ним оставаться чётким.
+
 package dev.kirill.kandinsky.chat
 
 import android.content.Intent
@@ -15,6 +18,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LiveGlassPixelsTest {
+    // Рисуем цветные полосы и чёрный квадрат, затем меняем фон. По снимкам проверяем смешение
+    // цвета под прозрачной поверхностью, чёткость квадрата и обновление фона.
     @Test
     fun backdropIsFilteredLiveWhileForegroundRemainsSharp() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -43,6 +48,8 @@ class LiveGlassPixelsTest {
         val pane = RectF(40f, 100f, 540f, 500f)
         val view =
             object : View(activity) {
+                // Заполняем окно выбранным цветом и в начальном варианте дорисовываем синие
+                // полосы. Резкая граница полос даёт увидеть смешение после фильтра.
                 private fun backdrop(c: Canvas) {
                     c.drawColor(if (green) Color.GREEN else Color.RED)
                     if (!green) {
@@ -55,6 +62,9 @@ class LiveGlassPixelsTest {
                     }
                 }
 
+                // Рисуем фон, прозрачную область с тем же источником рисунка и чёрный передний
+                // элемент. Одинаковый порядок даёт проверить, что фильтр не захватил передний
+                // слой.
                 override fun onDraw(c: Canvas) {
                     backdrop(c)
                     glass.draw(c, pane, 20f, resources.displayMetrics.density) { backdrop(it) }
@@ -67,6 +77,8 @@ class LiveGlassPixelsTest {
                 activity.setContentView(view)
                 view.setWillNotDraw(false)
             }
+            // Ждём кадр окна и просим систему скопировать его в картинку. Проверяем результат
+            // копирования до чтения цвета, чтобы пустая картинка не прошла за снимок.
             fun copy(): Bitmap {
                 i.waitForIdleSync()
                 android.os.SystemClock.sleep(300)
@@ -91,6 +103,8 @@ class LiveGlassPixelsTest {
                 assertEquals(PixelCopy.SUCCESS, status)
                 return bitmap
             }
+            // Переводим координаты внутри проверочного элемента в координаты окна и читаем цвет.
+            // Это учитывает положение элемента относительно края экрана.
             fun pixel(b: Bitmap, x: Int, y: Int): Int {
                 val point = IntArray(2)
                 i.runOnMainSync { view.getLocationInWindow(point) }
@@ -127,6 +141,8 @@ class LiveGlassPixelsTest {
         }
     }
 
+    // Вызываем запасной способ размытия и меняем его исходный рисунок. Сверяем новый цвет и
+    // закрываем поверхность после проверки.
     @Test
     fun softwareCompatibilityBlurUsesLivePixelsAndCloses() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

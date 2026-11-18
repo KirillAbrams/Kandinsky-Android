@@ -1,3 +1,5 @@
+// Проверяет календарные группы недавних чатов и перенос чата вверх после нового запроса.
+
 package dev.kirill.kandinsky.chat.chatlist
 
 import dev.kirill.kandinsky.chat.network.StudioThread
@@ -7,9 +9,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class StudioHistorySectionsTest {
+    // Создаёт карточку с указанным временем и признаком закрепления. Тест меняет только то, что
+    // влияет на порядок.
     private fun row(id: Long, time: Long, pinned: Boolean = false) =
         StudioThread(id, "Чат $id", 0, 0, pinned, false, time)
 
+    // Проверяет вчерашнюю группу в день перевода часов и порядок закреплённых. Вычитание обычных
+    // суток вместо календарного дня потеряло бы часть строк.
     @Test fun calendarDaysIncludeTheWholeTwentyFiveHourYesterday() {
         val now = Instant.parse("2026-11-02T12:00:00Z")
         val rows = listOf(
@@ -22,6 +28,8 @@ class StudioHistorySectionsTest {
         assertEquals(listOf(listOf(5L, 4L), listOf(2L), listOf(1L), listOf(3L)), groups.map { it.threads.map { row -> row.id } })
     }
 
+    // Проверяет, что недавнее действие поднимает чат в сегодняшнюю группу, а пустые категории не
+    // появляются в списке.
     @Test fun aNewRequestPromotesAnOldChatAndEmptyGroupsStayHidden() {
         val now = Instant.parse("2026-11-15T12:00:00Z")
         val groups = StudioHistorySections.make(listOf(row(2, 1), row(1, now.toEpochMilli())), now, ZoneId.of("UTC"))

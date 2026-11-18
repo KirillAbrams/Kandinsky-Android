@@ -1,3 +1,5 @@
+// Сохраняет фотографию для передачи с проверкой отмены и уборкой незаконченного файла.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -7,6 +9,8 @@ import java.io.File
 import java.io.FileOutputStream
 
 class StudioPhotoEncoder {
+    // Сжимает изображение и дожидается записи байтов, проверяя отмену до и после работы. При
+    // отказе удаляет неполную копию, чтобы её не предложили к отправке.
     fun jpeg(image: Bitmap, file: File, cancel: () -> Boolean = { false }) {
         if (cancel()) throw MediaException(MediaError.CANCELLED)
         var complete = false

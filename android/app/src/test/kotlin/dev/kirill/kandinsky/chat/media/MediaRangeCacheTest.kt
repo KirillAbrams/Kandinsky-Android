@@ -1,3 +1,6 @@
+// Проверяет временные части ролика, повторное открытие и отмену чтений на диске. Сверяет целые и
+// случайные отрезки с исходным массивом.
+
 package dev.kirill.kandinsky.chat.media
 
 import java.io.File
@@ -10,9 +13,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaRangeCacheTest {
-    // Дополнительно сравнивает случайные чтения с независимым исходным массивом и отклоняет чтение
-    // после
-    // закрытия.
+    // Читает и повторно использует конец файла, затем дополняет недостающие части. Сверяет
+    // оригинал и случайные чтения и проверяет отказ после закрытия.
     @Test
     fun seekUsesDiskAcrossSessionsAndPromotesVerifiedOriginal() {
         val root = Files.createTempDirectory("range-cache").toFile()
@@ -63,6 +65,8 @@ class MediaRangeCacheTest {
         }
     }
 
+    // Удерживает сетевое чтение и закрывает источник, который должен сразу дать отмену. Затем
+    // четыре читателя берут один отрезок и получают его за одно сетевое чтение.
     @Test
     fun closeInterruptsBlockedReadAndConcurrentReadsCoalesce() {
         val root = Files.createTempDirectory("range-cancel").toFile()
@@ -110,6 +114,8 @@ class MediaRangeCacheTest {
         }
     }
 
+    // Подставляет полную часть с неверной контрольной суммой и короткую часть. Оба чтения
+    // завершаются отказом, а оригинал не появляется.
     @Test
     fun incompleteAndWrongDigestNeverBecomeOriginal() {
         val root = Files.createTempDirectory("range-invalid").toFile()

@@ -1,3 +1,7 @@
+// Проверяем повтор команды после обрыва, сохранение событий, завершение сеанса и действия с
+// результатами. Ответы и соединение задаются внутри проверки, данные пишутся в отдельную
+// временную базу.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.Intent
@@ -55,6 +59,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NetworkConnectionTest {
+    // Разрываем связь с ожидающей командой и открываем новую. Команда повторяется с прежним
+    // номером, а ответ от старого соединения не меняет итоговую запись.
     @Test
     fun reconnectReplaysTheSavedCommandAndIgnoresAnOldConnectionReply() = withConnection { fixture ->
         val original = fixture.connect()
@@ -93,6 +99,8 @@ class NetworkConnectionTest {
         assertTrue("/v1/chats" in fixture.requests)
     }
 
+    // Передаём событие и сверяем запись в истории, затем подаём неверное и верное подтверждения.
+    // Новое соединение должно продолжить с подтверждённого номера без повторной строки.
     @Test
     fun cursorMovesOnlyAfterEventsAreSavedAndTheServerConfirmsTheirReceipt() = withConnection { fixture ->
         val socket = fixture.connect()
@@ -121,6 +129,8 @@ class NetworkConnectionTest {
         assertEquals("Ответ в истории", fixture.history().rows.single().text)
     }
 
+    // Дважды передаём сообщение об истёкшем сеансе. Соединение закрывается и сигнал об окончании
+    // приходит один раз.
     @Test
     fun terminalSessionRejectionClosesSocketAndNotifiesOnce() = withConnection { fixture ->
         val socket = fixture.connect()
@@ -135,6 +145,8 @@ class NetworkConnectionTest {
         assertEquals(0, expired.size)
     }
 
+    // Возвращаем признак удалённого аккаунта на первом запросе. Проверяем сигнал об удалении и
+    // отсутствие попытки открыть постоянное соединение.
     @Test
     fun deletedAccountDuringBootstrapNeverOpensAConnection() = withConnection { fixture ->
         fixture.httpFailure = 401 to "account_deleted"
@@ -148,6 +160,9 @@ class NetworkConnectionTest {
         assertFalse(fixture.sync.isConnected)
     }
 
+    // Теряем первый ответ на повтор задания и отправляем запрос снова. Он использует сохранённую
+    // операцию, а отдельная повторная попытка результата передаёт номер места и ожидаемого
+    // запуска.
     @Test
     fun generationRetryKeepsTheSavedOperationUntilItsReplyArrives() = withConnection { fixture ->
         val socket = fixture.connect()
@@ -184,6 +199,9 @@ class NetworkConnectionTest {
             200 to reply
         }
         val original = UUID.randomUUID()
+        // Запрашиваем повтор для всей генерации или одного результата и получаем итог
+        // асинхронного вызова. Ошибка первого запроса становится значением для последующих
+        // проверок.
         fun retry(operation: UUID, slot: StudioGeneration.Slot? = null): Result<Unit> = runCatching {
             awaitNetwork<Unit> {
                 fixture.sync.generationAction(2, row.id, StudioGenerationAction.RETRY, operation, slot, it)
@@ -214,6 +232,8 @@ class NetworkConnectionTest {
         assertEquals(previousRun, third.getString("expected_run"))
     }
 
+    // Сверяем удаление результата и запроса, а также жалобу с исходной серверной записью. Чужой
+    // чат или неизвестный файл должны остановить действие до запроса.
     @Test
     fun generationActionsKeepTheLocalMessageAndTheServerTargetAligned() = withConnection { fixture ->
         val command = SendCommand(UUID.randomUUID().toString(), 2, text = "")
@@ -229,9 +249,13 @@ class NetworkConnectionTest {
             requests.add(request)
             204 to ""
         }
+        // Просим удалить содержимое выбранного сообщения с номером чата и при наличии номером
+        // файла. Сохраняем результат вызова для проверки отказа или нужного обращения.
         fun delete(chat: Long, blob: String?): Result<Unit> = runCatching {
             awaitNetwork<Unit> { fixture.sync.deleteGenerationContent(chat, row.id, blob, it) }
         }
+        // Просим отправить жалобу на сохранённую генерацию из указанного чата. Сверяем, дошла ли
+        // нужная причина и правильный номер до проверочного обработчика.
         fun report(chat: Long): Result<Unit> = runCatching {
             awaitNetwork<Unit> { fixture.sync.reportGeneration(chat, row.id, StudioReportReason.INAPPROPRIATE, it) }
         }
@@ -256,6 +280,8 @@ class NetworkConnectionTest {
         assertEquals("inappropriate", JSONObject(body.readUtf8()).getString("reason"))
     }
 
+    // Открываем недавнюю фотографию и используем её как пример для черновика. Подтверждённый
+    // исходник повторно используется без второй загрузки, а удаление из формы очищает выбор.
     @Test
     fun recentPhotoBecomesTheDraftReferenceWithoutASecondUpload() = withConnection { fixture ->
         val instrument = InstrumentationRegistry.getInstrumentation()
@@ -298,6 +324,8 @@ class NetworkConnectionTest {
         val state = ConversationState(fixture.repository)
         lateinit var chrome: ConversationChrome
         var closePlayback: (() -> Unit)? = null
+        // Ждём включённую кнопку по постоянной метке и нажимаем её. Если кнопка не появилась,
+        // проверка покажет, на каком действии остановился экран.
         fun click(id: String) {
             val item = checkNotNull(device.wait(Until.findObject(By.res(id).enabled(true)), 5_000)) {
                 "Не появился доступный элемент $id. Запросы: ${fixture.requests}"
@@ -377,12 +405,16 @@ class NetworkConnectionTest {
         }
     }
 
+    // Дожидаемся сетевого действия через общий проверочный помощник, подставляя пустую отмену.
+    // Так проверка получает ошибку или значение через один вызов.
     private fun <T> awaitNetwork(register: ((Result<T>) -> Unit) -> Unit): T =
         awaitResult { callback ->
             register(callback)
             Cancellation {}
         }
 
+    // Требуем отдельную проверочную установку без сохранённых учётных данных. Открываем временную
+    // базу и гарантированно закрываем связь и удаляем свою папку после сценария.
     private fun withConnection(action: (ConnectionFixture) -> Unit) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         check(context.packageName.endsWith(".cleanup"))
@@ -443,14 +475,20 @@ class NetworkConnectionTest {
             },
         ).also { sync -> sync.onStatus = { statuses.add(it) } }
 
+        // Устанавливаем сетевую схему в открытой проверочной базе. Без неё очередь и
+        // подтверждения не имели бы подготовленных таблиц.
         init {
             awaitResult<Unit> { cb -> harness.store.submit(NetworkSchema::install, cb) }
         }
 
+        // Ждём созданное пробное соединение до пяти секунд и сверяем путь подключения. Это
+        // позволяет точно указать, с каким соединением работает сценарий.
         fun takeSocket(): ScriptedSocket = checkNotNull(sockets.poll(5, TimeUnit.SECONDS)) {
             "Ожидалось подключение к WebSocket. Запросы: $requests. Состояния: $statuses"
         }.also { assertEquals("/v1/ws", it.request().url.encodedPath) }
 
+        // Поднимаем пробное соединение, проверяем первый запрос и доступные возможности.
+        // Переходим к сценарию, когда клиент сообщил готовность и номер применённых событий.
         fun connect(): ScriptedSocket {
             sync.foreground(true)
             expectStatus("Подключение…")
@@ -468,21 +506,33 @@ class NetworkConnectionTest {
             return socket
         }
 
+        // Ждём следующий статус связи из очереди и сравниваем его с ожидаемым. Проверяем порядок
+        // состояний независимо от скорости основного потока.
         fun expectStatus(expected: String) {
             assertEquals(expected, statuses.poll(5, TimeUnit.SECONDS))
         }
 
+        // Читаем страницу чата через обычное хранилище. Так проверка видит то, что дошло до
+        // записанной истории.
         fun history(): HistoryPage = awaitResult { repository.history(PageRequest(2), it) }
 
+        // Получаем номер активного задания проверочного чата через сетевую модель. По результату
+        // видно, был ли запрос на повтор ещё в работе.
         fun activeGeneration(): Long? = awaitResult { callback ->
             sync.activeGeneration(2, callback)
             Cancellation {}
         }
 
+        // Считаем записи очереди отправки в местной базе. Неподтверждённая команда должна
+        // оставаться там до нужного ответа.
         fun outboxCount(): Int = harness.rawScalar("SELECT count(*) FROM net_outbox")
 
+        // Ждём, пока ответ освободит очередь. Проверка завершается ошибкой, если подтверждение
+        // так и не дошло до базы.
         fun awaitOutboxEmpty() = waitUntil("Очередь получила подтверждение") { outboxCount() == 0 }
 
+        // Читаем сохранённый номер и отдельно номер, подтверждённый сервером, в очереди базы.
+        // Одно значение не должно подменять другое.
         fun cursors(): Pair<Long, String?> = awaitResult { cb ->
             harness.store.submit({ db ->
                 val saved = sync.cache.cursor(db)
@@ -492,6 +542,8 @@ class NetworkConnectionTest {
             }, cb)
         }
 
+        // Проверяем условие с паузами до пяти секунд. При превышении времени выдаём описание
+        // условия, которое не выполнилось.
         fun waitUntil(description: String, ready: () -> Boolean) {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             while (System.nanoTime() < deadline) {
@@ -510,19 +562,40 @@ class NetworkConnectionTest {
         @Volatile var cancelled = false
             private set
 
+        // Возвращаем исходный запрос открытия соединения. Проверка может сверить его адрес без
+        // настоящего выхода в сеть.
         override fun request() = originalRequest
+        // Возвращаем ноль для размера очереди передачи. Проверочная подмена кладёт текст в
+        // собственную очередь наблюдений без оценки сетевого буфера.
         override fun queueSize() = 0L
+        // Кладём текст клиента в очередь проверки, пока соединение не отменено. После отмены
+        // возвращаем отказ, чтобы старый канал не принимал команды.
         override fun send(text: String) = !cancelled && outbound.add(text)
+        // Останавливаем проверку при попытке передать двоичный пакет. Для этих сценариев
+        // ожидаются только текстовые сообщения.
         override fun send(bytes: ByteString) = error("Ожидался текстовый пакет")
+        // Принимаем запрос на закрытие подменного соединения. Состояние принудительной отмены
+        // учитывается отдельно.
         override fun close(code: Int, reason: String?) = true
+        // Отмечаем соединение отменённым. После этого передача через него перестаёт приниматься.
         override fun cancel() { cancelled = true }
 
+        // Вызываем обычный обработчик открытия с ответом о смене протокола. Это запускает
+        // настоящий обмен клиента без удалённого соединения.
         fun open() = listener.onOpen(this, Response.Builder().request(originalRequest)
             .protocol(Protocol.HTTP_1_1).code(101).message("Switching Protocols").build())
+        // Сообщаем клиенту об обрыве как об ошибке чтения или записи. Проверка может управлять
+        // моментом потери связи.
         fun fail() = listener.onFailure(this, IOException("Проверочный обрыв соединения"), null)
+        // Передаём сигнал закрытия по причине перезапуска. Так проверяем обработку объявленного
+        // разрыва отдельно от внезапной ошибки.
         fun serverClosing() = listener.onClosing(this, 1001, "Проверочный перезапуск")
+        // Преобразуем объект в текст и передаём обработчику входящего сообщения. Клиент проходит
+        // обычный разбор ответа.
         fun receive(value: JSONObject) = listener.onMessage(this, value.toString())
 
+        // Берём очередной исходящий текст и сверяем вид пакета. Отсутствие или нарушение порядка
+        // останавливает проверку.
         fun frame(type: String): JSONObject {
             val raw = checkNotNull(outbound.poll(5, TimeUnit.SECONDS)) { "Ожидался пакет $type" }
             return JSONObject(raw).also { assertEquals(type, it.getString("type")) }
@@ -530,12 +603,18 @@ class NetworkConnectionTest {
     }
 
     private companion object {
+        // Создаём пустой пакет с указанным видом. Остальные поля добавляет конкретный проверочный
+        // сценарий.
         fun frame(type: String) = JSONObject().put("type", type)
 
+        // Формируем подтверждение с номером исходного запроса и одной принятой строкой. Связь с
+        // запросом важна для точного удаления команды из очереди.
         fun accepted(request: JSONObject, serverID: Long, command: SendCommand, text: String) =
             frame("accepted").put("requestId", request.getString("requestId"))
                 .put("messages", JSONArray().put(wireMessage(serverID, command, text)))
 
+        // Собираем строку истории с номером на сервере и номером операции клиента. Такой ответ
+        // позволяет проверить, что местная и серверная записи объединяются.
         fun wireMessage(serverID: Long, command: SendCommand, text: String) = JSONObject()
             .put("id", serverID).put("chatId", command.chatID).put("seq", serverID)
             .put("senderId", 1).put("clientId", command.operationID).put("kind", "text")

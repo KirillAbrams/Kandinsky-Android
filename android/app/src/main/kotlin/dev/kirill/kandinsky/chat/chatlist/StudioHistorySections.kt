@@ -1,3 +1,6 @@
+// Готовит разделы недавних чатов для боковой панели Андроида. Границы дней зависят от часового
+// пояса устройства.
+
 package dev.kirill.kandinsky.chat.chatlist
 
 import dev.kirill.kandinsky.chat.network.StudioThread
@@ -7,6 +10,8 @@ import java.time.ZoneId
 data class StudioHistorySection(val title: String, val threads: List<StudioThread>)
 
 object StudioHistorySections {
+    // Считает начало дней в переданном поясе, упорядочивает чаты по времени и номеру и пропускает
+    // пустые группы. Фиксированные сутки дали бы ошибку в день перевода часов.
     fun make(
         rows: List<StudioThread>,
         now: Instant = Instant.now(),

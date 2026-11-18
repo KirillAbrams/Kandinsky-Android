@@ -1,3 +1,6 @@
+// Очередь картинок проверяется при отмене на разных этапах. Сценарии показывают, когда общая
+// работа ещё нужна другому владельцу и когда отложенный результат обязан вернуть занятую память.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.BitmapFactory
@@ -14,6 +17,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaImageWorkQueueTest {
+    // Подписываем двух владельцев на один запрос. Отмена первого сохраняет работу для второго, а
+    // отмена последнего прекращает её сразу. Новый запрос начинает свою подготовку.
     @Test
     fun lastSubscriberCancellationStopsSharedWorkBeforeMainQueueRuns() {
         val retired = CountDownLatch(3)
@@ -53,12 +58,22 @@ class MediaImageWorkQueueTest {
 
     private enum class Phase { LOOKUP, DOWNLOAD, DECODE }
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    // Выполняем управление очередью в потоке экрана и дожидаемся завершения действия. Так
+    // проверка меняет состояние в том же потоке, что и приложение.
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
+    // Останавливаем работу во время проверки наличия файла. Отменённый запрос не должен получить
+    // место для рисунка.
     @Test fun cancellationDuringLookupDoesNotAdmitPixels() = checkRetirement(Phase.LOOKUP, false)
+    // Закрываем очередь во время передачи. Загрузка получает отмену, а чтение картинки в память
+    // даже не начинается.
     @Test fun closingDuringDownloadCancelsFetchAndNeverDecodes() = checkRetirement(Phase.DOWNLOAD, true)
+    // Отменяем уже начатое чтение картинки. Если расчёт успел вернуть кадр, его память всё равно
+    // должна освободиться.
     @Test fun lateDecodeAfterCancellationReleasesCharge() = checkRetirement(Phase.DECODE, false)
 
+    // Останавливаем выбранный этап, отменяем запрос или всю очередь и разрешаем ему закончить.
+    // Проверяем один ответ об отмене и нулевой расход памяти в конце.
     private fun checkRetirement(phase: Phase, closeQueue: Boolean) {
         val file = File(instrumentation.targetContext.cacheDir, "image-work-${UUID.randomUUID()}.jpg")
         TestFixtures.assets.open("real-media/backend-824d66cce0d64409ad4888a13792c7d4.jpg").use {
@@ -74,6 +89,8 @@ class MediaImageWorkQueueTest {
         val completions = AtomicInteger()
         val error = AtomicReference<Throwable>()
         var request: Cancellation? = null
+        // Сообщаем проверке, что выбранный этап начался, и удерживаем его до сигнала. Иначе
+        // отмена могла бы попасть в другой этап и ничего не доказать.
         fun hold() {
             started.countDown()
             check(release.await(3, TimeUnit.SECONDS))

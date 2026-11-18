@@ -1,3 +1,6 @@
+// Проверяем точное чтение сохранённых фото и миниатюр, работу при занятой сети и защиту файла от
+// удаления во время чтения.
+
 package dev.kirill.kandinsky.chat.network
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -20,6 +23,8 @@ import org.junit.Test
 
 class NetworkCachedMediaTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    // Выполняем действие с состоянием экрана на основном потоке. Так проверка использует те же
+    // правила доступа к объектам, что приложение.
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
     private class Fixture(allowDownloads: Boolean = false, onRequest: () -> Unit = {}) : AutoCloseable {
@@ -41,16 +46,22 @@ class NetworkCachedMediaTest {
         }.build()).also { it.initialize() }
         val remote = NetworkMedia(h.store, api, cacheLimitBytes = 0)
 
+        // Создаём описание фото с заданным номером файла и известными размерами. Можно
+        // подставлять разные номера, используя одни и те же проверочные байты.
         fun photo(blob: String) = Attachment(
             blob, "remote/$blob.jpg", "image/jpeg", bytes.size.toLong(),
             3000, 1732, 1, null, blob,
         )
 
+        // Создаём папку при необходимости и записываем проверочные байты по местному пути.
+        // Возвращаем файл, с которым сравним результат поиска.
         fun cached(path: String, contents: ByteArray = bytes): File = File(h.root.canonicalFile, "media/$path").apply {
             parentFile!!.mkdirs()
             writeBytes(contents)
         }
 
+        // Записываем связь номера вложения с оригиналом и миниатюрой через очередь базы. Чтение
+        // сохранённого файла затем использует обычное соответствие.
         fun map(attachment: Attachment, preview: String? = null) {
             awaitResult<Unit> { callback ->
                 h.store.submit({ db ->
@@ -65,9 +76,13 @@ class NetworkCachedMediaTest {
             }
         }
 
+        // Закрываем связь и хранилище, затем удаляем свою временную папку. Следующий сценарий
+        // начинает со своего набора файлов.
         override fun close() { api.close(); h.close(); h.root.deleteRecursively() }
     }
 
+    // Резервируем оригинал с двумя вариантами имени и отдельную миниатюру. Сверяем файл, вид и
+    // байты, а счётчик запросов должен остаться нулевым.
     @Test
     fun originalLegacyNameAndMappedPreviewUseExactCachedBytesWithoutHttp() {
         Fixture().use { f ->
@@ -99,6 +114,8 @@ class NetworkCachedMediaTest {
         }
     }
 
+    // Удерживаем отдельный вызов передачи и в это время читаем сохранённое изображение. Чтение с
+    // диска должно завершиться быстро до освобождения чужого запроса.
     @Test
     fun cachedOriginalDecodesWhileAnUnrelatedRealTransportCallIsBlocked() {
         val entered = CountDownLatch(1)
@@ -150,6 +167,8 @@ class NetworkCachedMediaTest {
         }
     }
 
+    // Удерживаем первый файл чтением и заставляем хранилище освободить место. Файл остаётся до
+    // отмены чтения и становится доступен для удаления после неё.
     @Test
     fun cachedReadPinSurvivesPruningAndCancellationMakesItEvictable() {
         Fixture(allowDownloads = true).use { f ->
@@ -172,6 +191,8 @@ class NetworkCachedMediaTest {
         }
     }
 
+    // Проверяем отказ для отменённого чтения и файла вне разрешённой папки. Оба случая должны
+    // завершиться без обращения к сети.
     @Test
     fun revokedAndEscapedCachedFilesAreRejectedBeforeReadingOrHttp() {
         Fixture().use { f ->

@@ -1,3 +1,6 @@
+// Обновляет сообщения по ответам сети и связывает вложения с сохранёнными файлами. Для идущей
+// генерации с тем же запуском сохраняет уже известный ход работы.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.content.ContentValues
@@ -7,7 +10,9 @@ import dev.kirill.kandinsky.chat.storage.*
 import java.util.Locale
 import org.json.JSONObject
 
-// Местная отправка и полученное событие могут описывать одно сообщение. Сначала ищем.
+// Проверяет удаление и версию сообщения, находит прежнюю отправку и обновляет её или добавляет
+// новую строку. Совпавший исходник остаётся по своему пути, а подтверждённая отправка исчезает из
+// местной очереди.
 internal fun NetworkStore.merge(db: SQLiteDatabase, wire: JSONObject): Long? {
     val server = wire.getLong("id")
     val chat = wire.getLong("chatId")
@@ -158,12 +163,16 @@ internal fun NetworkStore.merge(db: SQLiteDatabase, wire: JSONObject): Long? {
     return id
 }
 
+// Сравнивает старые сведения и новый ответ для того же задания. Сохраняет более высокий уже
+// показанный ход одиночного запуска или его частей, чтобы поздний ответ не вернул полосу назад.
 private fun NetworkStore.studioMetadata(
     db: SQLiteDatabase,
     id: Long,
     metadata: JSONObject,
     existing: Boolean,
 ): JSONObject {
+    // Узнаёт состояния ожидания и выполнения. Только для продолжающейся работы есть смысл
+    // сравнивать ход с прежним ответом.
     fun active(status: String) = status == "running" || status == "queued"
     if (!existing || !active(metadata.optString("kandinskyStatus"))) return metadata
     val previous =
@@ -176,6 +185,8 @@ private fun NetworkStore.studioMetadata(
     if (previous.optString("kandinskyJobId") != metadata.optString("kandinskyJobId"))
         return metadata
     val next = JSONObject(metadata.toString())
+    // Сравнивает номер запуска и время начала, а затем переносит больший известный ход. При
+    // другом запуске ничего не переносит, иначе повтор мог бы начаться с процента старой попытки.
     fun keepMeasured(
         old: JSONObject,
         new: JSONObject,

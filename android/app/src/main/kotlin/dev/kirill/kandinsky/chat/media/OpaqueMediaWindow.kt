@@ -1,3 +1,6 @@
+// Настраивает чёрный фон полноэкранного просмотра. Медиа движется под системными полосами, а
+// кнопки используют собственные безопасные отступы.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Color
@@ -7,9 +10,8 @@ import android.view.Window
 import android.view.WindowManager
 import androidx.core.graphics.drawable.toDrawable
 
-// Кнопки отдельно учитывают безопасные отступы, поэтому при движении медиа под ними не появляются
-// светлые
-// края.
+// Делает фон и системные полосы чёрными, задаёт доступ к краям экрана с учётом версии системы.
+// Иначе при переносе видео могли бы появиться светлые края.
 internal fun Window.prepareOpaqueMedia() {
     setBackgroundDrawable(Color.BLACK.toDrawable())
     clearFlags(

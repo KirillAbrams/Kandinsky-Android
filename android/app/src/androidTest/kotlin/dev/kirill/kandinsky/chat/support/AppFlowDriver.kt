@@ -1,3 +1,6 @@
+// Проводим проверки через обычный запуск приложения, список истории и видимые кнопки. Общие
+// действия не приходится повторять в каждом сценарии.
+
 package dev.kirill.kandinsky.chat.support
 
 import android.content.Intent
@@ -15,6 +18,8 @@ class AppFlowDriver {
     private val context = instrumentation.targetContext
     val device = UiDevice.getInstance(instrumentation)
 
+    // Проверяем, что вход уже сохранён, и запускаем главное окно с чистой стопкой экранов. Это
+    // убирает прежний экран из начала проверки и сохраняет аккаунт.
     fun launch() {
         assumeNotNull(NetworkCredentials(context).load())
         val intent =
@@ -24,11 +29,15 @@ class AppFlowDriver {
         )
     }
 
+    // Ждём элемент по указанному условию до 15 секунд. При отсутствии получаем ошибку с
+    // конкретной меткой.
     fun find(selector: BySelector): UiObject2 =
         checkNotNull(device.wait(Until.findObject(selector), 15000)) {
             "Элемент не появился: $selector"
         }
 
+    // Открываем меню и строку с заданным названием, затем ждём форму. Пока форма не появилась,
+    // следующее действие могло бы попасть в список.
     fun openChat(title: String) {
         assumeNotNull(NetworkCredentials(context).load())
         find(By.desc("История запросов")).click()
@@ -36,6 +45,8 @@ class AppFlowDriver {
         find(By.res("composer.input"))
     }
 
+    // Ищем кнопку результата по подписи и листаем историю, если она пока вне экрана. Число
+    // попыток ограничено, чтобы отсутствующая кнопка завершила проверку.
     fun visibleResult(label: String): UiObject2 {
         val selector = By.desc(label)
         repeat(8) {

@@ -1,3 +1,6 @@
+// Применяет ответы сервера к базе телефона целиком. Номер следующего чтения сохраняется только
+// после применения соответствующих сообщений и удалений.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -6,6 +9,9 @@ import dev.kirill.kandinsky.chat.storage.*
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Сверяет владельца, версию и размер порции, затем записывает чаты, сообщения и начало следующего
+// чтения в одной операции. Иначе прерванная запись могла бы оставить чат без части начальной
+// истории.
 internal fun NetworkStore.applyInitialSnapshot(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
     NetworkStore.transaction(db) {
         require(json.getInt("version") == 1 && json.getLong("userId") == userID)
@@ -24,6 +30,9 @@ internal fun NetworkStore.applyInitialSnapshot(db: SQLiteDatabase, json: JSONObj
         deltas(db, touched, removed, MessageChangeReason.SYNC)
     }
 
+// Проверяет порядок и границу порции, добавляет недостающие чаты и обновляет строки и удалённые
+// файлы. Уже учтённые события пропускаются. При сбое прежний номер чтения остаётся доступен для
+// повтора.
 internal fun NetworkStore.applyEventBatch(db: SQLiteDatabase, json: JSONObject): List<MessageDelta> =
     NetworkStore.transaction(db) {
         val events = json.getJSONArray("events")
@@ -146,6 +155,9 @@ internal fun NetworkStore.applyEventBatch(db: SQLiteDatabase, json: JSONObject):
         deltas(db, touched, removed, MessageChangeReason.SYNC)
     }
 
+// Проверяет размер ответа и принадлежность строк чату, сохраняет их и признак более старых
+// страниц. Без совмещения с текущими данными страница могла бы добавить уже полученное сообщение
+// ещё раз.
 internal fun NetworkStore.applyHistoryPage(db: SQLiteDatabase, chat: Long, json: JSONObject): List<MessageDelta> =
     NetworkStore.transaction(db) {
         val rows = json.getJSONArray("messages")

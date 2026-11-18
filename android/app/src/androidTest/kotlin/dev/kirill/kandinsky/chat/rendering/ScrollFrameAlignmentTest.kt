@@ -1,3 +1,6 @@
+// Проверяем, что видимые слои получают положение текущей прокрутки перед рисованием. Измеряем и
+// инерцию, и движение пальца на настоящем экране.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
@@ -16,6 +19,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ScrollFrameAlignmentTest {
+    // Двигаем экран внутри восьми готовых строк и следим за их чтением и слоями. Окно начнёт
+    // новое чтение только после изменения геометрии.
     @Test
     fun movingWithinPreparedRowsKeepsTheirLayoutUntilGeometryChanges() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -47,6 +52,8 @@ class ScrollFrameAlignmentTest {
                 }, anchor, 600.0)
                 var reads = 0
                 chat.loaded = object : Map<MessageID, Message> by messages {
+                    // Возвращаем строку из исходного набора и считаем чтение по номеру. По
+                    // счётчику видна лишняя пересборка уже готового окна.
                     override fun get(key: MessageID): Message? {
                         reads++
                         return messages[key]
@@ -78,6 +85,8 @@ class ScrollFrameAlignmentTest {
         }
     }
 
+    // Проверяем порог начала жеста, перехват инерции и положение слоя при текущем рисовании. Даже
+    // при внешнем запросе на кадр сцена должна использовать свежий сдвиг пальца.
     @Test
     fun flingAdvancesNativeSceneBeforeTheCurrentDraw() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -144,8 +153,12 @@ class ScrollFrameAlignmentTest {
                 }
                 Cancellation {}
             }
+            // Получаем внутреннее поле прокрутки по имени. Проверка читает готовые системные слои
+            // без добавления служебных методов в рабочий экран.
             fun field(name: String) =
                 ChatScrollHost::class.java.getDeclaredField(name).apply { isAccessible = true }
+            // Извлекаем текущие объекты сообщений из сцены. Затем сравниваем их фактический сдвиг
+            // с расчётом по высоте строки и положению прокрутки.
             fun nodes(): List<MessageNode> {
                 val scene = field("scene").get(chat) as RetainedChatScene
                 return (RetainedChatScene::class
@@ -180,6 +193,8 @@ class ScrollFrameAlignmentTest {
                 val touchSlop = ViewConfiguration.get(chat.context).scaledTouchSlop
                 val down = SystemClock.uptimeMillis()
                 val y = chat.height / 2f
+                // Передаём экрану касание с заданным типом и высотой и освобождаем событие. Это
+                // позволяет повторить точные движения пальца и измерить первый сдвиг.
                 fun touch(action: Int, position: Float) {
                     val event = MotionEvent.obtain(down, down, action, chat.width / 2f, position, 0)
                     try {
@@ -252,9 +267,12 @@ class ScrollFrameAlignmentTest {
             val location = IntArray(2)
             var observedDragFrames = 0
             var staleDragFrames = 0
-            // A video layer can already request a draw while the main view is receiving input.
+            // Слой видео может запросить кадр, пока основное окно обрабатывает касание.
             val redraw =
                 object : Choreographer.FrameCallback {
+                    // Запрашиваем очередное рисование до окончания жеста и снова подписываемся на
+                    // кадр. Так воспроизводим ситуацию, когда слой видео просит рисовать
+                    // независимо от движения пальца.
                     override fun doFrame(frameTimeNanos: Long) {
                         chat.invalidate()
                         Choreographer.getInstance().postFrameCallback(this)

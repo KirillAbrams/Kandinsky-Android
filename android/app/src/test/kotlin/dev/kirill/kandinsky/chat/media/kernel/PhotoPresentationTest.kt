@@ -1,3 +1,6 @@
+// Сравнивает размеры и координаты фото с заранее рассчитанными значениями. Каждый поворот или
+// отражение проверяется отдельно.
+
 package dev.kirill.kandinsky.chat.media.kernel
 
 import org.junit.Assert.*
@@ -56,6 +59,8 @@ internal class PhotoPresentationTest {
             ),
         )
 
+    // Берёт четыре внутренние точки, преобразует их и сравнивает с таблицей. Такой набор выявляет
+    // неверную ось и неверный сдвиг.
     private fun orientation(o: Int) {
         val p =
             PhotoPresentation.filling(
@@ -74,46 +79,58 @@ internal class PhotoPresentationTest {
         }
     }
 
+    // Проверяет обычное положение фото. Углы должны сохранить порядок при увеличении.
     @Test
     fun orientation1() {
         orientation(1)
     }
 
+    // Проверяет отражение слева направо. Высота при этом должна остаться на своей оси.
     @Test
     fun orientation2() {
         orientation(2)
     }
 
+    // Проверяет разворот на половину оборота. Обе оси меняют направление.
     @Test
     fun orientation3() {
         orientation(3)
     }
 
+    // Проверяет отражение сверху вниз. Горизонтальные координаты не должны поменяться местами.
     @Test
     fun orientation4() {
         orientation(4)
     }
 
+    // Проверяет отражение вдоль диагонали с обменом осей. Ширина и высота берутся после обмена.
     @Test
     fun orientation5() {
         orientation(5)
     }
 
+    // Проверяет поворот на четверть оборота по часовой стрелке. Сдвиг возвращает повёрнутую
+    // картинку в рамку.
     @Test
     fun orientation6() {
         orientation(6)
     }
 
+    // Проверяет отражение по другой диагонали. Обе новые оси должны иметь нужное направление.
     @Test
     fun orientation7() {
         orientation(7)
     }
 
+    // Проверяет поворот на четверть оборота против часовой стрелки. Он должен отличаться от
+    // обратного поворота по положению углов.
     @Test
     fun orientation8() {
         orientation(8)
     }
 
+    // Вписывает широкий снимок в квадрат с заполнением. Сверяет масштаб и симметричную обрезку
+    // широких краёв.
     @Test
     fun fill() {
         val p = PhotoPresentation.filling(8, 4, 1, 80.0, 80.0)!!
@@ -123,6 +140,8 @@ internal class PhotoPresentationTest {
         assertEquals(0.0, p.ty, 0.0)
     }
 
+    // Сверяет большие исходные размеры и рамку телефона с поворотом и без. Даже при переходе на
+    // исходник кадр должен заполнить экран без смещения.
     @Test
     fun original2048FillsViewportWithCenteredCrop() {
         val p = PhotoPresentation.filling(2048, 1536, 1, 390.0, 844.0)
@@ -138,6 +157,8 @@ internal class PhotoPresentationTest {
         assertEquals(844.0, rotated.point(2048.0, 1536.0).second, 0.001)
     }
 
+    // Проверяет пустые или чрезмерные размеры исходника и неизвестную ориентацию. Неверное
+    // значение не доходит до построения изображения.
     @Test
     fun invalidSource() {
         for (q in
@@ -152,6 +173,8 @@ internal class PhotoPresentationTest {
         )
     }
 
+    // Подаёт пустую, отрицательную, бесконечную и слишком большую рамку. Все такие размеры должны
+    // получить отказ вместо неверного масштаба.
     @Test
     fun invalidViewport() {
         for (q in
@@ -166,6 +189,8 @@ internal class PhotoPresentationTest {
         )
     }
 
+    // Тысячу раз повторяет один расчёт и сверяет итог. Одинаковые размеры не должны менять
+    // положение между кадрами.
     @Test
     fun stable() {
         val p = PhotoPresentation.filling(8, 4, 1, 80.0, 80.0)
@@ -175,6 +200,8 @@ internal class PhotoPresentationTest {
         }
     }
 
+    // Сверяет точный сдвиг угла после поворота и заполнения квадратной рамки. Ошибка заметна даже
+    // при правильно вычисленном повороте.
     @Test
     fun rotationSixFillsSquare() {
         val p = PhotoPresentation.filling(100, 50, 6, 200.0, 200.0)!!
@@ -183,5 +210,7 @@ internal class PhotoPresentationTest {
     }
 }
 
+// Переводит выбранную точку исходника в координаты экрана. Так проверка видит общий результат
+// масштаба, поворота и сдвига.
 private fun PhotoPresentation.point(x: Double, y: Double) =
     (a * x + c * y + tx) to (b * x + d * y + ty)

@@ -1,3 +1,6 @@
+// Сверяем рисунок и размеры одиночных заданий, групп результатов, вложений, подписей и отметок
+// времени.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -6,12 +9,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ResultMediaGeometryTest {
+    // Подставляем рабочее задание с процентом и несколько видов ошибок. Проверяем, что
+    // разрешённый повтор появляется, запрещённый скрывается, а отмена видна отдельно.
     @Test
     fun singleGenerationKeepsItsProgressAndOnlyOffersAllowedRetries() {
         val resources =
             androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
                 .targetContext.resources
         StudioGenerationCard.load(resources)
+        // Собираем карточку одиночного задания с нужной стадией, ошибкой и процентом. Проверка
+        // получает готовый рисунок без запуска генератора.
         fun prepare(
             stage: StudioGeneration.Stage,
             error: String? = null,
@@ -93,6 +100,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Рисуем ожидание до первого известного процента и ищем закрашенный участок. По пустой шкале
+    // видно, что интерфейс не выдал придуманное значение.
     @Test
     fun waitingForTheFirstMeasuredPercentDoesNotPaintFakeProgress() {
         val instrument = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
@@ -118,17 +127,23 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Меняем процент с 20 на 75 и наблюдаем рисунок сразу и после движения. Положение ячейки
+    // должно совпасть с исходным прямоугольником.
     @Test
     fun progressArcEasesWithoutMovingTheCell() {
         val instrument = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
         val bounds = RectF(20f, 28f, 200f, 144f)
         val frame = RectF(0f, 0f, bounds.width(), bounds.height())
         lateinit var indicator: StudioProgressView
+        // Создаём рабочую ячейку с указанным процентом в одних и тех же границах. Так изменение
+        // размера нельзя принять за движение шкалы.
         fun cell(percent: Int) =
             StudioGenerationCard.Cell(
                 StudioGeneration.Slot("video", StudioGeneration.Stage.RUNNING, null, percent),
                 frame,
             )
+        // Рисуем шкалу во временную картинку и проверяем цвет и прозрачность в выбранной нижней
+        // точке. Освобождаем картинку после чтения.
         fun lowerArc(): Boolean {
             val image = Bitmap.createBitmap(180, 116, Bitmap.Config.ARGB_8888)
             try {
@@ -164,6 +179,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Подаём фото и видео группами и меняем состояние отдельных мест. При появлении третьего
+    // файла, ошибке или завершении сохраняются четыре ячейки и общая высота.
     @Test
     fun studioBatchKeepsFourCellsWhenTheThirdFileArrives() {
         for ((model, kind, mime) in
@@ -195,6 +212,8 @@ class ResultMediaGeometryTest {
                     null,
                     "third-file",
                 )
+            // Собираем сообщение группы из текущих состояний и известных вложений. Одна схема
+            // подготовки делает сравнение стадий по месту и размеру возможным.
             fun prepare(slots: List<StudioGeneration.Slot>, media: List<Attachment>): PreparedText {
                 val state =
                     StudioGeneration(
@@ -307,7 +326,8 @@ class ResultMediaGeometryTest {
         }
     }
 
-    // Наклейка не должна получать скругление, квадратный низ или прямоугольную подложку фото.
+    // Проверяем пропорции наклейки, прозрачный фон и внешнюю метку времени. У наклейки не должно
+    // быть скругления, квадратного низа и подложки обычной фотографии.
     @Test
     fun regularStickerHasFitGeometryAndNoPhotoCard() {
         val p = layout(MessageKind.STICKER, 600, 424)
@@ -333,6 +353,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Рисуем разные одиночные и составные цветные знаки, сверяем высоту и прозрачный угол. Так
+    // видны случайный маленький шрифт и лишний фон сообщения.
     @Test
     fun incomingEmojiTextUsesNativeLargeGlyphsWithoutAnOrdinaryBubble() {
         for (value in listOf("😀", "👨‍👩‍👧‍👦", "🇷🇺", "1️⃣", "❤️")) {
@@ -376,6 +398,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Создаём вложение с выбранными размерами, видом и подписью. Ограничение ширины и ориентация
+    // позволяют воспроизвести крайние случаи.
     private fun layout(
         kind: MessageKind,
         w: Int,
@@ -402,6 +426,8 @@ class ResultMediaGeometryTest {
         return PreparedText(m, TextLayoutKey(1, 1, bound, 17, 1))
     }
 
+    // Проверяем, что круглое видео занимает отведённый квадрат со стороной 216. Разные размеры
+    // сторон исказили бы круг.
     @Test
     fun roundUsesItsAllocatedDiameter() {
         val p = layout(MessageKind.ROUND, 480, 480, bound = 216)
@@ -413,6 +439,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Проверяем размеры вертикального фото при предельной высоте 400. Ширина должна уменьшиться
+    // пропорционально, чтобы картинка не сплющилась.
     @Test
     fun portraitKeepsAspectInsideTelegramHeightEnvelope() {
         val p = layout(MessageKind.PHOTO, 600, 900)
@@ -424,6 +452,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Измеряем участок под фото с короткой подписью. Время может разделить строку с подписью без
+    // лишнего пустого места.
     @Test
     fun shortCaptionSharesTheTimeRow() {
         val p = layout(MessageKind.PHOTO, 1600, 900, "Привет")
@@ -434,6 +464,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Читаем пиксель вне круглого видео с подписью. Прозрачная точка защищает от появления
+    // прямоугольной подложки.
     @Test
     fun roundCornerStaysTransparentWithCaption() {
         val p = layout(MessageKind.ROUND, 480, 480, "Подпись", 216)
@@ -451,6 +483,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // По пикселям находим длительность и время внизу круга и значок звука сверху. Под кругом не
+    // должно появиться ещё одной строки.
     @Test
     fun roundReferencePillsShareBottomBaselineAndMuteSitsAtTop() {
         val p = layout(MessageKind.ROUND, 480, 480, bound = 216)
@@ -477,6 +511,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Перебираем неверные и сильно вытянутые размеры и все повороты. Видимая часть должна
+    // оставаться конечной, положительной и внутри карточки.
     @Test
     fun geometryStaysFiniteAndBoundedAcrossDimensionsAndRotations() {
         for (kind in
@@ -502,6 +538,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Готовим длинные подписи, переносы и письмо справа налево. Последняя строка должна остаться
+    // внутри карточки с нижним отступом.
     @Test
     fun longAndRtlCaptionsStayInsideCard() {
         for (text in
@@ -521,6 +559,8 @@ class ResultMediaGeometryTest {
         }
     }
 
+    // Проверяем, какие отметки времени и доставки появляются у текста и вложений. Доставка не
+    // должна показывать отметку чтения, а входящее сообщение не получает исходящие галочки.
     @Test
     fun deliveredStampCannotImplyReadAcrossTextAndMedia() {
         val a = Attachment("receipt", "receipt", "video/mp4", 100, 480, 480, 1, 7000, "")

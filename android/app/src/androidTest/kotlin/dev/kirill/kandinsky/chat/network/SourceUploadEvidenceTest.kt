@@ -1,3 +1,5 @@
+// Проверяем запись о принятом исходном файле у явно выбранного проверочного владельца.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -9,7 +11,8 @@ import org.junit.Assume.assumeNotNull
 import org.junit.Test
 
 class SourceUploadEvidenceTest {
-    // Читает только явно указанный аккаунт. Другие проверки используют временные папки.
+    // Сверяем владельца и читаем подтверждение из его местной базы. Ровно одна запись должна
+    // связывать указанное вложение с ожидаемым серверным файлом.
     @Test
     fun acceptedSourceIsRememberedInTheOwnersDatabase() {
         val arguments = InstrumentationRegistry.getArguments()

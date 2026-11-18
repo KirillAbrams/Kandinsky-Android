@@ -1,3 +1,5 @@
+// Проверяем, что текст черновика хранится отдельно для каждого разговора.
+
 package dev.kirill.kandinsky.chat
 
 import androidx.test.uiautomator.By
@@ -7,6 +9,8 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class PersistenceFlowTest {
+    // Пишем отметку в пустом поле одного чата, переходим в другой и возвращаемся. Чужой чат не
+    // должен получить отметку, а исходный должен её сохранить до очистки.
     @Test
     fun draftStaysInItsOwnConversation() {
         val ui = AppFlowDriver()

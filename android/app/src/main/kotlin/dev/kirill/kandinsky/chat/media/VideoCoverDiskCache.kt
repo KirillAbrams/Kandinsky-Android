@@ -1,3 +1,6 @@
+// Сохраняет чёткий кадр видео отдельно от полного ролика. При возврате экран может взять готовое
+// изображение до открытия проигрывателя.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -16,14 +19,21 @@ internal class VideoCoverDiskCache(private val root: File) {
     private var closed = false
     @Volatile private var deletionEpoch = 0L
     private val revokedPaths = linkedSetOf<String>()
+    // Добавляет хранилище в список живых владельцев и убирает исчезнувшие ссылки. Удаление
+    // исходника сможет уведомить все ещё открытые копии.
     init {
         synchronized(gate) {
             active.removeAll { it.get() == null }
             active += java.lang.ref.WeakReference(this)
         }
     }
+    // Возвращает номер последнего изменения при отзыве. Подготовитель кадра сверяет ранее
+    // прочитанный номер, чтобы не сохранить старый результат после удаления.
     fun epoch(): Long = deletionEpoch
 
+    // Проверяет размер, цветовое представление и право записи, затем сохраняет пиксели с
+    // описанием и контрольными суммами. При превышении предела или файлов убирает наиболее
+    // старые.
     fun store(bitmap: Bitmap, key: VideoPlaybackKey, epoch: Long? = null) = synchronized(gate) {
         if (closed || epoch != null && epoch != deletionEpoch || hash(key.relativePath) in revokedPaths || bitmap.config != Bitmap.Config.ARGB_8888 || bitmap.width !in 1..1024 ||
             bitmap.height !in 1..1024 || bitmap.byteCount > maximumBytes) return@synchronized
@@ -56,7 +66,8 @@ internal class VideoCoverDiskCache(private val root: File) {
         }
     }
 
-    // Чёткая копия помещается в отдельный предел и переживает очистку исходников.
+    // Ищет отдельный чёткий кадр, сверяет путь, вид и длину файла. Отмечает время использования,
+    // чтобы очистка заметила недавний просмотр.
     fun galleryFile(relative: String): File? = synchronized(gate) {
         val prefix = hash(relative)
         if (closed || prefix in revokedPaths) return@synchronized null
@@ -67,6 +78,8 @@ internal class VideoCoverDiskCache(private val root: File) {
         file
     }
 
+    // Сохраняет новую уменьшенную копию через временный файл, если исходник ещё доступен. Старые
+    // копии убирает по времени, ограничивая их число.
     fun storeGalleryFile(data: ByteArray, relative: String, epoch: Long) = synchronized(gate) {
         val prefix = hash(relative)
         if (closed || epoch != deletionEpoch || prefix in revokedPaths || data.size !in 1..262_144)
@@ -91,6 +104,8 @@ internal class VideoCoverDiskCache(private val root: File) {
         }
     }
 
+    // Открывает обычный файл без перехода по ссылке, проверяет заголовок, размер и отпечатки.
+    // Сначала учитывает два набора байтов, затем оставляет в счёте только готовый рисунок.
     fun readPixels(key: VideoPlaybackKey, budget: ImageByteBudget): ImagePixels? = synchronized(gate) {
         if (closed || hash(key.relativePath) in revokedPaths) return@synchronized null
         var charge: ImageByteCharge? = null
@@ -134,6 +149,8 @@ internal class VideoCoverDiskCache(private val root: File) {
         }
     }
 
+    // Прекращает операции и убирает себя из списка открытых хранилищ. Закрытая копия больше не
+    // участвует в обработке удаления.
     fun close() = synchronized(gate) {
         closed = true
         revokedPaths.clear()
@@ -146,12 +163,22 @@ internal class VideoCoverDiskCache(private val root: File) {
         private const val headerBytes = 88
         private const val maximumBytes = 4 * 1024 * 1024
         private val magic = "KVIDEO01".toByteArray(Charsets.US_ASCII)
+        // Считает контрольную сумму произвольных байтов. При чтении она позволяет отличить
+        // повреждённый кадр от целой записи.
         private fun digest(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)
+        // Получает текстовый отпечаток пути или ключа. Благодаря ему имя на диске не содержит
+        // исходные разделители.
         private fun hash(text: String) = digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        // Соединяет отпечатки исходника и ключа показа. По первому можно убрать все копии файла,
+        // по обоим можно найти точный кадр.
         private fun name(key: VideoPlaybackKey) = hash(key.relativePath) + "-" + hash(key.cacheKey) + ".frame"
+        // Строит путь к папке кадров и сверяет его с истинным путём. Это не позволяет ссылке
+        // направить чтение или уборку в другое место.
         private fun directory(root: File): File = File(root.canonicalFile, "media/video-covers").also {
             check(it.canonicalFile == it.absoluteFile)
         }
+        // Читает массив до последнего байта и останавливается с ошибкой при обрыве. Частичный
+        // заголовок или рисунок не должен выглядеть готовым.
         private fun FileInputStream.readFully(bytes: ByteArray) {
             var offset = 0
             while (offset < bytes.size) {
@@ -160,6 +187,8 @@ internal class VideoCoverDiskCache(private val root: File) {
                 offset += count
             }
         }
+        // Помечает исходник удалённым для живых хранилищ с тем же корнем и удаляет все его кадры.
+        // Поздний результат подготовки отклоняется, чтобы не восстановить уже удалённое.
         fun revoke(root: File, relativePath: String) = synchronized(gate) {
             val directory = directory(root)
             val prefix = hash(relativePath)

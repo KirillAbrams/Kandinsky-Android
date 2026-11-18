@@ -1,9 +1,14 @@
+// Даём проверкам переход к известному сообщению через тот же пересчёт места чтения, которым
+// пользуется история.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.MessageID
 import dev.kirill.kandinsky.chat.domain.ReadingAnchor
 import kotlin.math.max
 
+// Ищем сообщение, останавливаем прежнюю прокрутку и задаём новое место чтения. У первой строки
+// учитываем верхнее перекрытие, чтобы переход не спрятал её под шапкой.
 internal fun ChatScrollHost.goTo(messageID: MessageID) {
     val position = index.position(messageID) ?: return
     scroller.abortAnimation()

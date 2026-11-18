@@ -1,3 +1,6 @@
+// Передаёт экрану чата уже созданные службы обмена, файлов и проигрывания. Несколько экранов
+// одного аккаунта могут пользоваться теми же ресурсами.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import dev.kirill.kandinsky.chat.media.MediaAdmission

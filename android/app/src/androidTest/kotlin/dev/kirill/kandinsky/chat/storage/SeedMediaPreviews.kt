@@ -1,3 +1,6 @@
+// Добавляет уменьшенные изображения и точки формы звука для проверочного набора. Экран использует
+// их до чтения полных файлов.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.content.res.AssetManager
@@ -5,9 +8,8 @@ import android.database.sqlite.SQLiteDatabase
 import org.json.JSONObject
 
 object SeedMediaPreviews {
-    // Записываем отметку готовности вместе с миниатюрами. Если установка прервётся, при запуске
-    // попробуем ещё
-    // раз.
+    // Проверяет размер описания, связывает копии с именами файлов и номерами вложений и ставит
+    // отметку в той же записи базы. После сбоя установку можно повторить целиком.
     fun install(db: SQLiteDatabase, assets: AssetManager) {
         if (
             db.rawQuery("SELECT 1 FROM metadata WHERE key='media-preview-catalog-v1'", null).use {

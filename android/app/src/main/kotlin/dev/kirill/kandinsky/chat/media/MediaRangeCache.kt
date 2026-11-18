@@ -1,3 +1,6 @@
+// Сохраняет части видео между просмотрами, держит небольшой объём в памяти и собирает оригинал
+// после проверки. Запись временного файла помогает пережить прерванную загрузку.
+
 package dev.kirill.kandinsky.chat.media
 
 import java.io.File
@@ -24,15 +27,17 @@ class MediaRangeCache(
     private var active: MediaCancellation? = null
     private val memory = LinkedHashMap<Int, ByteArray>(2, 0.75f, true)
 
+    // Проверяет номер содержимого, предел длины и путь к папке без перехода по ссылкам. После
+    // проверки создаёт свою папку для частей.
     init {
         require(blob.matches(Regex("[a-f0-9]{32}|[a-f0-9]{64}")) && length in 1..67108864L)
         require(directory.canonicalFile == directory.absoluteFile)
         check(directory.isDirectory || directory.mkdirs())
     }
 
-    // Скачанные части остаются на диске. Если снова открыть видео, плеер сможет использовать их без
-    // повторной
-    // загрузки.
+    // Читает нужные байты из готового файла или ближайшей сохранённой части. Недостающую часть
+    // скачивает с отменой, проверяет и записывает через временный файл. В памяти сохраняет только
+    // две части.
     fun read(offset: Long, count: Int, cancellation: MediaCancellation): ByteArray {
         require(offset >= 0 && count >= 0)
         if (offset >= length || count == 0) return ByteArray(0)
@@ -100,9 +105,9 @@ class MediaRangeCache(
         }
     }
 
-    // Если номер файла содержит полный хеш, сверяем его перед публикацией. Повреждённые части
-    // придётся скачать
-    // заново.
+    // Проверяет длину всех частей, собирает целый файл и сверяет контрольную сумму, если она
+    // известна. При несовпадении отбрасывает части, иначе повреждённый оригинал остался бы
+    // доступен после перезапуска.
     private fun promoteIfComplete() {
         if (original.isFile) return
         val count = ((length + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt()
@@ -141,7 +146,8 @@ class MediaRangeCache(
         }
     }
 
-    // Текущий файл может ещё читать плеер. Поэтому при нехватке места удаляем части других файлов.
+    // Считает место частей всех роликов и убирает старые папки до предела. Текущий ролик
+    // исключает, чтобы его части не исчезли во время просмотра.
     private fun pruneInactive() {
         val directories = directory.parentFile?.listFiles()?.filter { it.isDirectory } ?: return
         val sizes = directories.associateWith { it.listFiles()?.sumOf { f -> f.length() } ?: 0L }
@@ -153,6 +159,8 @@ class MediaRangeCache(
         }
     }
 
+    // Закрывает вход для новых запросов и отменяет текущее чтение. Очищает память сразу, если она
+    // свободна, или при выходе чтения.
     override fun close() {
         val token =
             synchronized(state) {

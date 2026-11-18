@@ -1,3 +1,6 @@
+// Хранит время просмотра и чёткие кадры видео, пока они нужны ленте. Готовые картинки загружает с
+// диска в фоне и учитывает по общему пределу памяти.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -27,9 +30,13 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
     )
 
     private class CoverWrite(private var frame: PreparedImage?, private var charge: ImageByteCharge?) {
+        // Сохраняет готовый кадр при правильном номере отзыва и всегда освобождает запись после
+        // попытки. Отказ диска не должен удерживать лишние пиксели.
         @Synchronized fun perform(disk: VideoCoverDiskCache, key: VideoPlaybackKey, epoch: Long) {
             try { frame?.bitmap?.let { disk.store(it, key, epoch) } } finally { close() }
         }
+        // Под защитой снимает удержание кадра и переданных байтов. Повторное закрытие оставляет
+        // счёт памяти прежним.
         @Synchronized fun close() {
             frame?.close(); frame = null
             charge?.close(); charge = null
@@ -41,8 +48,12 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         private set
     private var closed = false
 
+    // Возвращает сохранённое место просмотра или начало. Позволяет открыть тот же ролик с
+    // прежнего времени.
     fun position(key: VideoPlaybackKey): Long = positions[key] ?: 0L
 
+    // Принимает неотрицательное время только текущего состояния и обновляет порядок последних
+    // просмотров. Число позиций ограничено, чтобы длинная история не растила список бесконечно.
     fun rememberPosition(value: Long, key: VideoPlaybackKey, generation: Int) {
         if (closed || this.generation != generation || value < 0) return
         positions.remove(key)
@@ -50,10 +61,15 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         while (positions.size > 256) positions.remove(positions.keys.first())
     }
 
+    // Берёт общие пиксели из памяти и выдаёт отдельное удержание. Само чтение не обращается к
+    // диску.
     fun frame(key: VideoPlaybackKey): PreparedImage? = frames.frame(key.cacheKey)
+    // Даёт кадр только пока хранилище открыто. Поздний вызов экрана не восстанавливает закрытое
+    // содержимое.
     fun cover(key: VideoPlaybackKey): PreparedImage? = if (closed) null else frame(key)
 
-    // В кадре экрана читаем только память. Владельцы одного дискового чтения разделяют результат.
+    // Объединяет запросы одной копии и проверяет состояние перед показом. Новый кадр из памяти
+    // имеет преимущество перед старой дисковой копией.
     fun restoreCover(
         key: VideoPlaybackKey,
         priority: Int = 1,
@@ -105,6 +121,8 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         })
     }
 
+    // Заранее собирает до четырёх выбранных кадров и отменяет ушедшие. Уже известный кадр не
+    // читает заново.
     fun prepareCovers(keys: List<VideoPlaybackKey>) {
         if (closed) return
         val wanted = keys.distinct().take(4).toSet()
@@ -123,9 +141,12 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         }
     }
 
+    // Освобождает место от неиспользуемых кадров перед новым резервом. Пока читатели держат всё
+    // занятое, запрос на больший объём получает отказ.
     fun makeRoom(amount: Int) = frames.makeRoom(amount)
 
-    // Место резервируется до копирования кадра. Снимки делят общий предел с фотографиями.
+    // Учитывает размер до получения кадра, снимает отметку старого фонового копирования и публикует
+    // новый. При ошибке возвращает изображение и память.
     fun rememberFrame(
         key: VideoPlaybackKey,
         generation: Int,
@@ -149,6 +170,8 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         }
     }
 
+    // Обновляет существующий чёткий кадр в фоне с ограничением числа копирований. Перед выдачей
+    // проверяет, что попытка последняя, сеанс открыт, а файл не отозван.
     fun refreshCoverFromSurface(
         key: VideoPlaybackKey,
         generation: Int,
@@ -193,8 +216,12 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         }
     }
 
+    // Проверяет наличие кадра и сразу закрывает пробное удержание. Проверка не должна мешать
+    // вытеснению.
     private fun hasCover(key: VideoPlaybackKey): Boolean = frame(key)?.use { true } ?: false
 
+    // Проверяет состояние и размеры, уменьшает крупный кадр и резервирует байты до копирования.
+    // Сохраняет номер отзыва, чтобы поздний кадр не вернулся после удаления.
     private fun reserveFrame(generation: Int, width: Int, height: Int): FrameReservation? {
         if (closed || this.generation != generation || width <= 0 || height <= 0) return null
         val scale = minOf(1.0, 1024.0 / maxOf(width, height))
@@ -206,6 +233,8 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         return FrameReservation(frameWidth, frameHeight, disk?.epoch() ?: 0L, charge)
     }
 
+    // Уменьшает резерв до реально занятых байтов и ставит готовый рисунок в память. Затем
+    // назначает отдельную запись на диск.
     private fun publishFrame(key: VideoPlaybackKey, reservation: FrameReservation, bitmap: Bitmap) {
         val bytes = bitmap.allocationByteCount
         reservation.charge.shrink(bytes)
@@ -213,11 +242,15 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         persist(key, bytes, reservation.epoch)
     }
 
+    // Добавляет кадр в память с пределом для видео и долей общего объёма. Старые кадры уступают
+    // место, сохраняя общий запас для фото.
     private fun retainFrame(pixels: ImagePixels, key: VideoPlaybackKey) {
         val maximumBytes = minOf(16 * 1024 * 1024, budget.limit / 3)
         frames.insert(pixels, key.cacheKey, maximumBytes)
     }
 
+    // Открывает удержание на время записи и резервирует временные байты. При нехватке памяти или
+    // занятости очереди не создаёт ещё одну запись.
     private fun persist(key: VideoPlaybackKey, bytes: Int, epoch: Long) {
         val disk = disk ?: return
         if (writes.size >= 2) return
@@ -236,6 +269,8 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         )
     }
 
+    // Меняет номер состояния и снимает копирование, чтение и готовые рисунки. Позиции оставляет
+    // для последующего возврата, а поздние копии становятся недействительными.
     fun clearFrames() {
         generation++
         pendingCopies.clear()
@@ -246,6 +281,8 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         frames.clear()
     }
 
+    // Запрещает новые операции, закрывает очереди и диск и убирает кадры и позиции. После выхода
+    // ни одна сохранённая копия не должна вернуться в закрытый экран.
     fun close() {
         closed = true
         reader.close()

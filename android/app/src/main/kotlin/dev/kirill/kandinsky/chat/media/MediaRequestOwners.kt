@@ -1,3 +1,6 @@
+// Хранит получателей общего запроса и останавливает передачу сразу после ухода последнего. Снять
+// подписку можно, пока очередь экрана ещё занята.
+
 package dev.kirill.kandinsky.chat.media
 
 import java.util.UUID
@@ -9,6 +12,8 @@ internal class MediaRequestOwners {
     private val owners = mutableSetOf<UUID>()
     private var closed = false
 
+    // Добавляет получателя только в открытую передачу под общей блокировкой. Поздняя подписка
+    // получает отказ и сможет выбрать новый запрос.
     fun insert(owner: UUID): Boolean =
         synchronized(gate) {
             if (closed) false
@@ -18,6 +23,8 @@ internal class MediaRequestOwners {
             }
         }
 
+    // Убирает известного получателя и закрывает запрос, если список опустел. Повторное удаление
+    // неизвестного получателя не отменяет чужую работу.
     fun remove(owner: UUID) {
         val shouldCancel =
             synchronized(gate) {
@@ -27,8 +34,12 @@ internal class MediaRequestOwners {
     }
 
     val isClosed
+        // Читает признак закрытия под той же блокировкой, что и запись. Очередь может безопасно
+        // выбрать новую передачу вместо закрытой.
         get() = synchronized(gate) { closed }
 
+    // Закрывает запрос для новых подписок, очищает список и вызывает отмену. Даже если подписчики
+    // не снялись по одному, сеть больше не нужна.
     fun close() {
         synchronized(gate) {
             closed = true

@@ -1,3 +1,6 @@
+// Даёт проигрывателю готовый файл или доступ к отдельным частям видео. При закрытии прекращает
+// чтения и снимает удержание файла.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.media.MediaDataSource
@@ -9,6 +12,8 @@ class MediaPlaybackSource(
     private val onClose: () -> Unit = {},
 ) : AutoCloseable {
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Заранее читает разные части в начале и конце файла. Если полный файл уже есть,
+    // дополнительное чтение через сеть не требуется.
     fun prepareForPlayback(token: MediaCancellation) {
         val cache = ranges ?: return
         val chunk = MediaRangeCache.CHUNK_SIZE.toLong()
@@ -19,10 +24,13 @@ class MediaPlaybackSource(
     val dataSource: MediaDataSource? =
         ranges?.let { cache ->
             object : MediaDataSource() {
-                // Размер относится к целому источнику, даже когда на диске сохранены только
-                // отдельные участки
+                // Сообщает полный размер видео, даже если доступны только несколько частей.
+                // Проигрыватель рассчитывает позицию по общему размеру.
                 override fun getSize(): Long = cache.length
 
+                // Проверяет границы памяти проигрывателя и читает ограниченную порцию с нужной
+                // позиции. За концом возвращает признак окончания, чтобы проигрыватель не ждал
+                // новые данные.
                 override fun readAt(
                     position: Long,
                     buffer: ByteArray,
@@ -36,14 +44,16 @@ class MediaPlaybackSource(
                     return data.size
                 }
 
-                // Новые чтения больше не должны использовать освобождённые ресурсы хранилища
+                // Закрывает хранилище частей по просьбе системного проигрывателя. Открытые
+                // запросы больше не используют освобождённое чтение.
                 override fun close() {
                     cache.close()
                 }
             }
         }
 
-    // Атомарная отметка закрытия не позволяет повторному вызову ещё раз освободить тот же ресурс
+    // При первом закрытии отменяет чтение частей и освобождает файл. Повторный вызов не уменьшает
+    // удержание ещё раз.
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             ranges?.close()

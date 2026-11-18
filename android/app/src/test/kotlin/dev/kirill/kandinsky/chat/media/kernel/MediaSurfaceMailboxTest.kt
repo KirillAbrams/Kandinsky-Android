@@ -1,3 +1,5 @@
+// Проверяет показ последнего кадра, смену источника и точное освобождение кадров при закрытии.
+
 package dev.kirill.kandinsky.chat.media.kernel
 
 import java.util.ArrayDeque
@@ -8,13 +10,16 @@ class MediaSurfaceMailboxTest {
     private class Frame(val value: Int) : AutoCloseable {
         var closes = 0
 
+        // Увеличивает число освобождений пробного кадра и сразу отклоняет второй вызов. Иначе
+        // двойное закрытие было бы незаметно.
         override fun close() {
             closes++
             check(closes == 1)
         }
     }
 
-    // После закрытия ожидает снятый экран и запрет нового подключения.
+    // Передаёт тысячу кадров и ждёт один показ последнего. Проверяет отказ повторённому кадру и
+    // кадру старого источника, затем закрывает очередь и проверяет снятие картинки.
     @Test
     fun coalescesFramesAndRejectsOldBindingAndSequence() {
         val tasks = ArrayDeque<() -> Unit>()
@@ -45,7 +50,8 @@ class MediaSurfaceMailboxTest {
         while (tasks.isNotEmpty()) tasks.removeFirst()()
     }
 
-    // Поздний кадр не должен восстановить закрытое содержимое или вызвать двойное освобождение.
+    // Закрывает источник между предложением следующего кадра и его показом. Ожидающий кадр
+    // закрывается сразу, показанный снимается следующим обновлением, поздний не возвращается.
     @Test
     fun revokeBetweenOfferAndPublicationClearsWithoutResurrection() {
         val tasks = ArrayDeque<() -> Unit>()
@@ -72,7 +78,8 @@ class MediaSurfaceMailboxTest {
         assertEquals(1, first.closes)
     }
 
-    // После закрытия обрабатывает остаток уведомлений без новой работы.
+    // Много раз открывает и снимает кадр вручную до выполнения ожидающего уведомления. Очередь
+    // всё время держит одно уведомление, а последнее закрытие не возрождает работу.
     @Test
     fun immediateUiClearsDoNotAccumulateAlreadyQueuedNotices() {
         val tasks = ArrayDeque<() -> Unit>()
@@ -88,6 +95,8 @@ class MediaSurfaceMailboxTest {
         while (tasks.isNotEmpty()) tasks.removeFirst()()
     }
 
+    // Запускает предложение кадра и закрытие в разных потоках. После окончания и разбора
+    // оставшихся вызовов кадр освобождён ровно один раз.
     @Test
     fun concurrentOfferAndCloseReleaseExactlyOnce() {
         repeat(100) {

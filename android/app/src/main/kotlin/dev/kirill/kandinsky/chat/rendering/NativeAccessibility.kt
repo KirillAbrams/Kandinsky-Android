@@ -1,3 +1,7 @@
+// Здесь нарисованные действия получают обычное системное описание с именем, рамкой и
+// обработчиком. Имена привязаны к сообщениям и кнопкам. После прокрутки старый фокус
+// освобождается, чтобы система не озвучила под тем же номером другой пункт.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.Rect
@@ -37,6 +41,8 @@ class NativeAccessibility(
     private val claimed = BooleanArray(4096)
     private var nextDynamic = 4096
 
+    // Сверяем текущие действия со списком известных имён. Ушедшие номера отзываем, а новым выдаём
+    // свободные номера. Если ушёл элемент в фокусе, уведомляем систему.
     private fun snapshot(): List<NativeAction> {
         val items = actions()
         val present = items.mapTo(HashSet()) { it.id }
@@ -67,6 +73,8 @@ class NativeAccessibility(
         return items
     }
 
+    // Для всей области даём список нарисованных и обычных дочерних элементов. Для отдельного
+    // элемента переводим рамку в экранные координаты и добавляем лишь доступные ему действия.
     override fun createAccessibilityNodeInfo(id: Int): AccessibilityNodeInfo? {
         val items = snapshot()
         if (id == View.NO_ID)
@@ -112,6 +120,8 @@ class NativeAccessibility(
         }
     }
 
+    // Находим текущее действие по устойчивому номеру и выполняем обычное, длинное или добавочное
+    // касание. Команды фокуса обновляют выбранный элемент и сообщают системе.
     override fun performAction(id: Int, action: Int, arguments: Bundle?): Boolean {
         val item = snapshot().find { it.id == names[id] } ?: return false
         return when (action) {
@@ -144,9 +154,13 @@ class NativeAccessibility(
         }
     }
 
+    // Возвращаем описание элемента, который сейчас озвучивается. Если он ушёл или ещё не выбран,
+    // система получает пустой результат.
     override fun findFocus(focus: Int): AccessibilityNodeInfo? =
         if (focused != View.NO_ID) createAccessibilityNodeInfo(focused) else null
 
+    // Отправляем уведомление от нужного узла только при включённой доступности. Тогда пустые
+    // события не идут в систему без получателя.
     private fun event(id: Int, type: Int) {
         if (!manager.isEnabled) return
         val e = AccessibilityEvent.obtain(type)
@@ -156,6 +170,8 @@ class NativeAccessibility(
         host.parent?.requestSendAccessibilityEvent(host, e)
     }
 
+    // Сверяем список имён и при включённом озвучивании сообщаем, что видимые части области
+    // изменились. Система сможет снять старый фокус и прочитать свежие рамки.
     fun notifyChanged() {
         snapshot()
         if (!manager.isEnabled) return
@@ -169,5 +185,7 @@ class NativeAccessibility(
 }
 
 interface KandinskyInsetHost {
+    // Получаем верхний и нижний отступы от экрана. Ограничиваем положение элементов этой областью,
+    // которую не перекрывают системные панели.
     fun updateInsets(top: Int, bottom: Int)
 }

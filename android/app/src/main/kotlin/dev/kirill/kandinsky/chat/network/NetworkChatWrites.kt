@@ -1,3 +1,7 @@
+// Записывает сведения о чатах и восстанавливает список недавних из базы телефона. Страницы
+// сообщений и карточки могут приходить отдельно, поэтому признаки списка сохраняются своими
+// записями.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -5,6 +9,8 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.*
 import org.json.JSONObject
 
+// Меняет только отметку архива, когда сервер прислал другое значение. Остальные сохранённые
+// признаки остаются пригодны для следующего обновления.
 private fun NetworkStore.studioArchive(db: SQLiteDatabase, chat: Long, archived: Boolean) {
     val flags = ChatServerState.state(db, chat)
     if (flags.optBoolean("archived") == archived) return
@@ -15,7 +21,8 @@ private fun NetworkStore.studioArchive(db: SQLiteDatabase, chat: Long, archived:
     )
 }
 
-// Скрываем старую историю на устройстве, чтобы задержавшаяся страница не вернула удалённый чат.
+// Для существующего видимого чата сохраняет скрытие и предельную границу очистки. Возвращает
+// номера снятых сообщений, чтобы убрать их с экрана. Поздняя страница не должна вернуть чат.
 internal fun NetworkStore.retireChat(db: SQLiteDatabase, chat: Long): List<Long>? {
     val exists =
         db.rawQuery("SELECT id FROM chats WHERE id=?", arrayOf(chat.toString())).use {
@@ -32,7 +39,8 @@ internal fun NetworkStore.retireChat(db: SQLiteDatabase, chat: Long): List<Long>
     return ChatServerState.applyState(db, chat, flags)
 }
 
-// Старые базы могут хранить границу уже прочитанной истории.
+// Читает прежнюю отметку прочтения и принимает только неотрицательное число. Если её нет,
+// начинает с нуля, чтобы счётчик можно было пересчитать и на старой базе.
 private fun legacyReadPosition(db: SQLiteDatabase, chat: Long): Long =
     db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf("ownRead:$chat")).use {
         (if (it.moveToFirst()) it.getString(0).toLong() else 0L).also { through ->
@@ -40,6 +48,9 @@ private fun legacyReadPosition(db: SQLiteDatabase, chat: Long): Long =
         }
     }
 
+// Проверяет размер и версию порции, пишет карточки и учитывает более новые непрочитанные
+// сообщения сверх полученной сводки. Возвращает удалённые строки и отмечает изменения, которые
+// должен увидеть экран.
 internal fun NetworkStore.mergeChatRows(
     db: SQLiteDatabase,
     json: JSONObject,
@@ -114,7 +125,8 @@ internal fun NetworkStore.mergeChatRows(
     return removed
 }
 
-// Сводка не зависит от загруженной страницы сообщений и переживает закрытие приложения.
+// Сохраняет время последнего действия и признак генерации отдельно от страницы сообщений. Может
+// пропустить старый ответ, если сведения уже пришли более свежим событием.
 internal fun NetworkStore.rememberStudioDirectory(
     db: SQLiteDatabase, chat: JSONObject, preserveKnown: Boolean = false,
 ) {
@@ -134,6 +146,8 @@ internal fun NetworkStore.rememberStudioDirectory(
     )
 }
 
+// Применяет порцию карточек вместе с нужной отметкой о недавних чатах в одной записи. При ошибке
+// приложение не получает наполовину изменённый список.
 internal fun NetworkStore.mergeChatList(
     db: SQLiteDatabase,
     json: JSONObject,
@@ -154,6 +168,8 @@ internal fun NetworkStore.mergeChatList(
         deltas(db, touched, removed, MessageChangeReason.SYNC)
     }
 
+// Сохраняет время получения и последовательность номеров с сервера. Эти данные помогают
+// восстановить порядок при следующем открытии.
 internal fun NetworkStore.rememberStudioRecent(db: SQLiteDatabase, json: JSONObject) {
     val chats = json.getJSONArray("chats")
     val order =
@@ -162,6 +178,8 @@ internal fun NetworkStore.rememberStudioRecent(db: SQLiteDatabase, json: JSONObj
     state(db, "studioRecentOrder", order.joinToString(","))
 }
 
+// Читает сохранённые карточки, исключает архив и скрытые чаты и сортирует по закреплению, времени
+// и порядку сервера. По полной порции определяет, есть ли смысл запрашивать продолжение.
 internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage {
     data class Entry(val thread: StudioThread, val activity: Long, val rank: Int)
     val index =
@@ -229,6 +247,8 @@ internal fun NetworkStore.loadRecentChats(db: SQLiteDatabase): StudioRecentPage 
     return StudioRecentPage(rows, ids.size.takeIf { it == StudioRecentPage.CATALOG_LIMIT })
 }
 
+// Проверяет, есть ли карточки для чатов из событий. Если сервер не приложил карточки и часть
+// номеров неизвестна, клиент может сначала восстановить список.
 internal fun NetworkStore.containsUnknownChat(db: SQLiteDatabase, json: JSONObject): Boolean {
     if (json.has("chats")) return false
     val events = json.getJSONArray("events")

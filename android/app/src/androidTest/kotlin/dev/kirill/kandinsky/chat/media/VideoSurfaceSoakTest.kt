@@ -1,3 +1,7 @@
+// Проверки настоящих видеоповерхностей на андроиде. Сверяем кадр с выбранной позицией, проверяем
+// удержание и вытеснение при прокрутке, повтор без звука и освобождение владельцев после длинной
+// серии.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -28,6 +32,8 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
+// Читаем сохранённые точки по ключу и получаем отдельную удержанную копию. Временную ссылку
+// чтения сразу закрываем.
 private fun VideoCoverDiskCache.frame(
     key: VideoPlaybackKey,
     budget: ImageByteBudget,
@@ -37,6 +43,8 @@ private fun VideoCoverDiskCache.frame(
 }
 
 class VideoSurfaceSoakTest {
+    // Показываем четыре видео в карточке и проверяем движение каждого по собственному времени. За
+    // пределами окна счётчик активных кадров должен стать нулевым.
     @Test
     fun fourStudioVideosRenderIndependentFramesAndPauseOutsideTheViewport() {
         val activity = emptyActivity()
@@ -97,6 +105,8 @@ class VideoSurfaceSoakTest {
                 scene.imageViewport = viewport
                 scene.apply(album)
             }
+            // Перечисляем настоящие беззвучные поверхности внутри сцены. По ним видно, какие
+            // ролики ещё работают или уже на паузе.
             fun previews(): List<SilentVideoPreview> =
                 (0 until root.childCount).mapNotNull { root.getChildAt(it) as? SilentVideoPreview }
 
@@ -137,6 +147,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Проверяем сохранение кадра, границы каталога, чужой ключ, повреждённый файл и отзыв. Запас
+    // ограничен по объёму, а закрытие отпускает ожидающие и начатые рисунки.
     @Test
     fun durableCoverIsBoundedAndRejectsWrongKeyCorruptionSymlinksAndRevocation() {
         val root = File(context.cacheDir, "durable-cover-" + UUID.randomUUID())
@@ -217,6 +229,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Показываем ролик, затем шесть других, чтобы его проигрыватель вытеснился. Возврат даёт свой
+    // чёткий кадр и заранее готовит местную позицию без ожидания старта.
     @Test
     fun feedReturnAfterSixOtherVideosKeepsSharpOwnCoverWithoutDecoderWait() {
         val activity = emptyActivity()
@@ -241,6 +255,8 @@ class VideoSurfaceSoakTest {
             }
             val a = Attachment(d.id, d.relativePath, d.mime, d.byteSize, d.rawWidth, d.rawHeight,
                 d.orientation, d.durationMs, d.thumbnailKey)
+            // Ставим видео полностью или частично в окно и возвращаем владельца предпросмотра.
+            // Частичное появление проверяет подготовку до полного входа в видимую область.
             fun show(id: Long, partiallyVisible: Boolean = false): SilentVideoPreview {
                 val row = Message(id, 2, OrderKey(id, id), MessageDirection.INCOMING, 0,
                     MessageKind.VIDEO, "", "", null, 1, listOf(a))
@@ -254,6 +270,8 @@ class VideoSurfaceSoakTest {
                 val nodes = scene.javaClass.getDeclaredField("nodes").apply { isAccessible = true }.get(scene) as Map<*, *>
                 return checkNotNull((nodes.values.single() as dev.kirill.kandinsky.chat.rendering.MessageNode).video)
             }
+            // Получаем фактический сеанс вывода у предпросмотра. Его тождество показывает,
+            // продолжался ли уже подготовленный ролик.
             fun session(owner: SilentVideoPreview): Any = SilentVideoPreview::class.java
                 .getDeclaredField("session").apply { isAccessible = true }.get(owner)!!
             lateinit var first: SilentVideoPreview
@@ -348,6 +366,8 @@ class VideoSurfaceSoakTest {
 
 
 
+    // Открываем файл с диска, сохраняем рисунок и время при выходе, затем открываем снова.
+    // Сверяем возобновление с прежней позиции и отсутствие сетевых обращений.
     @Test
     fun manuallyViewedLocalVideoSavesFrameAndPositionForReopen() {
         val activity = emptyActivity()
@@ -425,6 +445,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Даём видео проиграться и берём его видимый системный кадр. При переходе сравниваем первый
+    // рисунок с ним, чтобы старая обложка не подменила кадр остановки.
     @Test
     fun viewerHandoffUsesCurrentDecodedVideoFrameInsteadOfUnderlyingPoster() {
         val activity = emptyActivity()
@@ -481,6 +503,9 @@ class VideoSurfaceSoakTest {
     }
 
 
+    // Возвращаем ошибку первого чтения и несколько раз согласуем тот же экран. Пока видео видимо,
+    // число запросов не растёт. Уход снимает неисправного владельца, а возврат начинает второй
+    // запрос.
     @Test
     fun failedPreviewRetriesOnlyAfterLeavingAndReturning() {
         val activity = emptyActivity()
@@ -501,6 +526,8 @@ class VideoSurfaceSoakTest {
             lateinit var first: SilentVideoPreview
             lateinit var prepared: dev.kirill.kandinsky.chat.rendering.PreparedText
             val stamp = android.graphics.RenderNode("Failure retry fixture")
+            // Снова привязываем владельца к одному файлу и месту. Повторная команда даёт
+            // возможность проверить, что видимая ошибка не вызывает бесконечные запросы.
             fun bind(owner: SilentVideoPreview) {
                 owner.bind(a, android.graphics.RectF(0f, 0f, 600f, 400f), false, 12f, false,
                     stamp, prepared, playbackKey = key)
@@ -549,6 +576,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Уводим ролик после заметного движения и вытесняем проигрыватель. Сверяем возвращённый
+    // чёткий рисунок с настоящим кадром и позицию нового владельца с сохранённой.
     @Test
     fun evictedVideoReturnsOnItsOwnRenderedFrameAndSavedPlayhead() {
         val activity = emptyActivity()
@@ -618,6 +647,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Показываем сообщение с заданным номером и получаем его беззвучный проигрыватель из сцены.
+    // Это даёт отдельного владельца для каждого сравниваемого сообщения.
     private fun showVideo(scene: RetainedChatScene, attachment: Attachment, id: Long): SilentVideoPreview {
         val row = Message(
             id, 2, OrderKey(id, id), MessageDirection.INCOMING, 0, MessageKind.VIDEO,
@@ -631,11 +662,15 @@ class VideoSurfaceSoakTest {
         return checkNotNull((nodes.values.single() as MessageNode).video)
     }
 
+    // Берём сеанс системного проигрывателя внутри видимого элемента. Так можно сверить
+    // закреплённый файл и фактическую позицию.
     private fun videoSession(preview: SilentVideoPreview): PlayerSession {
         val field = SilentVideoPreview::class.java.getDeclaredField("session").apply { isAccessible = true }
         return field.get(preview) as PlayerSession
     }
 
+    // Приводим два рисунка к одному небольшому размеру и считаем среднюю разницу цветовых
+    // каналов. Копии после сравнения освобождаются.
     private fun meanFrameDifference(expected: Bitmap, actual: Bitmap): Double {
         val width = 32
         val height = 18
@@ -659,7 +694,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
-    // Проверку запускаем без сохранённого профиля, чтобы она не открыла сеанс на рабочем сервере.
+    // Запускаем приложение до пустой формы входа, чтобы не подключиться к рабочему аккаунту.
+    // Дальше сценарий сам вставляет местную историю.
     private fun emptyActivity(): MainActivity {
         val context = i.targetContext
         check(context.packageName.endsWith(".cleanup")) { "Нужна отдельная проверочная установка" }
@@ -713,6 +749,8 @@ class VideoSurfaceSoakTest {
         return activity
     }
 
+    // Запрашиваем позицию в рабочем потоке самого проигрывателя и ждём ответ. Прямое чтение с
+    // другого потока могло бы поймать промежуточное состояние.
     private fun nativePosition(native: Any): Long {
         val worker = native.javaClass.getDeclaredField("worker")
             .apply { isAccessible = true }.get(native) as android.os.Handler
@@ -731,8 +769,12 @@ class VideoSurfaceSoakTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Проводим действие в потоке экрана синхронно. Проверка видит результат после выполненной
+    // команды.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Считываем условие в потоке экрана до установленного срока. При неготовности показываем,
+    // какому кадру или действию не удалось завершиться.
     private fun waitFor(description: String, seconds: Long = 5, check: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + seconds * 1000
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -744,6 +786,8 @@ class VideoSurfaceSoakTest {
         throw AssertionError(description)
     }
 
+    // Сдвигаем ролик в ленте, уводим за экран и возвращаем. Проверяем точную геометрию, прежний
+    // сеанс, чёткий кадр и повторное использование уже сохранённого рисунка.
     @Test
     fun scrollAwayAndBackKeepsNativeVideoFrameSessionAndPausedPlayhead() {
         val activity = emptyActivity()
@@ -771,6 +815,8 @@ class VideoSurfaceSoakTest {
             lateinit var prepared: dev.kirill.kandinsky.chat.rendering.PreparedText
             lateinit var fragment: dev.kirill.kandinsky.chat.rendering.SceneFragment
             val viewport = android.graphics.RectF(0f, 0f, 1080f, 2000f)
+            // Меняем видимую область сцены без смены сообщения. Это имитирует прокрутку и
+            // возвращение к тому же слою.
             fun show(rect: android.graphics.RectF) {
                 scene.viewport = rect
                 scene.imageViewport = rect
@@ -873,6 +919,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Запускаем местное круглое видео и проверяем его компактную строку. После остановки и
+    // возврата соседнее сообщение должно быть на прежней высоте.
     @Test
     fun cachedRoundPlaybackKeepsRowAndFollowingMessageStable() {
         val activity = emptyActivity()
@@ -940,6 +988,8 @@ class VideoSurfaceSoakTest {
                 }
                 Cancellation {}
             }
+            // Находим удерживаемую раскладку именно круглого ролика. Сравнение той же раскладки
+            // показывает, было ли лишнее измерение при воспроизведении.
             fun layout(): dev.kirill.kandinsky.chat.rendering.PreparedText? {
                 val retained =
                     host.javaClass.getDeclaredField("scene").apply { isAccessible = true }.get(host)
@@ -1044,6 +1094,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Считываем системное время и ждём два перехода через конец, сохраняя одного владельца. Сцена
+    // должна узнать о первом кадре и снятии вывода без уведомления на каждый кадр.
     @Test
     fun mutedRoundPreviewCrossesTwoNativeEndsWithoutExtraOwners() {
         val activity = emptyActivity()
@@ -1187,6 +1239,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Ждём настоящего видеокадра и проверяем на снимке, что его подпись видна сверху. Заодно
+    // сверяем, что обычный сдвиг не меняет размеры поверхности.
     @Test
     fun stampIsDrawnAboveTheFirstActualVideoFrame() {
         val activity = emptyActivity()
@@ -1297,7 +1351,8 @@ class VideoSurfaceSoakTest {
             assertTrue(committed.await(5, TimeUnit.SECONDS))
             val location = IntArray(2)
             main { owner!!.getLocationOnScreen(location) }
-            // Поэтому отдельно читаются пиксели итогового экрана.
+            // Сравниваем цвет точки с ожидаемым с небольшим допуском по каждому каналу. Так на
+            // снимке можно различить текст подписи и фон видео.
             fun matches(actual: Int, expected: Int) =
                 kotlin.math.abs(
                     android.graphics.Color.red(actual) - android.graphics.Color.red(expected)
@@ -1438,6 +1493,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Занимаем два места, затем меняем источник одного ролика. Прежняя поверхность снимается без
+    // остановки соседа.
     @Test
     fun changingSourceWithBothPreviewSlotsOccupiedRetiresOldNativeOutput() {
         val activity = emptyActivity()
@@ -1455,6 +1512,8 @@ class VideoSurfaceSoakTest {
         val stamp = android.graphics.RenderNode("Preview rebind stamp")
         main { media = MediaStore(h.store) }
         try {
+            // Подготавливаем местный ролик штатным чтением во временное хранилище. Повторный
+            // вызов даёт отдельный вложенный источник.
             fun stage() =
                 awaitResult<AttachmentDraft> { cb ->
                     main {
@@ -1466,6 +1525,8 @@ class VideoSurfaceSoakTest {
                     }
                     Cancellation {}
                 }
+            // Переносим сведения готового файла во вложение. Так пробный проигрыватель узнаёт
+            // точный путь и размеры без фиктивного ответа.
             fun attachment(d: AttachmentDraft) =
                 Attachment(
                     d.id,
@@ -1564,6 +1625,8 @@ class VideoSurfaceSoakTest {
         }
     }
 
+    // Сто раз получаем настоящий рисунок без звука и закрываем его владельца. Проверяем число
+    // завершений, ограниченный пик и отсутствие мест после каждого выхода.
     @Test
     fun hundredSilentNativePreviewLifecyclesReleaseOwnersAndOutputs() {
         val activity = emptyActivity()
@@ -1582,6 +1645,8 @@ class VideoSurfaceSoakTest {
         var completed = 0
         var captures = 0
         var peak = 0
+        // Снимаем показатели памяти процесса на указанном этапе повторного воспроизведения. Эти
+        // значения помогают отличить рост памяти от временного расхода на кадр.
         fun sample(phase: String) {
             val info = Debug.MemoryInfo()
             Debug.getMemoryInfo(info)
@@ -1752,8 +1817,9 @@ class VideoSurfaceSoakTest {
         }
     }
 
-    // Готовый непрозрачный показ не должен заново рисовать скрытый под ним предварительный кадр или
-    // перехватывать нажатие его загрузкой.
+    // Показываем два беззвучных ролика и проверяем меняющиеся точки. Непрозрачный готовый слой
+    // скрывает старый рисунок и его кнопку. Ручной запуск затем занимает одно место после снятия
+    // предпросмотра.
     @Test
     fun visibleRoundAndVideoAutoplayMutedActualFramesAndRetireBeforeManualPlayer() {
         val activity = emptyActivity()
@@ -1838,6 +1904,8 @@ class VideoSurfaceSoakTest {
                 }
                 Cancellation {}
             }
+            // Обходим окно и собираем настоящие поверхности видеокадров. Отдельные видимые кадры
+            // подтверждают, что оба проигрывателя действительно выводят видео.
             fun textures(view: android.view.View): List<TextureView> =
                 if (view is TextureView) listOf(view)
                 else if (view is android.view.ViewGroup)
@@ -1876,6 +1944,9 @@ class VideoSurfaceSoakTest {
             waitFor("Retained native posters must be available for fallback") {
                 retained.imageReady(first.id) && retained.imageReady(second.id)
             }
+            // Рисуем сцену на измерительном холсте и считаем операции с изображениями. Если
+            // готовое видео закрывает старый рисунок, рисование этого кадра не должно
+            // повторяться.
             fun posterDraws(): Int {
                 val bitmap =
                     android.graphics.Bitmap.createBitmap(
@@ -1887,6 +1958,9 @@ class VideoSurfaceSoakTest {
                     object : android.graphics.Canvas(bitmap) {
                         var bitmaps = 0
 
+                        // Перехватываем вывод карты точек и увеличиваем счётчик, затем передаём
+                        // работу холсту. Такая подмена измеряет количество рисунков без изменения
+                        // содержимого сцены.
                         override fun drawBitmap(
                             image: android.graphics.Bitmap,
                             matrix: android.graphics.Matrix,

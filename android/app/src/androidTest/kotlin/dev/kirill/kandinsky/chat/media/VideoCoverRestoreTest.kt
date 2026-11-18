@@ -1,3 +1,7 @@
+// Проверки сохранённого кадра видео и копии просмотренного фото на андроиде. Они сверяют видимый
+// рисунок при возврате, порядок чтения и записи и освобождение памяти, если работа стала
+// устаревшей.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
@@ -29,6 +33,8 @@ import org.junit.Test
 class VideoCoverRestoreTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    // Удаляем исходный файл после просмотра и открываем то же фото. Чёткая копия возвращается с
+    // диска без сети, а полная очистка удаляет и её.
     @Test
     fun aViewedGalleryPhotoRetainsASharpCopyAfterOriginalEviction() {
         val h = RepositoryHarness.open(File(instrumentation.targetContext.cacheDir, "gallery-disk-" + UUID.randomUUID()))
@@ -82,6 +88,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Оставляем начальный рисунок в памяти и сохраняем другой кадр на диске. При возврате первый
+    // рисунок не мелькает, а показываются цветовые точки нужного сохранённого кадра.
     @Test
     fun returningVideoPrefersTheDiskFrameEvenWithAPosterInMemory() {
         val example = fixture()
@@ -142,6 +150,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Задерживаем снимок поверхности, затем сохраняем более свежий кадр или чистим запас. Старый
+    // снимок не должен переписать новый или снова занять память после сброса.
     @Test
     fun delayedSurfaceCopyCannotReplaceNewerCoverOrSurviveCacheReset() {
         val budget = ImageByteBudget()
@@ -160,6 +170,8 @@ class VideoCoverRestoreTest {
             surface.unlockCanvasAndPost(canvas)
             cache = VideoPlaybackCache(budget)
         }
+        // Запоминаем кадр выбранного цвета по тому же ключу. Различимый цвет показывает, какая
+        // запись в итоге победила.
         fun save(color: Int) {
             cache.rememberFrame(key, cache.generation, 64, 64) { width, height ->
                 Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
@@ -202,6 +214,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Блокируем первую запись на диск и с экрана запускаем второе получение кадра. Оно должно
+    // закончиться до того, как освободится запись.
     @Test
     fun aSecondCaptureDoesNotWaitForAnEarlierDiskWrite() {
         val fixture = fixture()
@@ -211,6 +225,8 @@ class VideoCoverRestoreTest {
         val diskGate = VideoCoverDiskCache::class.java.getDeclaredField("gate")
             .apply { isAccessible = true }.get(null)
         val secondCapture = CountDownLatch(1)
+        // Просим сохранить копию известного кадра. Для второго вызова используем другой ключ,
+        // чтобы проверка действительно наблюдала отдельный захват.
         fun capture(key: VideoPlaybackKey) {
             cache.rememberFrame(key, cache.generation, 64, 64) { _, _ ->
                 fixture.image.copy(Bitmap.Config.ARGB_8888, false)
@@ -244,6 +260,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Ищем отсутствующий в памяти кадр под наблюдением системной проверки доступа к диску. Сразу
+    // получаем пустой ответ, а физическое чтение должно уйти из потока экрана.
     @Test
     fun frameLookupNeverReadsDiskOnTheUiThread() {
         val root = File(instrumentation.targetContext.cacheDir, "cover-restore-${UUID.randomUUID()}")
@@ -287,9 +305,13 @@ class VideoCoverRestoreTest {
     }
 
     private class Fixture(val root: File, val key: VideoPlaybackKey, val image: Bitmap) {
+        // Освобождаем рисунок примера и убираем временный каталог. Другой сценарий не наследует
+        // файлы и память.
         fun close() { image.recycle(); root.deleteRecursively() }
     }
 
+    // Создаём временный каталог, ключ ролика и известное изображение. Это даёт одинаковый вход
+    // для проверок чтения и записи.
     private fun fixture(): Fixture {
         val directory = File(instrumentation.targetContext.cacheDir, "cover-async-" + UUID.randomUUID())
         val attachment = Attachment("cover", "remote/cover.mp4", "video/mp4", 100, 64, 64, 1, 3000, "cover")
@@ -307,12 +329,16 @@ class VideoCoverRestoreTest {
         return Fixture(directory, key, image)
     }
 
+    // Ждём, пока просроченные работы отпустят все точки, и проверяем нулевой счётчик. Это ловит
+    // утечку даже после отменённого ответа.
     private fun awaitReleased(budget: ImageByteBudget) {
         val until = android.os.SystemClock.uptimeMillis() + 3000
         while (budget.bytes != 0 && android.os.SystemClock.uptimeMillis() < until) Thread.sleep(5)
         assertEquals("All obsolete pixels must release their byte ownership", 0, budget.bytes)
     }
 
+    // Просим один кадр двумя владельцами одновременно. Оба получают один декодированный рисунок,
+    // его точки совпадают с исходными, а следующий поиск берёт уже готовую копию из памяти.
     @Test
     fun concurrentRestoresSharePixelsAndPromoteThemToMemory() {
         val fixture = fixture()
@@ -355,6 +381,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Чистим запас после начала чтения, но до показа. Ответ старого номера не должен появиться в
+    // памяти или удержать рисунок.
     @Test
     fun clearBeforeReadDeliveryCancelsPublicationAndReleasesPixels() {
         val fixture = fixture()
@@ -383,6 +411,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Удерживаем старый рисунок с диска и записываем новый кадр. После выдачи клиент и хранилище
+    // должны видеть свежие точки.
     @Test
     fun diskCompletionDoesNotReplaceANewerCapturedFrame() {
         val fixture = fixture()
@@ -420,6 +450,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Удаляем разрешение на кадр, когда чтение уже началось. Поздний ответ не должен снова
+    // показать отозванный рисунок.
     @Test
     fun deletionAfterReadStartsCannotPublishTheRevokedCover() {
         val fixture = fixture()
@@ -450,6 +482,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Первый получатель успешного кадра чистит запас. Остальные должны заново проверить номер
+    // перед выдачей и получить отмену старого рисунка.
     @Test
     fun firstDeliveryClearingTheCacheCancelsOtherPendingOwners() {
         val fixture = fixture()
@@ -482,10 +516,14 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Копируем все точки изображения в массив для точного сравнения. Одинаковая ширина двух
+    // кадров сама по себе не подтверждает совпадение.
     private fun pixelColors(image: Bitmap): IntArray = IntArray(image.width * image.height).also {
         image.getPixels(it, 0, image.width, 0, 0, image.width, image.height)
     }
 
+    // Убираем кадр из памяти и сообщаем, что видео приближается к экрану. К моменту появления
+    // подготовленный рисунок должен быть готов и совпадать с сохранённым.
     @Test
     fun preparationRestoresAnEvictedCoverBeforeItsNextVisibleLookup() {
         val fixture = fixture()
@@ -531,6 +569,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Проверяем вытеснение по числу записей и при уменьшенном объёме памяти. Самый давний кадр
+    // уходит, а общий размер остаётся ограниченным.
     @Test
     fun metadataAndReducedMemoryBudgetBothBoundRetainedCovers() {
         val fixture = fixture()
@@ -563,6 +603,8 @@ class VideoCoverRestoreTest {
         }
     }
 
+    // Проверяем, что восемь лёгких кадров помещаются в прежние шестнадцать мебибайт. Крупные
+    // кадры по-прежнему вытесняют старые при достижении того же предела.
     @Test
     fun smallCoversSurviveBeyondFourWithoutIncreasingThePreviousByteCeiling() {
         val fixture = fixture()

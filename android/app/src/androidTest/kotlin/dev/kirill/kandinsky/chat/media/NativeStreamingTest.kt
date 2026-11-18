@@ -1,3 +1,7 @@
+// Проверки потока видео на андроиде через системный проигрыватель. Сценарии подтверждают
+// настоящий меняющийся кадр, повторное чтение с диска, перемотку до полной загрузки и
+// освобождение проигрывателя при остановке.
+
 package dev.kirill.kandinsky.chat.media
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -20,8 +24,13 @@ class NativeStreamingTest {
     private val i = InstrumentationRegistry.getInstrumentation()
     private val context = i.targetContext
 
+    // Выполняем проверку либо команду проигрывателя в потоке экрана и ждём её завершения.
+    // Состояние слоя так читается без гонки с рисованием.
     private fun main(action: () -> Unit) = i.runOnMainSync(action)
 
+    // Поднимаем приложение и выбираем настоящие обычный и круглый ролики. Смотрим, меняются ли
+    // кадры, и проверяем, что повторное короткое воспроизведение не запрашивает те же части
+    // заново.
     @Test
     fun realServerRoundAndVideoAutoplayShowNativeFramesAndReuseRangeCache() {
         val device = androidx.test.uiautomator.UiDevice.getInstance(i)
@@ -93,6 +102,8 @@ class NativeStreamingTest {
                 }
             val remote = NetworkMedia(h.store, api)
             main { media.remotePlayback = { a, token -> remote.playback(a, token) } }
+            // Проверяем состояние на экране до ограниченного срока. При неготовности сообщаем,
+            // какой именно этап не завершился.
             fun waitFor(label: String, seconds: Int = 5, check: () -> Boolean) {
                 val end = android.os.SystemClock.uptimeMillis() + seconds * 1000
                 while (android.os.SystemClock.uptimeMillis() < end) {
@@ -103,6 +114,8 @@ class NativeStreamingTest {
                 }
                 throw AssertionError(label)
             }
+            // Привязываем оба видео к реальным поверхностям и собираем изменения кадра каждого.
+            // После закрытия возвращаем счётчики, чтобы сравнить первый и повторный просмотр.
             fun exercise(): List<Int> {
                 val owners = mutableListOf<SilentVideoPreview>()
                 val prepared = mutableListOf<dev.kirill.kandinsky.chat.rendering.PreparedText>()
@@ -236,6 +249,8 @@ class NativeStreamingTest {
         }
     }
 
+    // Получаем выбранные оригиналы и сверяем их контрольные суммы и путь сохранения. Чтение тех
+    // же файлов повторно не должно увеличить число запросов.
     @Test
     fun realServerCatalogueUsesVerifiedOriginalsAndWarmCacheMakesNoRequests() {
         val profile = checkNotNull(NetworkCredentials(context).load())
@@ -287,8 +302,8 @@ class NativeStreamingTest {
                             "be6d1163f5c3650133f7ec1c69756830c8dee6461d2a682da60906665f880181",
                         ),
                 )
-            // При истечении ожидания отменяет запрос, иначе возвращает файл или передаёт полученную
-            // ошибку.
+            // Запрашиваем один исходный файл и ждём ровно один ответ. Если срок истёк, отменяем
+            // запрос, чтобы следующая проверка не унаследовала незакрытую передачу.
             fun original(a: Attachment): File {
                 val done = CountDownLatch(1)
                 val result = java.util.concurrent.atomic.AtomicReference<Result<File>>()
@@ -372,6 +387,8 @@ class NativeStreamingTest {
         }
     }
 
+    // Даём проигрывателю длинный ролик по частям и ждём готовность и точную перемотку. Проверяем,
+    // что целого файла ещё нет, а остановка освобождает единственного владельца.
     @Test
     fun nativePlayerPreparesAndSeeksOnPartialMP4() {
         val h = RepositoryHarness.open(File(context.cacheDir, "stream-" + UUID.randomUUID()))
@@ -468,6 +485,8 @@ class NativeStreamingTest {
         }
     }
 
+    // Сто раз открываем, перематываем и останавливаем ролик. После каждого цикла освобождаем
+    // владельца, а пик остаётся равен одному и подготовленные изображения не занимают память.
     @Test
     fun hundredPlaybackSeekStopCyclesKeepOneNativeOwner() {
         val h = RepositoryHarness.open(File(context.cacheDir, "player-soak-" + UUID.randomUUID()))

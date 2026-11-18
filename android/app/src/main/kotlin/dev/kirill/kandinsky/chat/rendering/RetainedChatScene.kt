@@ -1,3 +1,7 @@
+// Сцена истории на андроиде держит записанные команды рисования текста и подписи для каждого
+// фрагмента. При прокрутке она передвигает узлы, подставляет сохранённые кадры и ограничивает
+// число рабочих роликов. Закрытие возвращает файлы и рисунки их владельцам.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -9,6 +13,8 @@ import dev.kirill.kandinsky.chat.media.*
 
 data class SceneFragment(val prepared: PreparedText, val part: Int, val frame: RectF) {
     val id
+        // Собираем ключ из номера сообщения и номера его части. Длинное сообщение может занять
+        // несколько слоёв, и у каждого свой рисунок.
         get() = FragmentID(prepared.key.messageID, part)
 }
 
@@ -24,12 +30,16 @@ class MessageNode(var fragment: SceneFragment) {
     var image: MediaImageSlot? = null
     val extraImages = linkedMapOf<Int, MediaImageSlot>()
 
+    // Закрываем основной кадр и остающиеся кадры альбома. Так ушедший фрагмент больше не
+    // удерживает их в памяти.
     fun retireImages() {
         image?.close()
         image = null
         retireExtraImages()
     }
 
+    // Освобождаем дополнительные ячейки, оставляя главный рисунок. Одиночное вложение не должно
+    // сохранять старый альбом.
     fun retireExtraImages() {
         extraImages.values.forEach { it.close() }
         extraImages.clear()
@@ -39,17 +49,22 @@ class MessageNode(var fragment: SceneFragment) {
     val albumVideos = linkedMapOf<String, SilentVideoPreview>()
     internal val progressViews = linkedMapOf<String, StudioProgressView>()
 
+    // Останавливаем ролики в каждой ячейке. Для недавних видимых файлов можно оставить
+    // проигрыватель на паузе в общем запасе вместо полного закрытия.
     fun retireAlbumVideos(keepingPlayers: Boolean = false) {
         albumVideos.values.forEach { if (keepingPlayers) it.setVisible(false) else it.close() }
         albumVideos.clear()
     }
 
-    // Снимаем старые привязки, чтобы процент загрузки не появился у другого файла.
+    // Снимаем индикаторы с окна и очищаем соответствие ячеек. При следующем показе процент не
+    // достанется другому файлу.
     fun retireProgress() {
         progressViews.values.forEach { (it.parent as? ViewGroup)?.removeView(it) }
         progressViews.clear()
     }
 
+    // При смене состава или порядка переносим кадры по номеру вложения. Освобождаем только те,
+    // которые больше не входят в карточку.
     fun preserveAlbumImages(previous: Message, current: Message) {
         if (previous.attachments.map { it.id } == current.attachments.map { it.id }) return
         val slots = mutableMapOf<String, MediaImageSlot>()
@@ -69,8 +84,8 @@ class MessageNode(var fragment: SceneFragment) {
     val native = RenderNode("Kandinsky message " + fragment.id)
     val overlay = RenderNode("Kandinsky static media stamp " + fragment.id)
 
-    // Каждую запись завершает даже при ошибке, чтобы узел не остался в состоянии незаконченного
-    // рисования.
+    // Записываем неподвижное содержимое и отдельную подпись медиа в графические команды.
+    // Завершаем обе записи даже при ошибке, чтобы узел не остался в промежуточном состоянии.
     fun record() {
         val width = native.width.coerceAtLeast(1)
         val height = native.height.coerceAtLeast(1)
@@ -91,7 +106,8 @@ class MessageNode(var fragment: SceneFragment) {
         }
     }
 
-    // Использует перемещение готовых узлов вместо повторной записи содержимого.
+    // Ставим узел в нужное место, сохраняя его точный размер из разметки. Прокрутка меняет
+    // положение готового рисунка, а вычитание экранных координат не меняет его высоту.
     fun position() {
         val layout = fragment.prepared
         // Размер берём до экранного сдвига, иначе погрешность вычитания меняет высоту слоя.
@@ -117,6 +133,8 @@ class RetainedChatScene {
 
     val metrics = SceneMetrics()
     var mediaVisible = true
+        // При скрытии всех файлов отменяем соседнюю подготовку, закрываем ролики и освобождаем
+        // рисунки. У невидимой ленты больше нет активных кадров и индикаторов.
         set(value) {
             field = value
             if (!value) {
@@ -136,6 +154,8 @@ class RetainedChatScene {
         }
 
     var movingMediaVisible = true
+        // При скрытии только движения убираем проигрыватели и счётчики, сохраняя неподвижное
+        // изображение. Под списком чатов может остаться кадр без фонового видео.
         set(value) {
             field = value
             if (!value) {
@@ -160,10 +180,14 @@ class RetainedChatScene {
     var onFrameChanged: (() -> Unit)? = null
     private var closed = false
 
+    // Проверяем, что доступ к сцене идёт из потока экрана. Готовые ресурсы из фоновой подготовки
+    // должны быть переданы сюда перед изменением узлов.
     private fun main() {
         check(Looper.myLooper() == Looper.getMainLooper())
     }
 
+    // Принимаем подготовленную строку только для текущей открытой сцены. Устаревший результат
+    // закрываем, иначе новая раскладка получила бы старый размер.
     fun accept(resource: PreparedText, ticket: Int): Boolean {
         main()
         if (closed || this.ticket != ticket) {
@@ -173,6 +197,8 @@ class RetainedChatScene {
         return true
     }
 
+    // Предпочитаем кадр текущего ролика, затем сохранённый кадр, изображение строки или соседний
+    // запас. Номер вложения не даёт показать кадр другой ячейки.
     fun preview(id: MessageID, attachmentIndex: Int = 0): PreparedImage? =
         nodes[FragmentID(id, 0)]?.let { node ->
             val attachment = node.fragment.prepared.message.attachments.getOrNull(attachmentIndex)
@@ -192,14 +218,19 @@ class RetainedChatScene {
             }
         }
 
-    // Учитывает номер вложения, чтобы различать отдельные результаты альбома.
+    // Отдельно проверяем готовность нужной ячейки сообщения. Ошибка или ожидание одного файла не
+    // означают, что другие ещё не видны.
     fun imageReady(id: MessageID, attachmentIndex: Int = 0) =
         nodes[FragmentID(id, 0)]?.let {
             if (attachmentIndex == 0) it.image?.ready else it.extraImages[attachmentIndex]?.ready
         } == true
 
+    // Возвращаем тождество графического узла для проверок. По нему видно, остался ли прежний
+    // рисунок после изменения позиции.
     fun nodeIdentity(id: FragmentID): Int? = nodes[id]?.let { System.identityHashCode(it.native) }
 
+    // Проверяем, записаны ли команды для всех нужных фрагментов. До окончания ожидания медиа
+    // требуем также готовности видимых ячеек, не задерживая кадр из-за далёкого вложения.
     fun presentationReady(ids: Set<FragmentID>, requireMedia: Boolean): Boolean =
         ids.all { id ->
             val node = nodes[id] ?: return@all false
@@ -223,6 +254,8 @@ class RetainedChatScene {
         val label: String,
     )
 
+    // Перечисляем видимые действия загрузки по номеру вложения. При живом видео его собственное
+    // управление имеет преимущество.
     fun loadActions(): List<MediaLoadAction> =
         nodes.values.flatMap { node ->
             if (node.video?.presented == true) emptyList()
@@ -236,7 +269,8 @@ class RetainedChatScene {
                     }
         }
 
-    // Пропускает сообщения с активным одиночным видео, чтобы действие не срабатывало поверх него.
+    // Передаём касание кнопке загрузки, которая его приняла. У уже играющего одиночного видео
+    // такой проверки нет, чтобы кнопка под кадром не сработала.
     fun performLoadAction(x: Float, y: Float): Boolean {
         for (node in nodes.values) if (node.video?.presented != true)
             for (image in listOfNotNull(node.image) + node.extraImages.values) if (
@@ -246,7 +280,8 @@ class RetainedChatScene {
         return false
     }
 
-    // У новой сцены свой номер. По нему отсеиваем результаты подготовки от уже закрытой сцены.
+    // Сбрасываем подготовку, увеличиваем номер и снимаем рисунки, ролики и индикаторы. Старые
+    // задания после смены размеров не должны менять новую сцену.
     fun advanceGeneration() {
         imagePrefetch.clear()
         mediaStore?.videoPlayback?.prepareCovers(emptyList())
@@ -265,6 +300,9 @@ class RetainedChatScene {
         metrics.liveFragments = 0
     }
 
+    // Отбираем видимые фрагменты и до трёх ближайших с запасом в обе стороны, переиспользуем
+    // записанные узлы и управляем ограниченным числом роликов. Готовим соседние фото и обложки
+    // отдельно, чтобы быстрый свайп не удерживал всё окно в движении.
     fun apply(snapshot: SceneSnapshot) {
         main()
         if (closed || snapshot.ticket != ticket) return
@@ -312,6 +350,8 @@ class RetainedChatScene {
         val videoPreviewsAllowed = mediaVisible && movingMediaVisible && MediaAdmission.previewsAllowed
         var upcomingVideo: VideoPlaybackKey? = null
         var upcomingFraction = 0f
+        // Запоминаем наиболее видимый ролик среди тех, что входят на экран и уже проигрывались.
+        // Его можно успеть подготовить по сохранённой позиции, читая местный файл.
         fun considerVideo(key: VideoPlaybackKey, fraction: Float) {
             if (fraction >= 0.12f && fraction < 0.5f && fraction > upcomingFraction &&
                 (mediaStore?.videoPlayback?.position(key) ?: 0L) > 0
@@ -535,6 +575,8 @@ class RetainedChatScene {
         updateClockMetrics()
     }
 
+    // Удерживаем индикаторы только для видимых работающих ячеек. Фото после завершения генерации
+    // может ещё готовиться к показу, поэтому его индикатор снимается по готовности кадра.
     private fun bindProgress(fragment: SceneFragment, node: MessageNode) {
         val container = movingContainer
         val card = fragment.prepared.generationCard
@@ -543,8 +585,8 @@ class RetainedChatScene {
             return
         }
         val wanted = mutableSetOf<String>()
-        // Запоминает использованное обозначение, чтобы после обхода удалить только устаревшие
-        // индикаторы.
+        // Привязываем индикатор к рамке и номеру выбранной ячейки. Повторно используем
+        // существующий рисунок и отмечаем, что он всё ещё нужен.
         fun bind(id: String, local: RectF, progress: Int?, deliveringPhoto: Boolean = false) {
             val rect = RectF(local).apply { offset(fragment.frame.left, fragment.frame.top) }
             if (!RectF.intersects(rect, viewport)) return
@@ -572,11 +614,16 @@ class RetainedChatScene {
             .forEach { id -> node.progressViews.remove(id)?.let { container.removeView(it) } }
     }
 
+    // Ограничиваем размер изображения в ячейке альбома сильнее, чем для одиночного файла. Рисунок
+    // не должен занимать память полноразмерного кадра в каждой маленькой ячейке.
     private fun mediaThumbnailLimit(prepared: PreparedText): Int =
         if (prepared.mediaItemRects.size > 1 || prepared.generationCard?.isBatch == true)
             MediaImagePrefetch.ALBUM_MAX_PIXEL
         else 1024
 
+    // Сохраняем рисунок каждой нужной ячейки, а для достаточно видимых роликов подключаем общий
+    // запас проигрывателей. После паузы ставим сохранённый кадр. Ресурсы невидимых ячеек
+    // освобождаем.
     private fun bindAlbum(
         fragment: SceneFragment,
         node: MessageNode,
@@ -701,6 +748,8 @@ class RetainedChatScene {
             .forEach { node.extraImages.remove(it)?.close() }
     }
 
+    // Обрезаем картинки по общей форме альбома. При активном видео не дублируем кадр с кнопками,
+    // а в программном режиме используем совместимый путь рисования.
     private fun drawImages(node: MessageNode, c: Canvas, software: Boolean) {
         c.withSave {
             if (node.extraImages.isNotEmpty())
@@ -737,11 +786,15 @@ class RetainedChatScene {
         }
     }
 
+    // Очищаем запись команд одного узла по ключу. Следующий проход восстановит её из
+    // подготовленной строки без чтения сообщения из базы.
     fun discardDisplayList(id: FragmentID) {
         main()
         nodes[id]?.native?.discardDisplayList()
     }
 
+    // Восстанавливаем графические команды только у узлов, где записи больше нет. Счётчик
+    // показывает, когда повторная запись действительно понадобилась.
     fun prepareForDraw() {
         main()
         for (node in nodes.values) if (!node.native.hasDisplayList()) {
@@ -750,8 +803,8 @@ class RetainedChatScene {
         }
     }
 
-    // Поверх активного видео оставляет только подписи снаружи его области, чтобы не дублировать
-    // передний слой.
+    // Рисуем готовые узлы, попавшие в область холста, и их изображения. Подпись поверх видео
+    // обрезаем по его рамке. Для программного холста выбираем отдельный путь.
     fun draw(canvas: Canvas) {
         if (!canvas.isHardwareAccelerated) {
             drawSoftware(canvas)
@@ -788,6 +841,8 @@ class RetainedChatScene {
         }
     }
 
+    // Вручную рисуем фрагмент и подпись на холсте без ускорения. Сохраняем те же рамки, отсечение
+    // и порядок, чтобы изображение соответствовало обычному показу.
     private fun drawSoftware(c: Canvas) {
         main()
         if (closed) return
@@ -816,6 +871,8 @@ class RetainedChatScene {
         }
     }
 
+    // Считаем реально играющие одиночные и альбомные ролики. Подготовленный или остановленный
+    // проигрыватель не повышает число активных кадров.
     private fun updateClockMetrics() {
         metrics.activeFrameClocks =
             nodes.values.sumOf { node ->
@@ -824,6 +881,8 @@ class RetainedChatScene {
             }
     }
 
+    // Очищаем сцену один раз и снимаем подписку на свободное место проигрывателя. После закрытия
+    // не остаётся ссылки на окно движущихся вложений.
     fun close() {
         main()
         if (closed) return

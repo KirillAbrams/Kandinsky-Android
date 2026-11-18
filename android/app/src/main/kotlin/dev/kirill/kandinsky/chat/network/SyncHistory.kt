@@ -1,3 +1,6 @@
+// Читает предыдущие страницы по мере прокрутки и сверяет свежие строки видимого чата. У каждого
+// чата свой признак загрузки, поэтому несколько событий экрана не запускают одинаковое чтение.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -9,6 +12,9 @@ internal class SyncHistory(private val sync: NetworkSync) {
     private val nextHistoryRetry = mutableMapOf<Long, Long>()
     private val visibleHistoryRefreshes = linkedMapOf<Long, Long>()
 
+    // Проверяет местное число строк перед опорой и наличие более старых сообщений. Если пора
+    // подгружать, запрашивает порцию и сверяет номер соединения перед записью. После отказа ждёт
+    // паузу, прежде чем повторить.
     fun viewport(chat: Long, anchor: ReadingAnchor) {
         sync.worker.post {
             currentChat = chat
@@ -78,6 +84,8 @@ internal class SyncHistory(private val sync: NetworkSync) {
         }
     }
 
+    // Меняет номер читаемого чата в рабочем потоке и обновляет историю при переходе. Так частые
+    // события для одного открытого чата не дублируют сетевой запрос.
     fun visibleChat(chat: Long?) {
         sync.worker.post {
             val changed = currentChat != chat
@@ -86,6 +94,9 @@ internal class SyncHistory(private val sync: NetworkSync) {
         }
     }
 
+    // Читает последнюю порцию, записывает изменения и сообщает экрану. Запоминает успешное время
+    // сверки, чтобы недавний чат не скачивался повторно, а отказ показывает только для текущего
+    // чата.
     private fun refreshVisibleHistory(chat: Long) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (sync.resumed && visibleHistoryRefreshes[chat]?.let { now - it < 90_000 } == true) return
@@ -112,6 +123,8 @@ internal class SyncHistory(private val sync: NetworkSync) {
         }
     }
 
+    // Повторяет сверку для чата, который всё ещё открыт. Без выбранного номера не отправляет
+    // запрос, поэтому переподключение на списке чатов не обновляет случайную историю.
     fun refreshCurrentChat() {
         currentChat?.let(::refreshVisibleHistory)
     }

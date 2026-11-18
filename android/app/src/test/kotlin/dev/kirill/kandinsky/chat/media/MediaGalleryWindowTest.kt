@@ -1,3 +1,6 @@
+// Проверяет ограниченное окно вложений Андроида по заранее составленной последовательности. Не
+// требует проигрывателя, экрана или сети.
+
 package dev.kirill.kandinsky.chat.media
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -6,6 +9,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaGalleryWindowTest {
+    // Собирает строку с нужным числом вложений и рядом совпадающих ключей. По ней можно проверить
+    // порядок файлов и соседних сообщений отдельно.
     private fun row(
         id: Long,
         count: Int = 1,
@@ -28,6 +33,8 @@ class MediaGalleryWindowTest {
             },
         )
 
+    // Подаёт смешанную страницу, повторные и чужие записи. Сверяет порядок альбома и сохранение
+    // выбора при отказе от неверного номера.
     @Test
     fun mixedHistoryPreservesSelectionAndAlbumOrder() {
         val seed = row(10, 3)
@@ -50,6 +57,8 @@ class MediaGalleryWindowTest {
         assertEquals("Описание 10", window.selected?.caption)
     }
 
+    // Листает вперёд и назад по длинному списку и сверяет каждый шаг с независимым рядом. Размер
+    // окна и набор соседей не должны расти.
     @Test
     fun forwardReverseTraversalMatchesIndependentFlattenedHistoryAndStaysBounded() {
         val rows = (1..300).map { row(it.toLong(), 1 + it % 4) }
@@ -57,6 +66,8 @@ class MediaGalleryWindowTest {
         val window = MediaGalleryWindow(rows[69], 1)
         var reference = expected.indexOf("70/1")
         assertTrue(reference >= 0)
+        // Строит ограниченную порцию с обеими границами для выбранного сообщения. Движение
+        // имитирует повторную подгрузку рядом с краем.
         fun page(id: Long): HistoryPage {
             val lower = (id.toInt() - 17).coerceIn(0, rows.size - 32)
             val upper = minOf(rows.size, lower + 32)
@@ -80,6 +91,8 @@ class MediaGalleryWindowTest {
         }
     }
 
+    // Проходит большой альбом от середины к концу и обратно, догружая обрезанные части. Все файлы
+    // остаются доступны без увеличения окна.
     @Test
     fun oversizedAlbumCanBeTraversedWithoutLosingTrimmedAttachments() {
         val album = row(1, 200)
@@ -99,6 +112,8 @@ class MediaGalleryWindowTest {
         assertEquals("1/0", window.selected?.id)
     }
 
+    // Удаляет выбранный файл и проверяет соседний. После удаления остальных окно остаётся пустым
+    // без устаревшего выбора.
     @Test
     fun deletingSelectionChoosesAdjacentItemAndCanEmptyTheViewer() {
         val window = MediaGalleryWindow(row(3))

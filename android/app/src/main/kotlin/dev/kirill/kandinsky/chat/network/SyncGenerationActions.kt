@@ -1,3 +1,6 @@
+// Передаёт серверу выбор повтора, отмены, жалобы и удаления. Читает связи вне потока экрана и
+// возвращает обновление только после записи.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -6,6 +9,9 @@ import java.util.UUID
 import org.json.JSONObject
 
 internal class SyncGenerationActions(private val sync: NetworkSync) {
+    // Ищет последнее входящее сообщение, у которого задание ожидает или выполняется. Передаёт
+    // найденный номер открытому экрану, чтобы он не предлагал управление уже законченному
+    // заданию.
     fun activeGeneration(chat: Long, completion: (Result<MessageID?>) -> Unit) {
         sync.worker.post {
             if (sync.closed) return@post
@@ -28,6 +34,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         }
     }
 
+    // Находит номер сервера по местному сообщению и чату. Если связь ещё не записана,
+    // останавливает команду до сетевого запроса.
     private fun generationPath(
         db: android.database.sqlite.SQLiteDatabase,
         chat: Long,
@@ -41,6 +49,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         }
     }
 
+    // Проверяет номер файла, выбирает запрос или один результат и отправляет удаление. После
+    // принятия просит обновить историю, пока соединение действует.
     fun deleteGenerationContent(
         chat: Long,
         message: MessageID,
@@ -48,6 +58,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         completion: (Result<Unit>) -> Unit,
     ) {
         sync.worker.post {
+            // Передаёт итог удаления в поток экрана. Даже отказ до обращения к сети сообщается
+            // туда же, где появится успешное завершение.
             fun finish(value: Result<Unit>) {
                 sync.main.post { completion(value) }
             }
@@ -73,6 +85,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         }
     }
 
+    // Читает адрес задания и отправляет выбранную причину. Если сеанс закрыли раньше, возвращает
+    // отмену без сетевого обращения.
     fun reportGeneration(
         chat: Long,
         message: MessageID,
@@ -80,6 +94,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         completion: (Result<Unit>) -> Unit,
     ) {
         sync.worker.post {
+            // Возвращает итог жалобы в поток экрана, чтобы уведомление не меняло интерфейс из
+            // рабочей очереди.
             fun finish(result: Result<Unit>) {
                 sync.main.post { completion(result) }
             }
@@ -102,6 +118,9 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         }
     }
 
+    // Берёт согласованный номер повтора, посылает действие для задания или одного результата и
+    // сохраняет полученные строки. Экран получает обновление после записи, иначе при возврате мог
+    // бы увидеть старое состояние.
     fun generationAction(
         chat: Long,
         message: MessageID,
@@ -111,6 +130,8 @@ internal class SyncGenerationActions(private val sync: NetworkSync) {
         completion: (Result<Unit>) -> Unit,
     ) {
         sync.worker.post {
+            // Передаёт успех или ошибку действия в поток экрана. Все ветви используют одну
+            // доставку, поэтому чтение базы и отказ сети выглядят для вызывающего кода одинаково.
             fun finish(result: Result<Unit>) {
                 sync.main.post { completion(result) }
             }

@@ -1,3 +1,6 @@
+// Сохраняет команды и номера для повторной отправки и отслеживает прочитанные границы чатов.
+// Размер журнала ограничен, иначе долгий обрыв связи позволил бы копить неограниченную очередь.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -9,7 +12,9 @@ import org.json.JSONObject
 
 class NetworkJournal(private val userID: Long) : LocalChangeJournal {
     companion object {
-        // Старые команды мессенджера могут остаться после обновления. Они не должны задерживать.
+        // Выбирает исправные отправки и удаления в порядке записи. Ограничивает порцию по весу и
+        // не смешивает удаление с другими командами, чтобы диспетчер получил подходящий набор.
+        // Команды прежнего приложения с другим назначением не задерживают эту очередь.
         fun readyOperations(database: SQLiteDatabase): List<Pair<String, String>> {
             val commands = ArrayList<Pair<String, String>>()
             database
@@ -39,8 +44,8 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         }
     }
 
-    // Записываем сообщение и номер операции до отправки. При потере ответа телефон сможет
-    // повторить.
+    // Проверяет номер, длину текста и размеры вложений, затем сохраняет команду вместе со связью
+    // местного сообщения. После разрыва можно повторить содержимое под прежним ключом.
     override fun appended(database: SQLiteDatabase, command: SendCommand, localID: Long) {
         val id =
             try {
@@ -72,7 +77,9 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         database.execSQL("UPDATE messages SET deliveryState='pending' WHERE id=?", arrayOf(localID))
     }
 
-    // Если сервер окончательно отклонил отправку, у него ещё нет сообщения, которое нужно удалять.
+    // Отмечает удаление местной строки и сверяет автора. Если отправка окончательно отклонена и
+    // серверного номера нет, очищает местную очередь. В остальных случаях сохраняет команду по
+    // известным номерам.
     override fun deleting(database: SQLiteDatabase, message: Message) {
         val mapping =
             database
@@ -115,6 +122,8 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         )
     }
 
+    // Читает последнюю известную границу и сохраняет её, только если она двигается вперёд.
+    // Повторная доставка старого события не вернёт уже прочитанные строки.
     override fun read(database: SQLiteDatabase, chatID: Long) {
         val through =
             database
@@ -133,7 +142,8 @@ class NetworkJournal(private val userID: Long) : LocalChangeJournal {
         )
     }
 
-    // Учитываем ожидающие отправки и их файлы, чтобы очередь не заняла всё место на телефоне.
+    // Проверяет число команд и запас байтов для их описаний и вложений. Ошибка до добавления
+    // оставляет базу без половины записанной команды.
     private fun reserve(database: SQLiteDatabase, bytes: Int, mediaBytes: Long) {
         database
             .rawQuery(

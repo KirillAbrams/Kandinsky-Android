@@ -1,9 +1,14 @@
+// Согласует текст черновика с полем Андроида. Обновление не сбрасывает слово, которое клавиатура
+// ещё готовит.
+
 package dev.kirill.kandinsky.chat.conversation
 
 import android.view.inputmethod.BaseInputConnection
 import android.widget.EditText
 
 object ComposerInputBridge {
+    // Сравнивает текст и пропускает замену во время составления слова. При настоящей замене
+    // ставит курсор в конец восстановленного текста.
     fun synchronize(input: EditText, value: String) {
         if (
             BaseInputConnection.getComposingSpanStart(input.text) >= 0 ||
@@ -14,7 +19,8 @@ object ComposerInputBridge {
         input.setSelection(input.length())
     }
 
-    // Используется перед отправкой, чтобы поле больше не держало незавершённый участок ввода.
+    // Снимает отметку незаконченного ввода перед отправкой. Клавиатура больше не считает часть
+    // отправляемого текста временной.
     fun finish(input: EditText) {
         input.clearComposingText()
     }

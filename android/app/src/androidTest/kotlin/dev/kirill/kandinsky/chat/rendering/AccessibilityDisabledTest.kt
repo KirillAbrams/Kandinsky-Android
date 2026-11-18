@@ -1,3 +1,6 @@
+// Проверяем поведение специальных возможностей, когда их службы выключены. Внутренний учёт
+// записей продолжается без отправки лишних системных событий.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.RectF
@@ -11,6 +14,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AccessibilityDisabledTest {
+    // Добавляем, выбираем и удаляем доступный узел при отключённой службе. Родитель не получает
+    // события, а удалённый номер не должен найти чужое сообщение.
     @Test
     fun disabledServicesSkipContentAndFocusEventsWithoutLosingNodeBookkeeping() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -23,6 +28,8 @@ class AccessibilityDisabledTest {
             var events = 0
             val parent =
                 object : FrameLayout(context) {
+                    // Перехватываем событие на родительском экране и прибавляем его к счётчику.
+                    // Лишняя отправка становится видна, даже если система её проигнорировала бы.
                     override fun requestSendAccessibilityEvent(
                         child: View,
                         event: AccessibilityEvent,

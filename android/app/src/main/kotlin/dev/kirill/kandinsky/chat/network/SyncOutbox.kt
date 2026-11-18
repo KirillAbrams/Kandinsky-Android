@@ -1,3 +1,6 @@
+// Ведёт очередную порцию отправки от чтения базы до записи ответа. Следующая порция ждёт
+// результата текущей, а команда с постоянным номером переживает потерю соединения.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -13,6 +16,9 @@ internal class SyncOutbox(private val sync: NetworkSync) {
     private var pendingRequestID: String? = null
     private var pendingOperationIDs = emptyList<String>()
 
+    // Берёт готовые команды, сверяет соединение и выбирает отправку сообщений либо отдельное
+    // удаление после появления номера сервера. Учитывает подтверждение, отказ входа и временный
+    // сбой, чтобы освободить очередь или восстановить связь.
     private fun sendNextBatch() {
         if (sendingBatch || pendingRequestID != null || !sync.resumed) return
         sendingBatch = true
@@ -129,6 +135,9 @@ internal class SyncOutbox(private val sync: NetworkSync) {
         }
     }
 
+    // Записывает связь с принятыми строками и очищает текущие номера при совпадении ответа. Потом
+    // обновляет экран и продолжает очередь, иначе уже принятая порция могла бы задержать
+    // следующую.
     fun accepted(value: JSONObject) {
         sync.database({ sync.cache.accepted(it, value) }) { result ->
             result.fold(
@@ -146,6 +155,8 @@ internal class SyncOutbox(private val sync: NetworkSync) {
         }
     }
 
+    // Удаляет именно подтверждённую команду удаления из базы и возобновляет работу очереди. После
+    // перезапуска эту команду уже не нужно посылать снова.
     fun deleted(value: JSONObject) {
         val id = value.getString("requestId")
         sync.database({ db ->
@@ -158,6 +169,8 @@ internal class SyncOutbox(private val sync: NetworkSync) {
         }
     }
 
+    // Помечает ожидавшие операции отказом и показывает его причину. После записи запускает
+    // следующие команды, чтобы одна ошибка не остановила очередь.
     fun reject(code: String) {
         val ids = pendingOperationIDs
         sync.database({ sync.cache.failed(it, ids, code) }) { result ->
@@ -169,14 +182,20 @@ internal class SyncOutbox(private val sync: NetworkSync) {
         }
     }
 
+    // Сравнивает полученный номер с тем, чей ответ сейчас ожидается. Так сетевой отказ можно
+    // отнести к конкретной отправке.
     fun matchesRequest(request: String) = request == pendingRequestID
 
+    // Запоминает просьбу о новой отправке, проверяет подтверждение сохранённой границы и будит
+    // очередь. Если порция уже идёт, следующая просьба не пропадёт.
     fun flush() {
         outboxNeedsFlush = true
         sync.cursorAcknowledgement.acknowledgeSavedCursor()
         sendNextBatch()
     }
 
+    // Сбрасывает только ожидания и рабочие признаки соединения. Команды остаются на диске, чтобы
+    // после нового входа в канал их можно было дочитать.
     fun reset() {
         pendingRequestID = null
         pendingOperationIDs = emptyList()

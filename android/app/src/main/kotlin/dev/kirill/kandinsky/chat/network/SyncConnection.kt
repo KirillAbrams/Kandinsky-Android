@@ -1,3 +1,6 @@
+// Открывает постоянное соединение, восстанавливает его после разрыва и следит за размером очереди
+// ответов. Номер соединения защищает от поздних ответов старого подключения.
+
 package dev.kirill.kandinsky.chat.network
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -20,8 +23,9 @@ internal class SyncConnection(private val sync: NetworkSync) {
 
     private var reconnectAttempts = 0
 
-    // У каждого подключения свой номер. По нему отбрасываем поздние ответы от уже закрытого
-    // соединения.
+    // Проверяет, что обмен включён и соединение свободно. Читает состояние базы, получает список
+    // чатов или первый снимок, сохраняет его и открывает постоянное соединение. Просроченный вход
+    // передаёт отдельной обработке.
     fun connect() {
         if (!sync.active || sync.closed || socket != null) return
         connectionEpoch++
@@ -67,7 +71,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
         }
     }
 
-    // Ограничиваем размер пакета и очередь, если база не успевает за сетью.
+    // Открывает постоянное соединение для текущего номера и ждёт подтверждения возобновления с
+    // пределом по времени. Без предела зависшее подключение мешало бы новой попытке.
     private fun openSocket(connectionID: Int) {
         if (connectionID != connectionEpoch || !sync.active) return
         val deadline = Runnable { if (!resumed) reconnectAfterFailure(connectionID) }
@@ -76,6 +81,9 @@ internal class SyncConnection(private val sync: NetworkSync) {
         socket =
             sync.api.socket(
                 object : WebSocketListener() {
+                    // Закрывает опоздавшее соединение или читает последний сохранённый номер и
+                    // просит продолжить с него. Одновременно запрашивает уведомления о списке и
+                    // ходе загрузок.
                     override fun onOpen(webSocket: WebSocket, response: Response) {
                         sync.worker.post {
                             if (connectionID != connectionEpoch) {
@@ -105,6 +113,9 @@ internal class SyncConnection(private val sync: NetworkSync) {
                         }
                     }
 
+                    // Отклоняет слишком большой ответ или переполненную очередь и передаёт пакет
+                    // в обработку. Освобождает место после разбора даже при ошибке, иначе очередь
+                    // могла бы остаться переполненной.
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         if (text.toByteArray().size > 65536) {
                             webSocket.cancel()
@@ -127,6 +138,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
                         }
                     }
 
+                    // Передаёт отказ в очередь работы соединения вместе с его номером. Старый
+                    // отказ не должен закрывать уже восстановленную связь.
                     override fun onFailure(
                         webSocket: WebSocket,
                         t: Throwable,
@@ -135,11 +148,15 @@ internal class SyncConnection(private val sync: NetworkSync) {
                         sync.worker.post { reconnectAfterFailure(connectionID) }
                     }
 
+                    // Подтверждает закрытие и ставит восстановление в очередь. Так обмен может
+                    // продолжиться с сохранённой позиции, если приложение ещё активно.
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                         webSocket.close(1000, null)
                         sync.worker.post { reconnectAfterFailure(connectionID) }
                     }
 
+                    // Сообщает об окончательном закрытии с номером соединения. Повторная
+                    // обработка уже закрытого номера не запускает лишнее подключение.
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                         sync.worker.post { reconnectAfterFailure(connectionID) }
                     }
@@ -147,6 +164,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
             )
     }
 
+    // Останавливает ожидание подтверждения и сбрасывает задержку повтора. Продолжает очистку
+    // файлов, отправку очереди и обновление открытого чата и списка.
     fun connectionResumed() {
         sync.attachments.drainRemovedStudioMedia()
         resumeTimeout?.let { sync.worker.removeCallbacks(it) }
@@ -159,7 +178,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
         sync.refreshStudioDirectory()
     }
 
-    // После переподключения очередь дочитает из SQLite команды без подтверждения.
+    // Разрывает только текущее активное подключение и назначает новую попытку с растущей
+    // задержкой. Сохранённые команды останутся доступны для отправки после восстановления.
     fun reconnectAfterFailure(connectionID: Int) {
         if (connectionID != connectionEpoch || sync.closed || !sync.active) return
         disconnect()
@@ -170,6 +190,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
         sync.worker.postDelayed({ if (next == connectionEpoch && sync.active) connect() }, delay)
     }
 
+    // Снимает ожидание, сбрасывает состояние обмена, увеличивает номер подключения и закрывает
+    // сеть. Местная очередь сбрасывает текущую отправку, чтобы продолжить неподтверждённое позже.
     fun disconnect() {
         resumeTimeout?.let { sync.worker.removeCallbacks(it) }
         resumeTimeout = null
@@ -182,6 +204,8 @@ internal class SyncConnection(private val sync: NetworkSync) {
         sync.outbox.reset()
     }
 
+    // Переводит пакет в текст и следит за размером и приёмом соединением. При отказе открывает
+    // путь восстановления, иначе запрос мог бы остаться в ожидании ответа.
     fun send(value: JSONObject) {
         val text = value.toString()
         if (text.toByteArray().size > 65536 || socket?.send(text) != true)

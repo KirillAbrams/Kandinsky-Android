@@ -1,3 +1,6 @@
+// Хранит состояние формы входа на Андроиде и отделяет его от кнопок и полей. По шагу выбирает
+// запрос, проверяет ввод и решает, когда можно запомнить профиль.
+
 package dev.kirill.kandinsky.chat.account
 
 import android.content.Context
@@ -11,7 +14,9 @@ import dev.kirill.kandinsky.chat.network.NetworkProfile
 internal enum class AccountEntryStep {
     LOGIN, REGISTRATION, RECOVERY, VERIFY_REGISTRATION, VERIFY_RECOVERY;
 
+    // Код из письма запрашивается на шагах подтверждения регистрации и восстановления.
     val needsCode get() = this == VERIFY_REGISTRATION || this == VERIFY_RECOVERY
+    // Пароль нужен при входе и подтверждении, поэтому отдельно получить письмо можно без него.
     val needsPassword get() = this == LOGIN || needsCode
 }
 
@@ -27,6 +32,8 @@ internal class AccountEntryViewModel(
     private val selected: (NetworkProfile) -> Unit,
 ) {
     companion object {
+        // Подключает защищённое хранилище и сетевую службу. Запросы идут на рабочем потоке, а
+        // обновление полей возвращается в поток экрана.
         fun forDevice(context: Context, api: NetworkAPI, selected: (NetworkProfile) -> Unit): AccountEntryViewModel {
             val credentials = NetworkCredentials(context)
             val main = Handler(Looper.getMainLooper())
@@ -50,6 +57,8 @@ internal class AccountEntryViewModel(
         private set
     var onChange: (() -> Unit)? = null
 
+    // Читает записи в фоне и передаёт список или пояснение об ошибке живому экрану. Закрытая
+    // форма не получает запоздалые кнопки аккаунтов.
     fun loadSavedProfiles(display: (List<NetworkProfile>) -> Unit) {
         background {
             val profiles = runCatching(readProfiles)
@@ -61,10 +70,14 @@ internal class AccountEntryViewModel(
         }
     }
 
+    // Запускает сохранение выбранного профиля, если форма свободна. Открытие чата возможно лишь
+    // после удачной записи.
     fun choose(profile: NetworkProfile) {
         if (!closed && !isBusy) runRequest({ remember(profile) }, selected)
     }
 
+    // Под тем же замком, что и закрытие, проверяет состояние формы и сохраняет профиль. Это
+    // защищает от записи запоздалого ответа, когда окно уже закрыли.
     private fun remember(profile: NetworkProfile): NetworkProfile {
         synchronized(profileLock) {
             check(!closed)
@@ -73,24 +86,35 @@ internal class AccountEntryViewModel(
         return profile
     }
 
+    // Переключает форму между входом и началом регистрации, если она свободна. Переход не
+    // перебивает ещё не вернувшийся запрос.
     fun toggleRegistration() {
         if (!closed && !isBusy) changeStep(if (step == AccountEntryStep.LOGIN) AccountEntryStep.REGISTRATION else AccountEntryStep.LOGIN)
     }
 
+    // Ставит шаг получения кода восстановления при свободной форме. Так запрос восстановления не
+    // смешивается с подтверждением регистрации.
     fun startRecovery() {
         if (!closed && !isBusy) changeStep(AccountEntryStep.RECOVERY)
     }
 
+    // Сохраняет следующий шаг и передаёт новое сообщение экрану. Тогда поля и текст меняются
+    // согласованно.
     private fun changeStep(next: AccountEntryStep, notice: String = "") {
         step = next
         show(notice)
     }
 
+    // Записывает подсказку и уведомляет экран о смене состояния. Без уведомления сообщение
+    // осталось бы незаметным.
     private fun show(notice: String) {
         message = notice
         onChange?.invoke()
     }
 
+    // Проверяет ввод до обращения к сети и выбирает письмо, смену пароля или вход. Код
+    // регистрации передаётся только на своём шаге, чтобы разные способы подтверждения не
+    // смешались.
     fun submit(email: String, password: String, code: String, resending: Boolean = false) {
         if (closed || isBusy) return
         val address = email.trim()
@@ -118,6 +142,8 @@ internal class AccountEntryViewModel(
         }
     }
 
+    // Помечает форму занятой, выполняет действие в фоне и возвращает результат в поток экрана.
+    // Игнорирует ответ закрытого окна, а живому возвращает возможность следующего действия.
     private fun <T> runRequest(action: () -> T, success: (T) -> Unit) {
         isBusy = true
         show("")
@@ -133,6 +159,8 @@ internal class AccountEntryViewModel(
         }
     }
 
+    // Подбирает объяснение по причине отказа. Для незнакомой ошибки оставляет обычную подсказку о
+    // связи и повторе.
     private fun errorMessage(error: Throwable): String {
         val failure = error as? NetworkFailure
         return when (failure?.status) {
@@ -146,6 +174,8 @@ internal class AccountEntryViewModel(
         }
     }
 
+    // Под замком запрещает новые записи профиля, убирает уведомления экрана и просит закрыть
+    // подключение в фоне. Закрытая форма не сможет принять прежний ответ.
     fun close() {
         synchronized(profileLock) {
             if (closed) return

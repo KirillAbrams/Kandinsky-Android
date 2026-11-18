@@ -1,3 +1,6 @@
+// Загружает уменьшенную копию отдельно от оригинала. Номер отправки зависит от вложения, поэтому
+// новый вход не заставляет начинать другую загрузку той же копии.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.AttachmentDraft
@@ -5,7 +8,9 @@ import java.io.File
 import java.util.UUID
 
 object NetworkPreview {
-    // Номер загрузки привязан к вложению и сохраняется при повторном входе в аккаунт.
+    // Проверяет тип вложения, готовит маленькое изображение и отправляет его с постоянным
+    // номером. Возвращает номер копии, по которому телефон сможет показать её до скачивания
+    // оригинала.
     fun upload(root: File, a: AttachmentDraft, api: NetworkAPI, parent: String? = null): String? {
         if (!a.mime.startsWith("image/") && !a.mime.startsWith("video/")) return null
         if (a.mime == "image/gif") return null

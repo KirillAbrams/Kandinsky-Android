@@ -1,3 +1,6 @@
+// Делит поиск, скачивание и чтение одного изображения между его получателями. Загрузка видимого
+// изображения может приостановить менее срочную.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.os.Handler
@@ -27,6 +30,8 @@ internal class MediaThumbnailRequests {
         var running = false
         var remote = false
         val priority
+            // Берёт наибольшую срочность среди получателей общей работы. Появление кадра на
+            // экране меняет порядок его допуска.
             get() = subscribers.values.maxOfOrNull { it.priority } ?: 0
     }
 
@@ -34,8 +39,12 @@ internal class MediaThumbnailRequests {
     private val groups = linkedMapOf<String, Group>()
     var onRemoteActivity: ((Boolean) -> Unit)? = null
 
+    // Создаёт одинаковую ошибку отмены для ожидавших и уже начатых работ. Экран отличает закрытие
+    // запроса от сбоя файла.
     private fun cancelled() = MediaException(MediaError.CANCELLED)
 
+    // Подключает получателя к открытой группе или добавляет новую с ограничением общего числа.
+    // Отмена снимает только свою подписку, пока ещё есть другие получатели.
     fun submit(
         key: String,
         priority: Int,
@@ -86,6 +95,9 @@ internal class MediaThumbnailRequests {
         return subscriber.token
     }
 
+    // Начинает поиск и даёт пройти к сети в порядке срочности. По ответу закрывает устаревшее или
+    // готовит удержания всех получателей заранее, чтобы очистка из первого ответа не обесценила
+    // остальные.
     private fun launch(group: Group) {
         if (group.owners.isClosed) return
         group.running = true
@@ -153,6 +165,8 @@ internal class MediaThumbnailRequests {
         group.work?.let { work -> group.owners.cancellation.onCancel { work.cancel() } }
     }
 
+    // Отменяет текущую работу и меняет номер попытки, сохраняя получателей. Поздний ответ
+    // отменённого запроса не должен попасть в возобновлённый.
     private fun pause(group: Group) {
         group.generation++
         group.running = false
@@ -161,6 +175,8 @@ internal class MediaThumbnailRequests {
         group.work = null
     }
 
+    // Убирает группу с её ключом и освобождает работу и получателей. Повторный запрос с тем же
+    // ключом сможет начать новую подготовку.
     private fun remove(group: Group) {
         groups.remove(group.key)
         pause(group)
@@ -168,6 +184,8 @@ internal class MediaThumbnailRequests {
         group.subscribers.clear()
     }
 
+    // Снимает группу и завершает всех ожидавших с отменой. После очистки ни один получатель не
+    // остаётся ждать.
     private fun retire(group: Group) {
         val subscribers = group.subscribers.values.toList()
         remove(group)
@@ -177,6 +195,8 @@ internal class MediaThumbnailRequests {
         }
     }
 
+    // Продолжает срочные группы, а без сетевой работы начинает одну предварительную. Передаёт
+    // состояние сети общей очереди подготовки.
     private fun resumeWaiting() {
         val waiting = groups.values.filter { !it.running }
         waiting.filter { it.priority > 0 }.forEach(::launch)
@@ -185,6 +205,8 @@ internal class MediaThumbnailRequests {
         onRemoteActivity?.invoke(groups.values.any { it.remote })
     }
 
+    // Отменяет все группы и снимает признак сетевой работы. При смене экрана очередь освобождает
+    // получателей и файлы.
     fun clear() {
         groups.values.toList().forEach(::retire)
         onRemoteActivity?.invoke(false)

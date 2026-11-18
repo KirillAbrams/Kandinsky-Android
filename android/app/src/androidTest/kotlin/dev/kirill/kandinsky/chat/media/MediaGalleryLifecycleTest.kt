@@ -1,3 +1,7 @@
+// Проверки галереи на андроиде при удалении текущего результата и ошибке источника. Они следят,
+// чтобы поздняя история не открыла закрытое окно и чтобы повтор действительно запустил скачанный
+// ролик.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.content.Intent
@@ -30,6 +34,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaGalleryLifecycleTest {
+    // Открываем результат, проверяем скрытие и возврат подписи и меню, затем удаляем его. Галерея
+    // закрывается один раз и игнорирует запоздалое чтение.
     @Test
     fun selectedResultCanBeRemovedAndLateHistoryCannotReopenGallery() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -56,6 +62,8 @@ class MediaGalleryLifecycleTest {
         val cancelled = mutableListOf<PageRequest>()
         var lateReply: ((Result<HistoryPage>) -> Unit)? = null
         val repository = object : ChatRepository by harness.repo {
+            // Перехватываем запрос галереи и сохраняем его ответ для ручной выдачи. Отдельно
+            // отмечаем отмену, иначе невозможно проверить реакцию после закрытия.
             override fun history(request: PageRequest, callback: (Result<HistoryPage>) -> Unit): Cancellation {
                 fetched += request
                 lateReply = callback
@@ -108,6 +116,8 @@ class MediaGalleryLifecycleTest {
                 assertTrue(caption.isShown)
                 assertTrue(menu.isShown)
             }
+            // Открываем нужный пункт меню и нажимаем его в потоке экрана. Проверка может пройти
+            // реальный путь удаления без прямого вызова обработчика галереи.
             fun chooseAction(label: String) {
                 lateinit var actions: View
                 instrumentation.runOnMainSync {
@@ -156,6 +166,8 @@ class MediaGalleryLifecycleTest {
         }
     }
 
+    // Первый запрос источника завершаем ошибкой и ждём кнопку повтора. После нажатия даём
+    // настоящий файл и сверяем, что второй запрос приводит к готовому показу.
     @Test
     fun failedVideoSourceCanBeRetriedAndPlaysTheDownloadedFile() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -176,6 +188,8 @@ class MediaGalleryLifecycleTest {
         lateinit var surface: InlinePlayerSurface
         var cleanup: (() -> Unit)? = null
         lateinit var retry: View
+        // Читаем условие на экране до предельного срока и показываем имя этапа, если он не
+        // завершился. Так раннее подтверждение не принимается за готовность видео.
         fun await(description: String, condition: () -> Boolean) {
             val deadline = SystemClock.uptimeMillis() + 8_000
             do {

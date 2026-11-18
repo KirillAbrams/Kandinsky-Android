@@ -1,3 +1,6 @@
+// Проверяет чтение и запись на временной базе телефона, включая потерянный ответ, границы
+// страниц, старую схему и неверные команды.
+
 package dev.kirill.kandinsky.chat.storage
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -12,6 +15,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class RepositoryTest {
+    // Готовит сообщения с одинаковым порядком времени и разными видами. Проверяет, что отбор
+    // вложений не пропускает нужные строки и сохраняет порядок двух снимков альбома.
     @Test
     fun visualKeysetPagesSkipNonVisualRowsAndKeepAlbumOrder() {
         val h = harness()
@@ -51,6 +56,8 @@ class RepositoryTest {
                 cb,
             )
         }
+        // Ждёт ответа очереди на одну страницу. Тест сравнивает готовые строки, поэтому пределы и
+        // порядок проверяются через обычное хранилище.
         fun page(request: PageRequest) = awaitResult<HistoryPage> { h.repo.history(request, it) }
         val newest = page(PageRequest(2, limit = 2, visualOnly = true))
         assertEquals(listOf(10L, 12L), newest.rows.map { it.id })
@@ -75,6 +82,8 @@ class RepositoryTest {
         h.close()
     }
 
+    // Открывает хранилище в папке с новым случайным именем. Номера строк и подготовленные данные
+    // тогда не зависят от предыдущего запуска.
     private fun harness() =
         RepositoryHarness.open(
             File(
@@ -83,6 +92,8 @@ class RepositoryTest {
             )
         )
 
+    // Повторяет отправку до и после открытия базы и затем имитирует потерю ответа после записи.
+    // Сверяет номера и число сообщений, чтобы повтор всегда возвращал сохранённое.
     @Test
     fun commitRetryAndLostReplySurviveReopen() {
         var h = harness()
@@ -112,6 +123,8 @@ class RepositoryTest {
         h.close()
     }
 
+    // Проверяет откат при нехватке места и сбое перед записью, затем отправляет другое содержимое
+    // со старым номером. История, подпись чата и черновик должны остаться прежними.
     @Test
     fun rollbackFullAndPayloadMismatchPreserveState() {
         val h = harness()
@@ -148,6 +161,8 @@ class RepositoryTest {
         h.close()
     }
 
+    // Сохраняет ввод и положение чтения, открывает файл снова, ищет буквальные знаки и удаляет
+    // последнее сообщение. Проверяет, что карточка показывает оставшуюся строку.
     @Test
     fun draftPositionDeleteAndLiteralSearch() {
         var h = harness()
@@ -191,6 +206,8 @@ class RepositoryTest {
         h.close()
     }
 
+    // Создаёт базу старого вида и открывает её обычным способом. Новый номер версии сам по себе
+    // недостаточен, поэтому проверяет также прежние сообщение, поиск и черновик.
     @Test
     fun legacyMigrationPreservesMessageAndDraft() {
         val root =
@@ -210,7 +227,8 @@ class RepositoryTest {
         h.close()
     }
 
-    // Более старая версия черновика не должна заменить уже сохранённую новую.
+    // Читает длинную историю тремя порциями без дублей и пишет более старую версию черновика
+    // последней. Проверяет, что порядок строк и новый ввод сохранились.
     @Test
     fun keysetPagesAndNewerDraftRevision() {
         val h = harness()
@@ -237,7 +255,8 @@ class RepositoryTest {
         h.close()
     }
 
-    // После закрытия хранилища чтение также должно завершиться явной отменой.
+    // Пытается отправить пустой текст и файл с путём выше папки. Проверяет, что ничего не
+    // записалось и закрытое хранилище отвечает явной отменой.
     @Test
     fun invalidInputAndClosedStore() {
         val h = harness()

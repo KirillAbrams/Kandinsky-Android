@@ -1,3 +1,7 @@
+// Место чтения на андроиде связывает видимую область с сообщением и строкой текста. При появлении
+// клавиатуры, уточнении высоты строк или возвращении в чат оно возвращает нужное место даже после
+// нового переноса текста.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -6,9 +10,8 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.*
 import kotlin.math.*
 
-// Для подготовленного текстового сообщения дополнительно запоминает строку, чтобы изменение
-// переноса
-// текста не уводило чтение.
+// Берём ожидающее место, пока лента ещё восстанавливается. В готовой истории запоминаем верхнее
+// сообщение, положение внутри подготовленной строки и близость к последнему сообщению.
 internal fun ChatScrollHost.captureReadingPosition(viewport: Int = height): ReadingAnchor {
     pendingAnchor?.let {
         return it
@@ -31,6 +34,8 @@ internal fun ChatScrollHost.captureReadingPosition(viewport: Int = height): Read
     return value
 }
 
+// Ставим ленту к концу, если это было запомнено. Иначе вычисляем высоту сохранённого символа по
+// новой раскладке или используем положение строки, пока текст не подготовлен.
 private fun ChatScrollHost.resolved(anchor: ReadingAnchor): Double {
     if (anchor.followsBottom) return max(0.0, index.totalHeight - height)
     val id = anchor.messageID
@@ -50,8 +55,12 @@ private fun ChatScrollHost.resolved(anchor: ReadingAnchor): Double {
     )
 }
 
+// Добавляем к измеренному содержимому вертикальный зазор. Высота в указателе истории должна
+// совпадать с фактическим местом холста.
 internal fun ChatScrollHost.measuredRowHeight(resource: PreparedText) = (resource.height + 6 * d).toDouble()
 
+// Сверяем известные строки с уже подготовленными размерами. Обновляем только заметно отличающиеся
+// высоты, чтобы не двигать ленту из-за дробного округления.
 internal fun ChatScrollHost.restoreCachedRowHeights(anchor: ReadingAnchor): Boolean {
     var changed = false
     for (row in loaded.values) {
@@ -65,7 +74,8 @@ internal fun ChatScrollHost.restoreCachedRowHeights(anchor: ReadingAnchor): Bool
     return changed
 }
 
-// Учитывает верхнюю и нижнюю панели, чтобы содержимое не смещалось из выбранной точки.
+// Пересчитываем отступы и возвращаем точку чтения в новой системе координат. Сдвигаем вместе с
+// ней окно подготовки, чтобы изменение геометрии не приняли за разгон прокрутки.
 internal fun ChatScrollHost.setGeometry(anchor: ReadingAnchor) {
     index.configureInsets(overlayTop + 8 * d, overlayBottom + 8 * d)
     val previousOffset = offset
@@ -74,6 +84,8 @@ internal fun ChatScrollHost.setGeometry(anchor: ReadingAnchor) {
     invalidate()
 }
 
+// Запоминаем чтение до изменения панели, ограничиваем размеры отступов и восстанавливаем позицию.
+// Прежние значения не требуют пересчёта кадра.
 internal fun ChatScrollHost.applyOverlayInsets(top: Double, bottom: Double) {
     if (top == overlayTop && bottom == overlayBottom) return
     val anchor = readingAnchor()

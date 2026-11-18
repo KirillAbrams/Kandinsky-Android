@@ -1,3 +1,6 @@
+// Обновляет строки генерации и учёт повторов в местной базе. Ответ, пришедший после обрыва связи,
+// можно сопоставить с исходным номером команды.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.database.sqlite.SQLiteDatabase
@@ -5,6 +8,8 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.*
 import org.json.JSONObject
 
+// Записывает предложенный номер только при отсутствии прежнего, затем читает сохранённый. Даже
+// после перезапуска приложения одна и та же команда не превращается в новый запрос.
 // При потере ответа телефон повторно отправит уже сохранённый номер.
 internal fun NetworkStore.loadOrCreateRetryID(db: SQLiteDatabase, key: String, proposed: java.util.UUID?): String {
     val candidate = (proposed ?: java.util.UUID.randomUUID()).toString()
@@ -18,6 +23,8 @@ internal fun NetworkStore.loadOrCreateRetryID(db: SQLiteDatabase, key: String, p
     }
 }
 
+// Проверяет чат всех возвращённых строк и объединяет их одним изменением базы. Отметка повтора
+// снимается в той же записи и только по совпавшему номеру, чтобы не подтвердить чужую попытку.
 internal fun NetworkStore.saveGenerationResponse(
     db: SQLiteDatabase,
     chat: Long,

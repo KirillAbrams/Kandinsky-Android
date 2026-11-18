@@ -1,3 +1,6 @@
+// Сверяем четыре уже скачанные фотографии с ожидаемыми серверными оригиналами у указанного
+// проверочного аккаунта.
+
 package dev.kirill.kandinsky.chat.network
 
 import android.graphics.BitmapFactory
@@ -11,7 +14,8 @@ import org.junit.Assume.assumeNotNull
 import org.junit.Test
 
 class GeneratedPhotoEvidenceTest {
-    // Проверяет только четыре файла указанного аккаунта после их открытия через приложение.
+    // Сверяем владельца и читаем скачанные после просмотра файлы. Контрольная сумма и размеры
+    // каждого фото подтверждают, что сохранился исходный файл в полном размере.
     @Test
     fun downloadedPhotosMatchAllFourServerOriginals() {
         val arguments = InstrumentationRegistry.getArguments()

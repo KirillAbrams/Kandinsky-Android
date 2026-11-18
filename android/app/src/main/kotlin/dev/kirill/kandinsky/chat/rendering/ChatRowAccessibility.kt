@@ -1,3 +1,7 @@
+// Лента на андроиде отдельно описывает нарисованные строки системе доступности. Картинка, повтор
+// генерации и видимый абзац получают свои координаты и подписи, поэтому ими можно управлять без
+// точного касания.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -8,6 +12,9 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.*
 import kotlin.math.*
 
+// Добавляем видимые элементы с устойчивыми именами и рамками. Для карточки различаем ход работы и
+// доступный повтор, для текста оставляем подходящие действия меню. Лимит сдерживает число
+// элементов на одном кадре.
 internal fun ChatScrollHost.appendRowAccessibility(
     row: Message, resource: PreparedText, x: Float, rowY: Float,
     accessibility: MutableList<NativeAction>,

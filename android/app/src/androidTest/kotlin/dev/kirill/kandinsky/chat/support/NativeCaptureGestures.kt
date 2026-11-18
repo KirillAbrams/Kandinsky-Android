@@ -1,3 +1,6 @@
+// Передаём жест удержания и фиксации записи в настоящее окно, чтобы проверить поведение после
+// отпускания.
+
 package dev.kirill.kandinsky.chat.support
 
 import android.app.Instrumentation
@@ -7,7 +10,8 @@ import android.view.MotionEvent
 import androidx.test.uiautomator.*
 import org.junit.Assert.assertTrue
 
-// После движения отпускает палец, чтобы проверить продолжение записи без дальнейшего удержания.
+// Ждём ухода старого окна, удерживаем нужную кнопку и проводим пальцем к фиксации. Отпускаем
+// палец и проверяем, что событие дошло до системы без дальнейшего удержания.
 fun lockNativeCapture(i: Instrumentation, device: UiDevice, id: String) {
     assertTrue(
         "Prior capture has left the window after native retirement",
@@ -21,6 +25,8 @@ fun lockNativeCapture(i: Instrumentation, device: UiDevice, id: String) {
     val x = rect.exactCenterX()
     val y = rect.exactCenterY()
     val down = SystemClock.uptimeMillis()
+    // Создаём событие с общим временем начала, видом движения и координатами. Проверяем его
+    // доставку и освобождаем объект после передачи.
     fun event(action: Int, px: Float, py: Float) {
         val value = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, px, py, 0)
         value.source = InputDevice.SOURCE_TOUCHSCREEN

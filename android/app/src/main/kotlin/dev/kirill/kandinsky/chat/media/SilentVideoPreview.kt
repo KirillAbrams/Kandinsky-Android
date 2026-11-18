@@ -1,3 +1,6 @@
+// Показывает ролик без звука в строке и продолжает с прежней позиции. Для скрытого видео
+// останавливает вывод и сохраняет кадр, а при закрытии освобождает поверхность.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.content.Context
@@ -15,6 +18,8 @@ class SilentVideoPreview(
     private val store: MediaStore?,
     private val changed: (() -> Unit)?,
 ) : FrameLayout(context), TextureView.SurfaceTextureListener, AutoCloseable {
+    // Создаёт представление без хранилища и действий экрана. Такой объект не сможет начать
+    // сетевой просмотр.
     constructor(context: Context) : this(context, null, null)
 
     private val texture =
@@ -61,14 +66,22 @@ class SilentVideoPreview(
         private set
 
     val active
+        // Проверяет наличие выведенного кадра и живого сеанса вне перемотки. Одна готовая
+        // поверхность ещё не означает, что можно убрать картинку.
         get() = !closed && !restoring && hasFrame && session != null
     val presented
+        // Считает видео показанным только когда оно готово и видимо. Скрытый остановленный ролик
+        // не должен участвовать в показе.
         get() = active && visible
     val isPlaying
+        // Возвращает для ленты признак видимого готового видео. Управление сеансом остаётся
+        // внутри просмотра.
         get() = presented
 
     var onPausedFrame: (() -> Unit)? = null
 
+    // На появлении продолжает сеанс после завершения перемотки. При уходе сохраняет кадр и
+    // запрашивает паузу с текущей позицией.
     fun setVisible(value: Boolean) {
         if (closed || visible == value) return
         visible = value
@@ -85,6 +98,8 @@ class SilentVideoPreview(
 
     private val invalidation = store?.registerInvalidation { close() }
 
+    // Создаёт прозрачный слой, отключает собственные действия и настраивает обрезку. Метки и
+    // действия принадлежат строке вокруг видео.
     init {
         setBackgroundColor(Color.TRANSPARENT)
         isClickable = false
@@ -95,6 +110,8 @@ class SilentVideoPreview(
         texture.clipToOutline = true
         texture.outlineProvider =
             object : ViewOutlineProvider() {
+                // Задаёт видимую границу вывода по форме и размеру. При нулевой рамке ничего не
+                // рисуется.
                 override fun getOutline(view: View, outline: Outline) {
                     if (view.width <= 0 || view.height <= 0) {
                         outline.setEmpty()
@@ -109,8 +126,8 @@ class SilentVideoPreview(
             }
     }
 
-    // Один владелец относится к одному исходнику, поэтому при замене файла закрывается для создания
-    // следующего.
+    // Переносит поверхность и отметки строки вместе с прокруткой. При первой привязке получает
+    // место и источник, а поздний ответ закрывает, если строка уже ушла.
     fun bind(
         attachment: Attachment,
         rect: RectF,
@@ -223,11 +240,15 @@ class SilentVideoPreview(
             }
     }
 
+    // Даёт системе разместить дочерние слои и снова сверяет масштаб. Размеры могли поменяться
+    // после размещения.
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         updateTextureTransform()
     }
 
+    // Пересчитывает масштаб, только если изменились пропорции или рамка. Увеличивает нужную
+    // сторону, чтобы видео сохранило пропорции и заполнило область.
     private fun updateTextureTransform() {
         if (
             width > 0 &&
@@ -253,6 +274,8 @@ class SilentVideoPreview(
         }
     }
 
+    // Строит круглую или закруглённую прямоугольную границу. Нижние углы могут иметь отдельный
+    // размер, чтобы совпасть с карточкой.
     private fun shape(w: Float, h: Float): Path {
         val r = cornerRadius
         val b = if (bottomSquare) minOf(r, 4 * resources.displayMetrics.density) else r
@@ -267,11 +290,14 @@ class SilentVideoPreview(
         }
     }
 
+    // После собственно видео рисует поверх отметки строки. Иначе ролик мог бы закрыть подписи.
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
         drawForeground(canvas)
     }
 
+    // Ограничивает отметки рамкой и выбирает заранее записанный или обычный рисунок по способу
+    // вывода. Пока кадра нет, этот слой не дублирует подпись.
     private fun drawForeground(canvas: Canvas) {
         if (hasFrame) {
             canvas.withClip(0, 0, width, height) {
@@ -285,16 +311,22 @@ class SilentVideoPreview(
         }
     }
 
+    // Передаёт время хранилищу по ключу видео и номеру состояния. Запоздалый сеанс не должен
+    // записывать место другого ролика.
     private fun rememberPosition(value: Long) {
         playbackKey?.let { store?.videoPlayback?.rememberPosition(value, it, cacheGeneration) }
     }
 
-    // Передаём видимый кадр в просмотр до отсоединения поверхности.
+    // Берёт текущий кадр и открывает удержание для просмотра. При переходе между экранами
+    // остаётся видимый кадр.
     fun snapshotFrame(): PreparedImage? {
         rememberFrame()
         return playbackKey?.let { store?.videoPlayback?.frame(it) }
     }
 
+    // При готовом выводе сохраняет кадр из поверхности или считывает его сразу. Старая чёткая
+    // копия остаётся до окончания обновления, а версия связывает результат с последним видимым
+    // кадром.
     private fun rememberFrame(deferWithCover: Boolean = false) {
         val key = playbackKey ?: return
         val store = store ?: return
@@ -323,6 +355,8 @@ class SilentVideoPreview(
         }
     }
 
+    // Ограничивает прежнее время длиной ролика и перематывает до показа. Возобновляет только
+    // видимое видео, если попытка ещё действительна.
     private fun restorePosition(duration: Long, ticket: Int) {
         val saved = playbackKey?.let { store?.videoPlayback?.position(it) } ?: 0L
         val target = saved.coerceIn(0, maxOf(0, duration - 1))
@@ -339,6 +373,8 @@ class SilentVideoPreview(
         }
     }
 
+    // Освобождает поверхность и все отложенные слои после отключения проигрывателя. Позднее
+    // уведомление знает, что удерживать больше нечего.
     private fun releaseOutputs() {
         outputsRetired = true
         surface?.release()
@@ -347,6 +383,8 @@ class SilentVideoPreview(
         heldTextures.clear()
     }
 
+    // Останавливает системный сеанс при отказе. Пока строка видима, повтор отложен до ухода и
+    // возврата, чтобы сеть не повторяла сбой в каждом кадре.
     private fun failPreview() {
         retireNative()
         // Пока строка видна, ошибка остаётся на месте. Новый запрос начнётся после
@@ -354,6 +392,8 @@ class SilentVideoPreview(
         if (!visible) close()
     }
 
+    // Снимает запрос, останавливает вывод и ждёт закрытия проигрывателя перед возвратом места.
+    // Иначе следующая строка могла бы создать новый сеанс до освобождения старого.
     private fun retireNative() {
         if (retiring) return
         retiring = true
@@ -385,6 +425,8 @@ class SilentVideoPreview(
         }
     }
 
+    // Использует уже сохранённый кадр паузы или сохраняет последний, затем снимает вывод, отметки
+    // и подписку. Повторное закрытие не повторяет эту работу.
     override fun close() {
         if (closed) return
         // Пока обновляется кадр паузы, ранее сохранённая чёткая обложка остаётся доступной.
@@ -403,6 +445,8 @@ class SilentVideoPreview(
         if (invalidation != null) store?.unregisterInvalidation(invalidation)
     }
 
+    // Подключает новую поверхность к существующему сеансу и освобождает старую после ответа. Если
+    // сеанс ещё готовится, поверхность ждёт его.
     override fun onSurfaceTextureAvailable(value: SurfaceTexture, w: Int, h: Int) {
         if (store == null || closed || retiring) return
         val old = surface
@@ -412,10 +456,12 @@ class SilentVideoPreview(
         if (native != null) native.attach(next) { old?.release() } else old?.release()
     }
 
-    // Отдельное действие не требуется, поскольку преобразование обновляется при размещении самого
-    // элемента.
+    // Принимает смену размера без отдельной операции. Размещение элемента уже пересчитало
+    // преобразование.
     override fun onSurfaceTextureSizeChanged(value: SurfaceTexture, w: Int, h: Int) {}
 
+    // Оставляет вывод на время остановки проигрывателя, если он ещё используется. После остановки
+    // освобождает, чтобы кадр не записывался в закрытую поверхность.
     override fun onSurfaceTextureDestroyed(value: SurfaceTexture): Boolean {
         if (store == null) return true
         if (outputsRetired) {
@@ -427,6 +473,8 @@ class SilentVideoPreview(
         return false
     }
 
+    // Учитывает только новый кадр текущего видимого ролика после перемотки. Первый кадр открывает
+    // слой и сообщает ленте о готовности, следующие обновляет сама система.
     override fun onSurfaceTextureUpdated(value: SurfaceTexture) {
         if (closed || retiring || texture.surfaceTexture !== value) return
         // Буфер, доставленный после скрытия, уже не виден и не меняет версию обложки паузы.
@@ -437,7 +485,7 @@ class SilentVideoPreview(
             hasFrame = true
             texture.alpha = 1f
             invalidate()
-            // TextureView сам обновляет следующие кадры. Ленте нужно знать, когда видео готово.
+            // Поверхность видео сама обновляет следующие кадры. Ленте нужно узнать только о готовности.
             changed?.invoke()
         }
     }

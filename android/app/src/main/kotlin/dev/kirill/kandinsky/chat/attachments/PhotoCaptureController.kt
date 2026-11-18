@@ -1,3 +1,6 @@
+// Управляет одним снимком через системную камеру Андроида. Отдельно ждёт закрытия камеры и
+// сеанса, чтобы не освободить изображение раньше времени.
+
 package dev.kirill.kandinsky.chat.attachments
 
 import android.app.Activity
@@ -46,6 +49,8 @@ class PhotoCaptureController(
     private var texture: TextureView? = null
     private var callback: ((Result<AttachmentDraft>) -> Unit)? = null
 
+    // Просит разрешение и получает право на съёмку у общего владельца. При отказе возвращает
+    // ошибку, не открывая пустое окно камеры.
     fun open(callback: (Result<AttachmentDraft>) -> Unit) {
         this.callback = callback
         requestCameraPermission { granted ->
@@ -67,6 +72,8 @@ class PhotoCaptureController(
         }
     }
 
+    // Создаёт окно с предварительным кадром, кнопкой снимка и отменой. Съёмка включается только
+    // после настройки рабочей поверхности.
     private fun show() {
         val root = FrameLayout(activity)
         val preview = TextureView(activity)
@@ -105,28 +112,32 @@ class PhotoCaptureController(
         d.window?.setLayout(-1, -1)
         preview.surfaceTextureListener =
             object : TextureView.SurfaceTextureListener {
+                // Начинает настройку камеры, когда система дала поверхность для показа. До этого
+                // повторяющиеся кадры некуда передавать.
                 override fun onSurfaceTextureAvailable(t: SurfaceTexture, w: Int, h: Int) {
                     configure(t)
                 }
 
-                // Дополнительную перестройку камеры в этом обработчике не выполняет
+                // Не перестраивает камеру при изменении рамки, поскольку поток уже настроен.
+                // Лишний перезапуск мог бы остановить текущий показ.
                 override fun onSurfaceTextureSizeChanged(t: SurfaceTexture, w: Int, h: Int) {}
 
-                // Камера ещё может писать в эту поверхность. Освобождаем её после подтверждения
-                // закрытия.
+                // Запоминает поверхность и запрашивает отмену. Освобождение отложено до закрытия
+                // камеры, пока она ещё может писать кадры.
                 override fun onSurfaceTextureDestroyed(t: SurfaceTexture): Boolean {
                     retiredTexture = t
                     cancel()
                     return false
                 }
 
-                // Обработчик не копирует кадр и не запускает отдельное обновление экрана
+                // Оставляет вывод системе и не копирует каждый кадр. Так предварительный показ не
+                // создаёт дополнительную обработку на экране.
                 override fun onSurfaceTextureUpdated(t: SurfaceTexture) {}
             }
     }
 
-    // Полученное фото передаёт импорту, а поздний результат после закрытия удаляет как
-    // неопубликованный.
+    // Выбирает доступную камеру и умеренный размер снимка, готовит выход кадра и читателя фото.
+    // Поздний импорт проверяет закрытие и не оставляет снимок без владельца.
     @Suppress("MissingPermission")
     private fun configure(texture: SurfaceTexture) {
         worker.post {
@@ -200,6 +211,8 @@ class PhotoCaptureController(
                 manager.openCamera(
                     id,
                     object : CameraDevice.StateCallback() {
+                        // Завершает ожидание открытия и подключает сеанс к полученной камере.
+                        // Если уже пришла отмена, закрывает устройство сразу.
                         override fun onOpened(device: CameraDevice) {
                             opening = false
                             camera = device
@@ -211,14 +224,20 @@ class PhotoCaptureController(
                             createSession(device)
                         }
 
+                        // Переводит разрыв связи с камерой в сбой прерванной съёмки. Пользователь
+                        // получает результат отказа вместо ожидания снимка.
                         override fun onDisconnected(device: CameraDevice) {
                             cameraFailed(device, MediaError.INTERRUPTED)
                         }
 
+                        // Переводит системную ошибку открытия в отказ недоступной камеры. Ресурсы
+                        // освобождаются общим путём завершения.
                         override fun onError(device: CameraDevice, error: Int) {
                             cameraFailed(device, MediaError.UNAVAILABLE)
                         }
 
+                        // Помечает устройство закрытым и проверяет, можно ли теперь освободить
+                        // оставшиеся части. Снятие окна не подменяет подтверждение системы.
                         override fun onClosed(device: CameraDevice) {
                             android.util.Log.d("KandinskyCamera", "device onClosed")
                             cameraClosed = true
@@ -235,6 +254,8 @@ class PhotoCaptureController(
         }
     }
 
+    // Завершает ожидание открытия и сохраняет устройство для освобождения. При уже идущем
+    // закрытии не отправляет вторую ошибку.
     private fun cameraFailed(device: CameraDevice, reason: MediaError) {
         opening = false
         camera = device
@@ -243,7 +264,8 @@ class PhotoCaptureController(
         else main.post { finish(Result.failure(MediaException(reason))) }
     }
 
-    // Сохраняет ожидание настройки, чтобы ресурсы не освободились раньше системного ответа.
+    // Просит систему настроить показ и отдельный выход снимка, отмечая ожидание ответа. Это
+    // удерживает поверхности, пока система создаёт сеанс.
     @Suppress("DEPRECATION")
     private fun createSession(device: CameraDevice) {
         creating = true
@@ -252,6 +274,8 @@ class PhotoCaptureController(
             device.createCaptureSession(
                 listOf(surface!!, reader!!.surface),
                 object : CameraCaptureSession.StateCallback() {
+                    // Запускает повторяющийся предварительный кадр и включает кнопку снимка. При
+                    // позднем ответе после отмены только закрывает готовый сеанс.
                     override fun onConfigured(s: CameraCaptureSession) {
                         creating = false
                         session = s
@@ -275,6 +299,8 @@ class PhotoCaptureController(
                         }
                     }
 
+                    // Запоминает полученный сеанс и завершает попытку с ошибкой или уже начатым
+                    // закрытием. Сеанс не останется без владельца.
                     override fun onConfigureFailed(s: CameraCaptureSession) {
                         creating = false
                         session = s
@@ -285,6 +311,8 @@ class PhotoCaptureController(
                             }
                     }
 
+                    // Отмечает закрытие сеанса, закрывает камеру при завершении и перепроверяет
+                    // условие освобождения. Поверхность не снимается между этими этапами.
                     override fun onClosed(s: CameraCaptureSession) {
                         android.util.Log.d("KandinskyCamera", "session onClosed")
                         sessionClosed = true
@@ -302,6 +330,8 @@ class PhotoCaptureController(
         }
     }
 
+    // Посылает один запрос снимка на выход файла с нужным поворотом. Во время другого снимка или
+    // закрытия повторный запрос не начинается.
     private fun capture() {
         worker.post {
             if (capturing || closing) return@post
@@ -317,7 +347,8 @@ class PhotoCaptureController(
                 s.capture(
                     request.build(),
                     object : CameraCaptureSession.CaptureCallback() {
-                        // Передаёт ошибку ввода и вывода в поток экрана для закрытия съёмки
+                        // Передаёт ошибку снимка в поток окна для общего завершения. Без ответа
+                        // пользователь мог бы остаться на неработающей камере.
                         override fun onCaptureFailed(
                             session: CameraCaptureSession,
                             request: CaptureRequest,
@@ -334,10 +365,14 @@ class PhotoCaptureController(
         }
     }
 
+    // Запускает то же закрытие с результатом отмены. Обычный отказ пользователя не должен
+    // выглядеть как сбой сохранения.
     fun cancel() {
         finish(Result.failure(MediaException(MediaError.CANCELLED)))
     }
 
+    // Запоминает результат один раз и останавливает показ и съёмку на рабочем потоке. Право на
+    // камеру пока остаётся у текущей операции.
     private fun finish(value: Result<AttachmentDraft>) {
         if (closing) return
         android.util.Log.d("KandinskyCamera", "finish requested")
@@ -352,6 +387,8 @@ class PhotoCaptureController(
         }
     }
 
+    // Ждёт окончания открытия, настройки и подтверждения закрытия обеих частей. Затем освобождает
+    // поверхность и окно, возвращает право на съёмку и сообщает результат один раз.
     private fun checkClosed() {
         android.util.Log.d(
             "KandinskyCamera",

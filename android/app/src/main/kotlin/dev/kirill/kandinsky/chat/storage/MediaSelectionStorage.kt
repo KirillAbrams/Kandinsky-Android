@@ -1,3 +1,6 @@
+// Хранит незавершённый выбор вложений для каждого чата. Эта запись помогает возобновить
+// подготовку и защищает выбранные оригиналы от уборки.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.database.sqlite.SQLiteDatabase
@@ -8,7 +11,8 @@ import java.util.UUID
 internal object MediaSelectionStorage {
     private const val MAXIMUM_PAYLOAD_BYTES = 1_048_576
 
-    // Связь с чатом удаляет такое намерение вместе с удалением его местной записи
+    // Создаёт таблицу и связывает одну запись с одним чатом. При удалении чата база убирает и его
+    // незавершённый выбор.
     fun install(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE IF NOT EXISTS media_selection_intents(chatID INTEGER PRIMARY KEY " +
@@ -16,6 +20,8 @@ internal object MediaSelectionStorage {
         )
     }
 
+    // Ограничивает число файлов и проверяет чат, номера команд и имена файлов внутри хранилища.
+    // Иначе повтор мог бы отправить файл дважды или открыть путь за пределами папки.
     private fun valid(commands: List<SendCommand>, chatID: Long): Boolean =
         chatID > 0 &&
             commands.size in 1..32 &&
@@ -38,6 +44,8 @@ internal object MediaSelectionStorage {
                     }
             }
 
+    // Перед чтением проверяет размер строки, затем разбирает и снова проверяет команды. Об ошибке
+    // сообщает явно, чтобы очистка не решила, что нужных файлов больше нет.
     private fun decode(payload: String, chatID: Long): List<SendCommand> {
         if (payload.toByteArray(Charsets.UTF_8).size > MAXIMUM_PAYLOAD_BYTES)
             throw RepoException(RepoError.CORRUPT)
@@ -53,6 +61,8 @@ internal object MediaSelectionStorage {
         return commands
     }
 
+    // Возвращает проверенный список выбранных файлов или пустой ответ при отсутствии записи.
+    // Выборы соседних чатов при этом не читаются.
     fun load(db: SQLiteDatabase, chatID: Long): List<SendCommand>? =
         db.rawQuery(
                 "SELECT payload FROM media_selection_intents WHERE chatID=?",
@@ -60,6 +70,8 @@ internal object MediaSelectionStorage {
             )
             .use { if (it.moveToFirst()) decode(it.getString(0), chatID) else null }
 
+    // Удаляет запись при отмене выбора, в остальных случаях проверяет и записывает список с
+    // ограничением по размеру. Старое содержание не останется рядом с новым.
     fun save(db: SQLiteDatabase, chatID: Long, commands: List<SendCommand>?) {
         if (commands == null) {
             db.execSQL("DELETE FROM media_selection_intents WHERE chatID=?", arrayOf(chatID))
@@ -75,9 +87,8 @@ internal object MediaSelectionStorage {
         )
     }
 
-    // Обходит всю таблицу, поскольку очистка не должна принять неполную страницу за полный список
-    // ещё
-    // используемых оригиналов.
+    // Читает все сохранённые выборы и возвращает имена используемых файлов. Неполный список мог
+    // бы привести к удалению ещё нужного оригинала.
     fun references(db: SQLiteDatabase): Set<String> {
         val paths = mutableSetOf<String>()
         db.rawQuery("SELECT chatID,payload FROM media_selection_intents", null).use { c ->

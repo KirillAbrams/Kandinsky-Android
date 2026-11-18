@@ -1,3 +1,6 @@
+// Проверяем, что крупный системный шрифт сохраняет черновик и помещает строку и кнопку в пределы
+// формы.
+
 package dev.kirill.kandinsky.chat
 
 import android.content.Intent
@@ -12,11 +15,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LargeFontFlowTest {
+    // На подходящем проверочном устройстве вводим строку в свободное поле и меняем системный
+    // размер шрифта. Сверяем восстановленный текст, границы букв и доступность отправки, затем
+    // возвращаем прежние настройки.
     @Test
     fun systemFontChangeRestoresDraftAndKeepsInputGlyphsInsideField() {
         val i = InstrumentationRegistry.getInstrumentation()
         val d = UiDevice.getInstance(i)
         Configurator.getInstance().waitForIdleTimeout = 0
+        // Передаём команду проверки системной службе и читаем её ответ до закрытия потока. Это
+        // нужно для чтения и восстановления исходного размера шрифта.
         fun shell(command: String) =
             ParcelFileDescriptor.AutoCloseInputStream(i.uiAutomation.executeShellCommand(command))
                 .use { String(it.readBytes()).trim() }

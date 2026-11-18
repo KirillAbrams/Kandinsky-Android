@@ -1,3 +1,5 @@
+// Проверяем точное место чтения внутри длинного текста при смене ширины настоящего окна.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
@@ -15,6 +17,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReflowAnchorTest {
+    // Открываем длинное сообщение с составными знаками и меняем ширину экрана. После нового
+    // переноса сверяем номер сообщения и положение среди знаков.
     @Test
     fun actualResizeRetainsLogicalUnicodePosition() {
         val i = InstrumentationRegistry.getInstrumentation()
@@ -45,6 +49,8 @@ class ReflowAnchorTest {
             }
             Cancellation {}
         }
+        // Ждём условие не дольше шести секунд и читаем состояние на основном потоке. Если новая
+        // разметка не появилась, проверка сообщает об этом явно.
         fun waitFor(condition: () -> Boolean) {
             val end = SystemClock.uptimeMillis() + 6000
             while (SystemClock.uptimeMillis() < end) {

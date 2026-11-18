@@ -1,3 +1,5 @@
+// Проверяем возвращение к черновику после отмены съёмки.
+
 package dev.kirill.kandinsky.chat
 
 import android.Manifest
@@ -9,6 +11,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PhotoCaptureFlowTest {
+    // Открываем камеру из чата с текстом, отменяем съёмку и дожидаемся закрытия окна. Сверяем
+    // прежний текст, чтобы случайная отмена не потеряла черновик.
     @Test
     fun cancellingCameraReturnsToSameDraft() {
         val ui = AppFlowDriver()

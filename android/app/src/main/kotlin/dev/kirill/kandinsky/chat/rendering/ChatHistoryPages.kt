@@ -1,3 +1,7 @@
+// Лента на андроиде читает порядок и размеры сообщений отдельно от их текста и файлов. Тяжёлое
+// построение указателя проходит в фоне. На экране остаются только нужные порции, а новое
+// изменение возвращает человека к тому же месту чтения.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.graphics.*
@@ -9,12 +13,16 @@ import dev.kirill.kandinsky.chat.storage.ChatRepository
 import java.util.concurrent.*
 import kotlin.math.*
 
+// Снимаем ожидающий вызов перед передачей результата. Повторное уведомление не должно снова
+// открыть уже показанный экран.
 internal fun ChatScrollHost.finishOpening(result: Result<Unit>) {
     val callback = opening
     opening = null
     callback?.invoke(result)
 }
 
+// Принимаем ошибку только от текущей работы. При первом открытии возвращаем её вызывающему коду,
+// а для уже видимого чата показываем через отдельный обработчик.
 private fun ChatScrollHost.indexFailed(error: Throwable, ticket: Int) {
     if (!closed && ticket == generation) {
         indexRefreshing = false
@@ -24,8 +32,8 @@ private fun ChatScrollHost.indexFailed(error: Throwable, ticket: Int) {
     }
 }
 
-// Перед применением проверяет поколение открытия, чтобы поздний ответ не заменил уже выбранный
-// другой чат.
+// Отменяем незавершённое открытие и запоминаем новый чат, хранилище и место чтения. Читаем
+// сведения и строим указатель, принимая ответ только по текущему номеру.
 internal fun ChatScrollHost.openHistory(
     chatID: ChatID,
     repository: ChatRepository,
@@ -60,6 +68,9 @@ internal fun ChatScrollHost.openHistory(
     }
 }
 
+// Собираем указатель в фоне, сохраняя измеренные размеры строк той же редакции. Для новых оценок
+// учитываем плотность экрана. Законченный указатель возвращаем потоку экрана, если чат ещё ждёт
+// этот ответ.
 private fun ChatScrollHost.buildIndex(
     rows: List<IndexedRow>,
     previous: Map<MessageID, IndexedRow>,
@@ -86,6 +97,9 @@ private fun ChatScrollHost.buildIndex(
     }
 }
 
+// Сначала пробуем поправить карточки на месте. При остальных изменениях обновляем просмотр и
+// заново собираем сведения, удерживая прежние строки по редакции и порядку. Отправленный с этого
+// устройства запрос переводит ленту в конец.
 internal fun ChatScrollHost.applyHistoryChange(delta: MessageDelta) {
     if (closed) return
     val repo = repository ?: return
@@ -142,7 +156,9 @@ internal fun ChatScrollHost.applyHistoryChange(delta: MessageDelta) {
     }
 }
 
-// Возвращает признак применённого короткого пути, чтобы не перестраивать всю историю.
+// Проверяем, что изменились только существующие карточки без смены места. Обновляем готовый
+// рисунок и высоту, если она разошлась с прежней. Проигрыватель и галерею трогаем только при
+// смене файлов.
 private fun ChatScrollHost.patchStudioRows(delta: MessageDelta): Boolean {
     if (delta.inserted.isNotEmpty() || delta.removedIDs.isNotEmpty() || delta.updated.isEmpty())
         return false
@@ -186,6 +202,9 @@ private fun ChatScrollHost.patchStudioRows(delta: MessageDelta): Boolean {
     return true
 }
 
+// Держим один запрос порции за раз и отбрасываем ответы старого окна. Возвращаем измеренные
+// высоты из памяти для уже подготовленных строк, иначе они могли бы остаться на примерных
+// размерах.
 internal fun ChatScrollHost.requestPage(center: OrderKey) {
     if (pageLoading) return
     val p = pages ?: return

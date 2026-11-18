@@ -1,3 +1,6 @@
+// Проверяет допустимые сведения о передаче исходного файла и расчёт доли загрузки. Некорректный
+// счётчик не должен стать видимым ходом работы.
+
 package dev.kirill.kandinsky.chat.domain
 
 import java.util.UUID
@@ -14,6 +17,8 @@ class StudioTransferTest {
             "image/jpeg",
         )
 
+    // Проверяет четверть переданных байтов и допустимость завершения ровно на полном объёме.
+    // Частично переданный файл не будет показан как готовый.
     @Test
     fun partialByteCountProducesAValidPercentageWithoutRoundingToCompletion() {
         assertTrue(source.isValid)
@@ -21,6 +26,8 @@ class StudioTransferTest {
         assertTrue(source.copy(received = 1000).isValid)
     }
 
+    // Подставляет отрицательные, чрезмерные и нулевые объёмы, а также неверные номера. Каждый
+    // случай должен быть отклонён до показа загрузки.
     @Test
     fun impossibleByteCountsAndMalformedIdentitiesAreRejected() {
         for (invalid in

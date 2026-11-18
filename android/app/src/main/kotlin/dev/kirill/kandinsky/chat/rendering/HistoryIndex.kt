@@ -1,3 +1,7 @@
+// Указатель истории на андроиде находит сообщения по координате прокрутки и по номеру. Дерево
+// частичных сумм ускоряет поиск в длинном чате, а уточнение высоты одной строки меняет лишь
+// суммы, куда она входит.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -28,12 +32,14 @@ class HistoryIndex(
     internal var geometryRevision = 0
         private set
 
+    // Проверяем, что промежуток для заголовка дня конечный и неотрицательный. Иначе координаты
+    // строк могли бы пойти назад или стать непригодными.
     init {
         require(dayGap.isFinite() && dayGap >= 0)
     }
 
-    // Для непустой истории сразу меняет общую высоту на разницу отступов, сохраняя высоты и порядок
-    // самих сообщений
+    // Учитываем изменение краёв видимой области в общей высоте непустой ленты. Номер геометрии
+    // меняется только при новом размере отступов.
     fun configureInsets(top: Double, bottom: Double) {
         require(top.isFinite() && bottom.isFinite() && top >= 0 && bottom >= 0)
         if (top == topInset && bottom == bottomInset) return
@@ -43,8 +49,12 @@ class HistoryIndex(
         geometryRevision++
     }
 
+    // Берём сохранённое время, а для старой записи без него берём временную часть порядка.
+    // Разделитель можно построить в обоих случаях.
     private fun stamp(row: IndexedRow) = row.savedAtMs ?: row.order.sortKey
 
+    // Вычисляем местный номер дня по времени и смещению часового пояса. Деление с округлением
+    // вниз сохраняет правильные границы и у отрицательных меток.
     private fun day(row: IndexedRow): Long {
         val ms = stamp(row)
         val span = 86400000L
@@ -52,6 +62,8 @@ class HistoryIndex(
             Math.floorDiv(Math.floorMod(ms, span) + timeZone.getOffset(ms), span)
     }
 
+    // Проверяем номера и высоты, сортируем строки и пересобираем быстрый поиск и суммы. Если
+    // прежняя точка пропала, выбираем ближайший оставшийся порядок и вычисляем новое положение.
     fun replace(values: List<IndexedRow>, anchor: ReadingAnchor, viewport: Double): Double {
         val sorted = values.sortedBy { it.order }
         require(
@@ -100,7 +112,8 @@ class HistoryIndex(
         return offset(restored, viewport)
     }
 
-    // Дерево хранит суммы высот. До нужной строки можно дойти без перебора всей истории.
+    // Читаем суммы готовых блоков до нужного числа строк. Получаем высоту вместе с верхним
+    // отступом без перебора всех сообщений.
     fun prefix(count: Int): Double {
         var n = count.coerceIn(0, rows.size)
         var sum = topInset
@@ -111,16 +124,20 @@ class HistoryIndex(
         return sum
     }
 
+    // Ищем место сообщения по его номеру в таблице. Пустой ответ означает, что сообщение ещё не
+    // вошло в текущий указатель.
     fun position(id: MessageID) = positions[id]
 
-    // Добавляет промежуток его разделителя дня, чтобы положение относилось к самому сообщению, а не
-    // к
-    // заголовку перед ним.
+    // Считаем начало сообщения с промежутком под дату. Этот размер годится для установки самого
+    // сообщения, даже если перед ним нарисован заголовок.
     fun top(id: MessageID) = positions[id]?.let { prefix(it) + leading[it] }
 
-    // Высота строки исключает заголовок даты и внешние отступы.
+    // Возвращаем измеренную или оценочную высоту строки без даты. Её можно напрямую сравнить с
+    // высотой подготовленного рисунка.
     fun height(id: MessageID) = positions[id]?.let { rows[it].estimatedHeight }
 
+    // Находим строку по координате, пропуская известные блоки через дерево сумм. Верх и низ
+    // ограничиваем так, чтобы поиск не вернул индекс за границей.
     private fun seek(value: Double): Int {
         if (rows.isEmpty()) return 0
         val content = totalHeight - topInset - bottomInset
@@ -140,6 +157,8 @@ class HistoryIndex(
         return min(index, rows.size - 1)
     }
 
+    // Запоминаем номер сообщения, долю пройденной строки и расстояние до её верха. Так после
+    // уточнения размеров можно вернуться к тому же месту.
     fun anchorAt(offset: Double): ReadingAnchor {
         if (rows.isEmpty()) return ReadingAnchor(followsBottom = false)
         val i = seek(offset)
@@ -153,6 +172,8 @@ class HistoryIndex(
         )
     }
 
+    // Превращаем сохранённую долю и отступ в новую координату. Положение удерживаем внутри окна,
+    // а при чтении последних сообщений привязываем к низу.
     fun offset(anchor: ReadingAnchor, viewport: Double): Double {
         if (anchor.followsBottom) return max(0.0, totalHeight - max(0.0, viewport))
         val i = anchor.messageID?.let { positions[it] } ?: return 0.0
@@ -162,6 +183,8 @@ class HistoryIndex(
             .coerceIn(0.0, max(0.0, totalHeight - max(0.0, viewport)))
     }
 
+    // Меняем номер редакции только для известного сообщения с прежним порядком. Его размер и
+    // расположение можно переиспользовать при такой правке.
     fun refreshRevision(message: Message) {
         val i = position(message.id) ?: return
         val old = rows[i]
@@ -169,6 +192,8 @@ class HistoryIndex(
         (rows as MutableList<IndexedRow>)[i] = old.copy(revision = message.revision)
     }
 
+    // Записываем новую высоту и добавляем разницу только к связанным блокам дерева. Возвращаем
+    // новую координату чтения без пересборки всего списка.
     fun updateHeight(
         id: MessageID,
         height: Double,
@@ -191,6 +216,8 @@ class HistoryIndex(
         return offset(anchor, viewport)
     }
 
+    // Находим две крайние строки по видимой полосе и расширяем границы на небольшой запас.
+    // Жёсткий предел ограничивает объём подготовки для одного кадра.
     fun visible(
         offset: Double,
         height: Double,
@@ -208,6 +235,8 @@ class HistoryIndex(
         return start until max(start, end)
     }
 
+    // Выбираем разделители, чьё место пересекается с видимой областью. Только у первого сообщения
+    // нового дня есть такой промежуток.
     fun days(offset: Double, height: Double): List<HistoryDay> {
         if (dayGap == 0.0) return emptyList()
         return visible(offset, height).mapNotNull { i ->

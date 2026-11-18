@@ -1,3 +1,6 @@
+// Сохраняет оригинал в загрузки или готовит доступ для отправки через другое приложение. Закрытие
+// снимает ожидающие ответы и прекращает подготовку.
+
 package dev.kirill.kandinsky.chat.media
 
 import android.content.ClipData
@@ -27,6 +30,8 @@ internal class KandinskyMediaExport(private val context: Context) {
     private var exporting = false
     private var closed = false
 
+    // Получает оригинал и переносит сохранение или подготовку отправки в фон. Пока одна операция
+    // идёт, повторное нажатие не начинает вторую.
     fun start(
         media: MediaStore,
         attachment: Attachment,
@@ -79,6 +84,8 @@ internal class KandinskyMediaExport(private val context: Context) {
             }
     }
 
+    // Создаёт временную системную запись, копирует файл и открывает его только после полной
+    // записи. При ошибке удаляет незавершённую запись из загрузок.
     private fun save(file: File, mime: String) {
         val resolver = context.contentResolver
         val values =
@@ -113,6 +120,8 @@ internal class KandinskyMediaExport(private val context: Context) {
         }
     }
 
+    // Убирает вчерашние временные копии и кладёт файл в папку отправки выбранного владельца.
+    // Выдаёт системную ссылку только после полной записи.
     private fun stageShare(file: File, namespace: String): Uri {
         val shareRoot = File(context.cacheDir, "kandinsky-share")
         val folder =
@@ -149,6 +158,8 @@ internal class KandinskyMediaExport(private val context: Context) {
         )
     }
 
+    // Открывает системное меню отправки и даёт выбранному приложению право чтения указанного
+    // файла. Другие файлы открывать для этого не нужно.
     private fun launchShare(uri: Uri, mime: String) {
         val send =
             Intent(Intent.ACTION_SEND).apply {
@@ -160,7 +171,8 @@ internal class KandinskyMediaExport(private val context: Context) {
         context.startActivity(Intent.createChooser(send, null))
     }
 
-    // Прерывает собственную очередь подготовки, чтобы новые ответы не изменяли экран.
+    // Убирает загрузку и останавливает собственную очередь подготовки. Запоздалый ответ не должен
+    // открыть меню для уже закрытого экрана.
     fun close() {
         closed = true
         download?.cancel()

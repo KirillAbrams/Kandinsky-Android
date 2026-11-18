@@ -1,3 +1,7 @@
+// Полупрозрачная подложка на андроиде размывает фон внутри скруглённой рамки. На новых
+// устройствах использует ускоренный рисунок, а для старой системы и программного холста есть
+// запасной путь с небольшими изображениями.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Context
@@ -16,6 +20,8 @@ class NativeGlassSurface(private val context: Context) : AutoCloseable {
     private val shape = Path()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
+    // Обрезаем просмотр по форме панели и выбираем способ размытия по версии системы и холсту.
+    // Поверх добавляем светлый переход цвета, чтобы кнопки оставались различимы.
     fun draw(c: Canvas, rect: RectF, radius: Float, d: Float, backdrop: (Canvas) -> Unit) {
         if (rect.width() <= 0 || rect.height() <= 0) return
         shape.reset()
@@ -43,6 +49,8 @@ class NativeGlassSurface(private val context: Context) : AutoCloseable {
         }
     }
 
+    // Закрываем оба способа рисования, если они создавались. Подложка больше не держит память
+    // после ухода.
     override fun close() {
         if (Build.VERSION.SDK_INT >= 31) gpu?.close()
         gpu = null
@@ -56,7 +64,8 @@ private class GpuGlassStrip : AutoCloseable {
     private val node = RenderNode("Kandinsky live glass backdrop")
     private var radius = -1f
 
-    // Оставляет поля вокруг области, чтобы размытие не обрезалось по её краям.
+    // Записываем фон в уменьшенном размере, захватывая поля за границей панели. Так размытие
+    // захватывает соседние точки, а края не получают отрезанный след.
     fun draw(c: Canvas, rect: RectF, blur: Float, source: (Canvas) -> Unit) {
         val down = .25f
         val margin = ceil(blur * 2).toFloat()
@@ -85,6 +94,8 @@ private class GpuGlassStrip : AutoCloseable {
         }
     }
 
+    // Снимаем записанный рисунок и эффект размытия с графического узла. Сама панель может быть
+    // создана снова с пустым узлом.
     override fun close() {
         node.discardDisplayList()
         node.setRenderEffect(null)
@@ -102,9 +113,8 @@ private class CpuGlassStrip(context: Context) : AutoCloseable {
     private var cursor = 0
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-    // Для вывода создаёт четыре сменяемых изображения, не освобождая принудительно прежние кадры,
-    // которые ещё
-    // могут использоваться системой.
+    // Меняем рабочие изображения только при новом размере. Четыре сменных результата дают системе
+    // закончить показ предыдущего кадра, прежде чем ту же память использует новый.
     private fun resize(w: Int, h: Int) {
         if (source?.width == w && source?.height == h) return
         input?.destroy()
@@ -119,6 +129,8 @@ private class CpuGlassStrip(context: Context) : AutoCloseable {
         output = Allocation.createTyped(rs, input!!.type)
     }
 
+    // Рисуем уменьшенный фон и его запас вокруг края, размываем в рабочей области и выдаём
+    // очередное изображение. Масштабируем его обратно к размеру панели.
     fun draw(c: Canvas, rect: RectF, radius: Float, backdrop: (Canvas) -> Unit) {
         val down = .2f
         val margin = ceil(radius * 2).toFloat()
@@ -143,6 +155,8 @@ private class CpuGlassStrip(context: Context) : AutoCloseable {
         c.drawBitmap(target, null, RectF(x, y, x + w / down, y + h / down), paint)
     }
 
+    // Освобождаем рабочие области, средство размытия и исходник. Ссылки на выходные изображения
+    // сбрасываем, чтобы система спокойно закончила их показ.
     override fun close() {
         input?.destroy()
         output?.destroy()

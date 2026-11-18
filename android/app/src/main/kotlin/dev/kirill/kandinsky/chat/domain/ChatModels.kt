@@ -1,3 +1,6 @@
+// Описывает сообщения, вложения, ход генерации и местные команды Андроида. Эти данные переходят
+// между базой, службой обмена и экраном без повторного толкования полей.
+
 package dev.kirill.kandinsky.chat.domain
 enum class MessageKind {
     TEXT,
@@ -30,8 +33,8 @@ enum class MessageChangeReason {
 }
 
 data class OrderKey(val sortKey: Long, val messageID: MessageID) : Comparable<OrderKey> {
-    // При совпадении ключей использует постоянный номер сообщения, чтобы порядок оставался
-    // однозначным.
+    // Сравнивает строки по ключу порядка, затем по номеру сообщения при равном ключе. Это
+    // сохраняет обе строки на границе страницы, даже когда время совпало.
     override fun compareTo(other: OrderKey): Int =
         if (sortKey == other.sortKey) messageID.compareTo(other.messageID)
         else sortKey.compareTo(other.sortKey)
@@ -95,6 +98,7 @@ data class Message(
     val studioGeneration: StudioGeneration? = null,
 ) {
     val canReportStudioMedia
+        // Разрешает жалобу на входящий снимок или ролик с одним вложением.
         get() =
             direction == MessageDirection.INCOMING &&
                 attachments.size == 1 &&
@@ -140,16 +144,20 @@ data class StudioGeneration(
         val moderated: Boolean = false,
     ) {
         val canRetry: Boolean
+            // Позволяет повторить неудачный результат без файла, если проверка содержания его не блокирует.
             get() = stage == Stage.FAILED && !moderated && blobId == null
     }
 
     val isActive
+        // Отмечает очередь и выполнение как активные состояния. Завершённая генерация не остаётся занятой.
         get() = stage == Stage.QUEUED || stage == Stage.RUNNING
 
     val isVideo
+        // Определяет ролик и его улучшение, чтобы экран выбрал оформление видео.
         get() = model == "video" || model == "video_sr"
 
     val ratio: Float
+        // Считает ширину к высоте и заменяет непригодное соотношение квадратом.
         get() {
             val parts = aspect?.split(':').orEmpty()
             if (parts.size != 2) return 1f
@@ -161,6 +169,7 @@ data class StudioGeneration(
         }
 
     val failureText
+        // Различает отмену и сбой. Без сообщения от службы предлагает повтор.
         get() =
             if (stage == Stage.CANCELLED) "Генерация отменена"
             else error?.takeIf(String::isNotBlank) ?: "Не удалось создать. Попробуйте ещё раз."
@@ -193,14 +202,17 @@ data class KandinskyOptions(
 
 data class StudioUpload(val blobId: String, val mime: String, val byteSize: Long) {
     val isVideo
+        // Выбирает просмотр ролика по виду файла. Для снимка используется другое действие.
         get() = mime == "video/mp4"
 
     val title
+        // Подписывает действие для загруженного файла. Ролик можно смотреть, а снимок выбрать как исходник.
         get() = if (isVideo) "Посмотреть загруженное видео" else "Использовать загруженное фото"
 }
 
 data class StudioDraftRecord(val identity: java.util.UUID, val draft: Draft) {
     val hasContent: Boolean
+        // Считает черновик нужным при вводе, файлах, параметрах или ожидающей отправке.
         get() =
             draft.text.isNotBlank() ||
                 draft.attachmentDrafts.isNotEmpty() ||
@@ -217,6 +229,7 @@ data class StudioTransfer(
     val mime: String,
 ) {
     val isValid: Boolean
+        // Проверяет номера, ограничения размера и положение счётчика, прежде чем показать передачу.
         get() =
             runCatching {
                     java.util.UUID.fromString(id).toString() == id.lowercase() &&
@@ -230,6 +243,7 @@ data class StudioTransfer(
                 .getOrDefault(false)
 
     val progress: Double
+        // Возвращает долю переданных байтов. Вызывающий код сначала проверяет счётчики.
         get() = received.toDouble() / total
 }
 
@@ -238,6 +252,8 @@ data class StudioChoice(
     val name: String,
     val sizes: Map<String, List<Int>> = emptyMap(),
 ) {
+    // Показывает размеры нужного соотношения сторон, если они указаны в списке модели. В
+    // остальных случаях остаётся знакомое название варианта.
     fun label(aspect: String) = sizes[aspect]?.joinToString(" × ") ?: name
 }
 
@@ -261,6 +277,7 @@ data class StudioModel(
     val referenceCapabilities: StudioCapabilities?,
 )
 
+// Описывает одну отправку вместе с постоянным номером для безопасного повтора.
 data class SendCommand(
     val operationID: String,
     val chatID: ChatID,
@@ -272,6 +289,7 @@ data class SendCommand(
     val generationOptions: KandinskyOptions? = null,
 )
 
+// Передаёт экрану изменённые строки и карточку вместо полной истории.
 data class MessageDelta(
     val inserted: List<Message> = emptyList(),
     val updated: List<Message> = emptyList(),
@@ -280,6 +298,7 @@ data class MessageDelta(
     val reason: MessageChangeReason = MessageChangeReason.LOCAL_SEND,
 )
 
+// Хранит ввод, вложения и ожидающие команды до момента подтверждения отправки.
 data class Draft(
     val text: String = "",
     val attachmentDrafts: List<AttachmentDraft> = emptyList(),
@@ -292,6 +311,7 @@ data class Draft(
     val generationOptions: KandinskyOptions? = null,
 )
 
+// Сохраняет строку, смещение и версию раскладки, чтобы открыть чат на прежнем месте.
 data class ReadingAnchor(
     val messageID: MessageID? = null,
     val fraction: Double = 0.0,

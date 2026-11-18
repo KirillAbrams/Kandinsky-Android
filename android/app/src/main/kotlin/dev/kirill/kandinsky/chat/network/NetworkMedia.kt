@@ -1,3 +1,6 @@
+// Находит местную копию вложения, при необходимости скачивает её и отдаёт видео целиком или
+// отрезками. Следит за размером папки и убирает отозванные файлы.
+
 package dev.kirill.kandinsky.chat.network
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -11,12 +14,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class StudioMediaRemoval(val blob: String, val preview: String) {
     val key
+        // Собирает общий ключ отметки удаления из номера оригинала. Очистка находит нужное
+        // вложение независимо от расширения.
         get() = PREFIX + blob
 
     companion object {
         const val PREFIX = "studioRemoved:"
         private val id = Regex("[a-f0-9]{32}")
 
+        // Принимает отметку, если оба номера имеют допустимые вид и длину. Иначе очистка могла бы
+        // получить имя другого файла.
         fun parse(blob: String, preview: String) =
             if (id.matches(blob) && id.matches(preview)) StudioMediaRemoval(blob, preview) else null
     }
@@ -33,30 +40,31 @@ class NetworkMedia(
     private val pinGate = Any()
     private val revoked = linkedSetOf<String>()
 
-    // Останавливает чтение отменой, чтобы сохранённая копия не вернула удалённый результат в
-    // историю.
+    // Проверяет номер файла по недавним отзывам. При совпадении останавливает чтение, даже если
+    // местная копия ещё не удалена.
     private fun requireAvailable(name: String) {
         if (synchronized(pinGate) { name.take(32) in revoked })
             throw MediaException(MediaError.CANCELLED)
     }
 
-    // Запоминает отзыв результата в ограниченном наборе, чтобы новые обращения к нему прекращались
-    // отменой.
+    // Ставит отметку отзыва, ждёт загрузку и удаляет оригинал, производный кадр, миниатюру и
+    // отрезки. Ограниченный набор отзывов мешает новым чтениям вернуться к файлу во время
+    // очистки.
     internal fun removeCached(removal: StudioMediaRemoval) {
         synchronized(pinGate) {
             revoked.add(removal.blob)
             if (revoked.size > 512) revoked.remove(revoked.first())
         }
         synchronized(downloads) {
-            // Проверяем путь до удаления файла, чтобы ссылка не вывела нас за пределы папки
-            // приложения.
+            // Сверяет вычисленный путь с истинным путём файла перед удалением. Так файловая
+            // ссылка не выводит очистку из папки приложения.
             fun owned(relative: String): File {
                 val file = File(mediaDirectory, relative)
                 check(file.canonicalFile == file.absoluteFile)
                 return file
             }
-            // Неудачное удаление сообщает отказом, чтобы отметка очистки не считалась успешно
-            // обработанной.
+            // Убирает существующий файл и сообщает об отказе диска. Иначе отметка могла бы
+            // исчезнуть до настоящего удаления.
             fun unlink(file: File) {
                 if (file.exists()) check(file.delete())
             }
@@ -83,6 +91,9 @@ class NetworkMedia(
         }
     }
 
+    // Повторно использует местный оригинал или миниатюру, а при отсутствии читает описание из
+    // базы. Перед передачей снова проверяет отмену и готовую копию, затем скачивает и удерживает
+    // файл для чтения.
     fun resolve(
         attachment: Attachment,
         preview: Boolean,
@@ -157,7 +168,8 @@ class NetworkMedia(
         }
     }
 
-    // Местный кадр не ждёт посторонние загрузки. Файл закрепляется до конца декодирования.
+    // Ищет оригинал под старым или новым именем, а для уменьшенной копии читает её номер из базы.
+    // Возвращает только сохранённое и не ждёт чужую сетевую передачу.
     fun cached(attachment: Attachment, preview: Boolean, token: MediaCancellation): Pair<File, String>? {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
         if (token.isCancelled) throw MediaException(MediaError.CANCELLED)
@@ -186,6 +198,8 @@ class NetworkMedia(
         return retainedCached(File(mediaDirectory, "previews/$blob"), "image/jpeg", token)
     }
 
+    // Проверяет путь внутри папки, удерживает существующий файл и обновляет время чтения. При
+    // отмене освобождает удержание один раз, чтобы очистка могла убрать ненужный файл.
     private fun retainedCached(file: File, mime: String, token: MediaCancellation): Pair<File, String>? {
         if (file.canonicalFile != file.absoluteFile ||
             !file.absolutePath.startsWith(mediaDirectory.path + File.separator))
@@ -199,6 +213,8 @@ class NetworkMedia(
         return file to mime
     }
 
+    // Для готового видео отдаёт местный файл, иначе подготавливает чтение отрезков по номеру и
+    // размеру из базы. Защищает путь до закрытия и проверяет отзыв до и после сетевого чтения.
     fun playback(attachment: Attachment, token: MediaCancellation): MediaPlaybackSource {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
         requireAvailable(attachment.relativePath.removePrefix("remote/"))
@@ -254,7 +270,8 @@ class NetworkMedia(
         }
     }
 
-    // Пока файл читает плеер, очистка кеша должна его пропускать.
+    // Считает открытые чтения по пути и возвращает действие освобождения. Пока счётчик
+    // положительный, очистка оставляет файл на месте.
     private fun pin(file: File): () -> Unit {
         val path = file.absolutePath
         synchronized(pinGate) { pins[path] = (pins[path] ?: 0) + 1 }
@@ -267,6 +284,8 @@ class NetworkMedia(
         }
     }
 
+    // Считает место оригиналов и миниатюр без частично записанных файлов. Убирает самые старые до
+    // предела и пропускает текущую загрузку и открытые чтения.
     private fun prune(keep: File) {
 
         val files =
@@ -290,6 +309,8 @@ class NetworkMedia(
     }
 
     companion object {
+        // Подбирает расширение по типу файла. Для неизвестного типа оставляет общее расширение,
+        // чтобы путь всё равно был устойчивым.
         fun extension(mime: String) =
             mapOf(
                 "image/jpeg" to "jpg",
@@ -302,13 +323,12 @@ class NetworkMedia(
                 "audio/mp4" to "m4a",
             )[mime] ?: "bin"
 
-        // Использует постоянный номер содержимого и расширение его вида, чтобы повторные обращения
-        // находили ту же местную копию
+        // Строит путь к оригиналу по номеру содержимого и расширению. Это позволяет узнать уже
+        // скачанный файл по тому же номеру.
         fun relativePath(blob: String, mime: String) = "remote/" + blob + "." + extension(mime)
 
-        // Возвращает разные пути их вложений, чтобы восстановление и очистка учитывали ещё нужные
-        // местные
-        // исходники.
+        // Собирает пути вложений из черновиков и очереди ещё не подтверждённых отправок.
+        // Восстановление и уборка учитывают эти файлы до записи в историю.
         fun pendingReferences(database: android.database.sqlite.SQLiteDatabase): Set<String> {
             val paths = mutableSetOf<String>()
             StudioDraftStorage.load(database)?.draft?.let { draft ->

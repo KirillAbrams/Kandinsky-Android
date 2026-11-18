@@ -1,3 +1,7 @@
+// Карточка генерации на андроиде определяет рамки результата, повтор и подписи этапов. Постоянный
+// рисунок сохраняется вместе со строкой. Для процентов отдельный видимый элемент меняет дугу без
+// пересборки текста.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.res.Resources
@@ -27,12 +31,18 @@ class StudioGenerationCard(
     val cells: List<Cell>
     val resultFrames: List<RectF>
     val isBatch
+        // Выбираем раскладку по наличию сохранённых ячеек. У каждой из них может быть свой этап и
+        // результат.
         get() = cells.isNotEmpty()
 
     val retryCells
+        // Возвращаем ячейки с разрешённым повтором. Нажатие в такой области повторяет только
+        // нужный результат.
         get() = cells.filter { it.slot.canRetry }
 
     val runningCells
+        // Выбираем выполняющиеся ячейки. У одиночной генерации без списка даём одну рамку с общим
+        // процентом, чтобы сцена могла использовать тот же индикатор.
         get() =
             if (isBatch) cells.filter { it.slot.stage == StudioGeneration.Stage.RUNNING }
             else
@@ -53,6 +63,8 @@ class StudioGenerationCard(
                     }
                     .orEmpty()
 
+    // Сравниваем размеры и сведения, которые влияют на неподвижный рисунок. Если изменился лишь
+    // процент, готовый слой можно оставить.
     fun sameStaticInk(old: StudioGenerationCard): Boolean =
         image != null &&
             image == old.image &&
@@ -76,6 +88,8 @@ class StudioGenerationCard(
     private val bubble: Path?
     private val tail: Path?
 
+    // Подбираем размеры для одиночного результата или сетки и сопоставляем вложения с ячейками.
+    // Для ошибки без файла измеряем надпись и показываем повтор только при разрешённом состоянии.
     init {
         val controlHeight = maxOf(48 * unit, key.fontSize * 14f / 18 * 1.45f + 16 * unit)
         val ratio = generation.ratio
@@ -176,8 +190,8 @@ class StudioGenerationCard(
         }
     }
 
-    // Плавное изменение процентов выполняется другим элементом, поэтому здесь не запускается
-    // анимация.
+    // Рисуем фон ячеек, очередь или ошибку со временем и кнопками. Плавное изменение процентов
+    // находится в отдельном элементе и не затрагивает этот рисунок.
     fun drawStatic(canvas: Canvas) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val frame = image
@@ -211,9 +225,8 @@ class StudioGenerationCard(
         }
     }
 
-    // У выполняемой и завершённой генерации оставляет только фон, поскольку проценты и готовое
-    // медиа
-    // показываются отдельно.
+    // Заполняем рамку ячейки, а для очереди, ошибки или отмены добавляем подпись и при
+    // возможности повтор. Для работающей и готовой генерации оставляем фон под другим слоем.
     private fun drawProgress(
         canvas: Canvas,
         paint: Paint,
@@ -268,6 +281,8 @@ class StudioGenerationCard(
         }
     }
 
+    // Рисуем значок действия и при необходимости его подпись. Для повтора отступ слева даёт место
+    // стрелке и оставляет текст внутри рамки.
     fun drawControl(canvas: Canvas, paint: Paint, control: Control) {
         val frame = control.frame
         val retry = control.action == StudioGenerationAction.RETRY
@@ -287,6 +302,8 @@ class StudioGenerationCard(
     }
 
     companion object {
+        // Переводим этап в короткую подпись для рисунка и озвучивания. У работающей ячейки
+        // используем процент только в ожидаемом диапазоне.
         fun progressLabel(stage: StudioGeneration.Stage, progress: Int?): String =
             when (stage) {
                 StudioGeneration.Stage.QUEUED -> "В очереди, 0%"
@@ -300,6 +317,8 @@ class StudioGenerationCard(
         private val controlTypeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         @Volatile private var icons: Map<Int, Bitmap> = emptyMap()
 
+        // Читаем значок повтора один раз до отрисовки. При показе нескольких карточек не
+        // открываем тот же ресурс снова.
         @Synchronized
         fun load(resources: Resources) {
             if (icons.isNotEmpty()) return
@@ -309,8 +328,8 @@ class StudioGenerationCard(
                 }
         }
 
-        // Используется при оформлении действий карточки без повторного чтения изображения из
-        // ресурсов.
+        // Берём сохранённый значок, окрашиваем и рисуем его по центру указанной высоты. После
+        // рисунка сбрасываем фильтр, чтобы он не перекрасил соседние элементы.
         private fun drawIcon(
             canvas: Canvas,
             paint: Paint,
@@ -332,6 +351,8 @@ class StudioGenerationCard(
             paint.colorFilter = null
         }
 
+        // Ставим строку по метрикам шрифта вокруг переданного центра. Разные буквы не меняют
+        // положение подписи внутри кнопки.
         internal fun drawLabel(
             canvas: Canvas,
             paint: Paint,
@@ -358,14 +379,20 @@ internal class StudioProgressView(context: android.content.Context) : android.vi
     private var changedAt = 0L
     private var bound = false
 
+    // Делаем движущийся индикатор без собственного системного фокуса и касания. Подпись этапа и
+    // действие озвучивает сама строка.
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         isClickable = false
     }
 
+    // Передаём общий способ обновления процента из конкретной ячейки. Рамка и плотность те же,
+    // что использует сцена для остальных результатов.
     fun bind(cell: StudioGenerationCard.Cell, frame: RectF, density: Float) =
         bind(cell.slot.progress, frame, density)
 
+    // При новом значении запоминаем показанную долю и новую цель. Подгоняем рамку только при
+    // необходимости, чтобы индикатор шёл вместе с прокруткой.
     fun bind(progressValue: Int?, frame: RectF, density: Float, deliveringPhoto: Boolean = false) {
         unit = density
         this.deliveringPhoto = deliveringPhoto
@@ -391,14 +418,16 @@ internal class StudioProgressView(context: android.content.Context) : android.vi
         invalidate()
     }
 
+    // Вычисляем текущую долю между прежней длиной дуги и новой. Плавное начало и окончание не
+    // дают проценту резко прыгнуть.
     private fun fraction(now: Long): Float {
         val t = ((now - changedAt) / 550f).coerceIn(0f, 1f)
         return start + (target - start) * (t * t * (3 - 2 * t))
     }
 
-    // При разрешённых анимациях плавно меняет длину дуги и яркость кольца, иначе сразу показывает
-    // целевое
-    // значение.
+    // Рисуем кольцо и надпись с учётом разрешённого движения. Если завершённое фото ещё
+    // готовится, закрываем место мягким фоном с подписью. Следующий кадр запрашиваем только для
+    // видимого индикатора с движением.
     override fun onDraw(canvas: Canvas) {
         val now = android.os.SystemClock.uptimeMillis()
         val motion = android.animation.ValueAnimator.areAnimatorsEnabled()

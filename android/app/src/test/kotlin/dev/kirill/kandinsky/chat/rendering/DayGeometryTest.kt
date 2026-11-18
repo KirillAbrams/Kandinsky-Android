@@ -1,3 +1,6 @@
+// Проверяем расстояния в чате с разделителями дат и системными отступами. Сверяем быстрый расчёт
+// со сложением высот по порядку.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import dev.kirill.kandinsky.chat.domain.*
@@ -8,8 +11,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DayGeometryTest {
+    // Создаём строку с известным номером, высотой и временем. Значения позволяют точно посчитать
+    // положение разделителей и сообщений.
     private fun row(id: Long, h: Double, t: Long) = IndexedRow(id, OrderKey(id, id), h, 1, t)
 
+    // Сверяем верхний отступ, даты и общую высоту, затем увеличиваем строку выше текущего места.
+    // После очистки не должно остаться ни высоты, ни разделителей.
     @Test
     fun daySpaceInsetsAndHeightChangesPreserveTheReadingAnchor() {
         val idx = HistoryIndex(32.0, TimeZone.getTimeZone("UTC"))
@@ -33,6 +40,8 @@ class DayGeometryTest {
         assertTrue(idx.days(0.0, 100.0).isEmpty())
     }
 
+    // Для трёх часовых поясов складываем высоты и зазоры вручную. Сравниваем общий размер, верх
+    // сообщений и переход от позиции к строке и обратно.
     @Test
     fun decoratedFenwickLayoutMatchesIndependentCalendarAndLinearOracle() {
         for (zone in listOf("UTC", "America/New_York", "Asia/Kathmandu")) {

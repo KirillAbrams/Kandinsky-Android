@@ -1,3 +1,7 @@
+// Андроид читает узор фона один раз и готовит рисунок под текущий размер окна в фоне. Пока итог
+// готовится, можно показать тот же узор напрямую. При нехватке памяти следующий рисунок создаётся
+// меньшего размера.
+
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Context
@@ -17,6 +21,8 @@ object KandinskyAssets {
     private var loading = false
     private var latest: WeakReference<View>? = null
 
+    // Запоминаем последний экран и запускаем только одно чтение рисунка. После готовности
+    // перерисовываем ещё видимый экран, а дальнейшие вызовы используют уже загруженный узор.
     @Synchronized
     fun load(context: Context, view: View) {
         latest = WeakReference(view)
@@ -70,6 +76,8 @@ class KandinskyWallpaper : AutoCloseable {
     private var closed = false
     var onReady: (() -> Unit)? = null
 
+    // Заливаем прямоугольник белым и при наличии узора растягиваем его до заполнения с обрезкой
+    // краёв. Едва заметный узор сохраняет читаемость текста истории.
     private fun raw(c: Canvas, bounds: RectF, pattern: Bitmap?) {
         val fill = Paint(Paint.FILTER_BITMAP_FLAG)
         fill.color = Color.WHITE
@@ -91,6 +99,9 @@ class KandinskyWallpaper : AutoCloseable {
         }
     }
 
+    // Показываем готовый рисунок при совпадении размеров и источника. Иначе рисуем запасной
+    // вариант и отправляем один новый расчёт в фон. Устаревший ответ освобождаем, чтобы он не
+    // подменил новый размер.
     fun render(c: Canvas, bounds: RectF, scale: Float) {
         if (closed || bounds.width() <= 0 || bounds.height() <= 0) return
         val key =
@@ -132,6 +143,8 @@ class KandinskyWallpaper : AutoCloseable {
         }
     }
 
+    // Отпускаем готовый фон и снижаем разрешение следующего расчёта. При возврате фон
+    // восстановится с меньшим расходом памяти.
     fun trimMemory() {
         sampling = .5f
         raster = null
@@ -139,6 +152,8 @@ class KandinskyWallpaper : AutoCloseable {
         wanted = null
     }
 
+    // Перестаём принимать рисунки, сбрасываем ссылки и останавливаем фоновый работник. Закрытый
+    // экран больше не получает уведомление готовности.
     override fun close() {
         if (closed) return
         closed = true

@@ -1,3 +1,6 @@
+// Хранит начальное устройство местной базы и шаги обновления для старых установок. Здесь
+// определены связи чата, сообщений, вложений и черновиков.
+
 package dev.kirill.kandinsky.chat.storage
 
 import android.database.sqlite.SQLiteDatabase
@@ -35,6 +38,9 @@ object SchemaMigrations {
             "CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)",
         )
 
+    // Обновляет таблицы по номеру версии, а старый текст для поиска переносит порциями с
+    // ограничением по памяти. После успешного завершения ставит новый номер, а незнакомую более
+    // новую схему отклоняет.
     fun apply(db: SQLiteDatabase) {
         val old = db.version
         if (old > VERSION) throw RepoException(RepoError.CORRUPT)
