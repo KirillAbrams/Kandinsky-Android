@@ -58,10 +58,23 @@ class NetworkAPI(
         }
     }
 
-    fun signIn(email: String, password: String, register: Boolean): NetworkProfile {
+    fun requestEmailCode(email: String, recovery: Boolean) {
         initialize()
-        val path = if (register) "/v1/demo/register" else "/v1/demo/login"
+        val path = if (recovery) "/v1/demo/password-reset/request" else "/v1/demo/register/request"
+        json(path, JSONObject().put("email", email))
+    }
+
+    fun resetPassword(email: String, code: String, password: String) {
+        initialize()
+        val body = JSONObject().put("email", email).put("code", code).put("password", password)
+        json("/v1/demo/password-reset/confirm", body)
+    }
+
+    fun signIn(email: String, password: String, registrationCode: String? = null): NetworkProfile {
+        initialize()
+        val path = if (registrationCode == null) "/v1/demo/login" else "/v1/demo/register"
         val body = JSONObject().put("email", email).put("password", password)
+        registrationCode?.let { body.put("code", it) }
         return NetworkProfile.decode(json(path, body))
     }
 

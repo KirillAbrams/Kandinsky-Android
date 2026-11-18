@@ -5,32 +5,28 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.os.Handler
-import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import dev.kirill.kandinsky.chat.network.NetworkAPI
-import dev.kirill.kandinsky.chat.network.NetworkCredentials
-import dev.kirill.kandinsky.chat.network.NetworkFailure
 import dev.kirill.kandinsky.chat.network.NetworkProfile
 import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.rendering.KandinskyPalette
 
 class AccountEntryView(
     private val activity: Activity,
-    private val api: NetworkAPI,
-    private val selected: (NetworkProfile) -> Unit,
+    api: NetworkAPI,
+    selected: (NetworkProfile) -> Unit,
     private val cancel: (() -> Unit)?,
 ) : ScrollView(activity), KandinskyInsetHost {
-    private val credentials = NetworkCredentials(activity.applicationContext)
-    private val main = Handler(Looper.getMainLooper())
-    private val gate = Any()
-    private var closed = false
-    private var busy = false
-    private var registering = false
+    private val model = AccountEntryViewModel.forDevice(activity.applicationContext, api, selected)
+    private var displayedStep = AccountEntryStep.LOGIN
+    private val title = TextView(activity)
+    private val codeField = EditText(activity)
+    private val forgot = Button(activity)
+    private val resend = Button(activity)
     private val body = FrameLayout(activity)
     private val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
     private val passwordField = EditText(activity)
@@ -89,7 +85,7 @@ class AccountEntryView(
             }
         )
         add(
-            TextView(activity).apply {
+            title.apply {
                 text = "Войти в студию"
                 textSize = 31f
                 setTextColor(Color.rgb(23, 32, 42))
@@ -135,6 +131,12 @@ class AccountEntryView(
         field(emailField)
         id(emailField, "account.username")
         add(emailField)
+        codeField.hint = "Код из письма"
+        codeField.inputType = InputType.TYPE_CLASS_NUMBER
+        codeField.setSingleLine()
+        field(codeField)
+        id(codeField, "account.code")
+        add(codeField)
         add(passwordField)
         error.setTextColor(Color.rgb(180, 30, 30))
         id(error, "account.error")
@@ -157,13 +159,7 @@ class AccountEntryView(
         toggle.background = null
         toggle.stateListAnimator = null
         id(toggle, "account.toggle")
-        toggle.setOnClickListener {
-            if (!busy) {
-                registering = !registering
-                error.text = ""
-                update()
-            }
-        }
+        toggle.setOnClickListener { model.toggleRegistration() }
         add(toggle)
         fun secondary(button: Button) {
             button.isAllCaps = false
@@ -174,6 +170,16 @@ class AccountEntryView(
             button.setSingleLine()
             button.ellipsize = android.text.TextUtils.TruncateAt.END
         }
+        secondary(forgot)
+        forgot.text = "Забыли пароль?"
+        id(forgot, "account.forgot")
+        forgot.setOnClickListener { model.startRecovery() }
+        add(forgot)
+        secondary(resend)
+        resend.text = "Отправить код ещё раз"
+        id(resend, "account.resend")
+        resend.setOnClickListener { enter(resending = true) }
+        add(resend)
         cancel?.let { action ->
             add(
                 Button(activity).apply {
@@ -184,37 +190,17 @@ class AccountEntryView(
                 }
             )
         }
-        Thread(
-                {
-                    val profiles = runCatching { credentials.profiles() }
-                    main.post {
-                        if (!closed)
-                            profiles.fold(
-                                { values ->
-                                    values.forEach { profile ->
-                                        add(
-                                            Button(activity).apply {
-                                                secondary(this)
-                                                text =
-                                                    "Продолжить · " +
-                                                        (profile.username?.let { "@" + it }
-                                                            ?: profile.name)
-                                                id(this, "account.saved.${profile.userID}")
-                                                setOnClickListener { choose(profile) }
-                                            }
-                                        )
-                                    }
-                                },
-                                {
-                                    error.text =
-                                        "Не удалось прочитать сохранённые аккаунты. Данные остаются на устройстве."
-                                },
-                            )
-                    }
-                },
-                "KandinskyAccounts",
-            )
-            .start()
+        model.onChange = ::update
+        model.loadSavedProfiles { profiles ->
+            profiles.forEach { profile ->
+                add(Button(activity).apply {
+                    secondary(this)
+                    text = "Продолжить · " + (profile.username?.let { "@" + it } ?: profile.name)
+                    id(this, "account.saved.${profile.userID}")
+                    setOnClickListener { model.choose(profile) }
+                })
+            }
+        }
         update()
     }
 
@@ -229,85 +215,49 @@ class AccountEntryView(
     }
 
     private fun update() {
-        submit.text = if (registering) "Зарегистрироваться" else "Войти"
-        toggle.text = if (registering) "Войти" else "Создать аккаунт"
-    }
-
-    private fun setBusy(value: Boolean) {
-        busy = value
-        listOf(passwordField, emailField, submit, toggle).forEach { it.isEnabled = !value }
-    }
-
-    private fun choose(profile: NetworkProfile) {
-        if (busy) return
-        runRequest { profile }
-    }
-
-    // Сохраняем подтверждённый профиль до открытия чатов, чтобы вход пережил перезапуск.
-    private fun enter() {
-        if (busy) return
-        val email = emailField.text.toString().trim()
-        val password = passwordField.text.toString()
-        if (!email.contains('@') || password.length !in 12..128) {
-            error.text = "Введите почту и пароль от 12 символов."
-            return
+        val step = model.step
+        val busy = model.isBusy
+        if (displayedStep != step) {
+            codeField.text.clear()
+            passwordField.text.clear()
+            displayedStep = step
         }
-        val createAccount = registering
-        runRequest { api.signIn(email, password, createAccount) }
+        error.text = model.message
+        codeField.visibility = if (step.needsCode) View.VISIBLE else View.GONE
+        passwordField.visibility = if (step.needsPassword) View.VISIBLE else View.GONE
+        passwordField.hint = if (step == AccountEntryStep.VERIFY_RECOVERY) "Новый пароль" else "Пароль"
+        forgot.visibility = if (step == AccountEntryStep.LOGIN) View.VISIBLE else View.GONE
+        resend.visibility = if (step.needsCode) View.VISIBLE else View.GONE
+        listOf(passwordField, codeField, submit, toggle, forgot, resend).forEach { it.isEnabled = !busy }
+        emailField.isEnabled = !busy && !step.needsCode
+        toggle.text = if (step == AccountEntryStep.LOGIN) "Создать аккаунт" else "Назад ко входу"
+        title.text = when (step) {
+            AccountEntryStep.LOGIN -> "Войти в студию"
+            AccountEntryStep.REGISTRATION -> "Создать аккаунт"
+            AccountEntryStep.RECOVERY -> "Восстановление пароля"
+            AccountEntryStep.VERIFY_REGISTRATION -> "Подтверждение почты"
+            AccountEntryStep.VERIFY_RECOVERY -> "Новый пароль"
+        }
+        submit.text = when (step) {
+            AccountEntryStep.LOGIN -> "Войти"
+            AccountEntryStep.REGISTRATION, AccountEntryStep.RECOVERY -> "Получить код"
+            AccountEntryStep.VERIFY_REGISTRATION -> "Зарегистрироваться"
+            AccountEntryStep.VERIFY_RECOVERY -> "Сохранить пароль"
+        }
     }
 
-    private fun runRequest(action: () -> NetworkProfile) {
-        error.text = ""
-        setBusy(true)
-        Thread(
-                {
-                    val result = runCatching {
-                        val profile = action()
-                        synchronized(gate) {
-                            check(!closed)
-                            credentials.save(profile)
-                        }
-                        profile
-                    }
-                    main.post {
-                        if (!closed) {
-                            setBusy(false)
-                            result.fold(
-                                { selected(it) },
-                                { e ->
-                                    error.text =
-                                        when ((e as? NetworkFailure)?.status) {
-                                            409 -> "Аккаунт уже существует. Войди с паролем."
-                                            404 -> "Аккаунт не найден."
-                                            429 -> "Слишком много попыток. Попробуйте через минуту."
-                                            else ->
-                                                "Не удалось войти. Проверьте соединение и попробуйте снова."
-                                        }
-                                },
-                            )
-                        }
-                    }
-                },
-                "KandinskyEntry",
-            )
-            .start()
+    private fun enter(resending: Boolean = false) {
+        model.submit(
+            email = emailField.text.toString(),
+            password = passwordField.text.toString(),
+            code = codeField.text.toString(),
+            resending = resending,
+        )
     }
 
     override fun updateInsets(top: Int, bottom: Int) {
         setPadding(0, top, 0, bottom)
     }
 
-    // Уход с экрана прекращает ожидание ответа.
-    fun close() {
-        val first =
-            synchronized(gate) {
-                if (closed) false
-                else {
-                    closed = true
-                    true
-                }
-            }
-        // Закрытие защищённого соединения может потребовать отправку данных, поэтому выполняем его.
-        if (first) Thread({ api.close() }, "KandinskyEntryClose").start()
-    }
+    fun close() = model.close()
 }
