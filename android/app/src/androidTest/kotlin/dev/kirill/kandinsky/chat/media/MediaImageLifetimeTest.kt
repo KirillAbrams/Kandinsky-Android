@@ -126,6 +126,57 @@ class MediaImageLifetimeTest {
         }
     }
 
+    @Test
+    fun inlinePhotoTapDoesNotCancelDownloadAfterProgress() {
+        val instrument = InstrumentationRegistry.getInstrumentation()
+        val harness = RepositoryHarness.open(
+            File(instrument.targetContext.cacheDir, "inline-photo-" + UUID.randomUUID()),
+        )
+        val media = MediaStore(harness.store)
+        val source = File(harness.store.root, "remote-source.jpg")
+        TestFixtures.assets.open("media/photo-000.jpg").use { input ->
+            source.outputStream().use { input.copyTo(it) }
+        }
+        val photo = Attachment(
+            id = "inline-photo", relativePath = "remote/not-cached.jpg", mime = "image/jpeg",
+            byteSize = source.length(), rawWidth = 96, rawHeight = 96, orientation = 1,
+            durationMs = null, thumbnailKey = "inline-photo",
+        )
+        val frame = RectF(0f, 0f, 150f, 150f)
+        val release = CountDownLatch(1)
+        val progressVisible = CountDownLatch(1)
+        val sharpFrame = CountDownLatch(1)
+        lateinit var slot: MediaImageSlot
+        try {
+            instrument.runOnMainSync {
+                media.remoteFile = { _, _, token ->
+                    token.reportProgress(0.4)
+                    check(release.await(7, TimeUnit.SECONDS))
+                    check(!token.isCancelled)
+                    source to "image/jpeg"
+                }
+                slot = MediaImageSlot(media) {
+                    if (slot.loadAction()?.second == "Отменить загрузку") progressVisible.countDown()
+                    if (slot.hasSharpFrame) sharpFrame.countDown()
+                }
+                slot.bind(photo, frame, kind = MessageKind.PHOTO)
+            }
+            assertTrue("The fixture must report real progress", progressVisible.await(5, TimeUnit.SECONDS))
+            instrument.runOnMainSync {
+                slot.bind(photo, frame, kind = MessageKind.PHOTO, showLoadingControl = false)
+                assertNull("A photo in chat must not show a cancel button", slot.loadAction())
+                assertFalse("Tapping the photo must not cancel its download", slot.performLoadAction(75f, 75f))
+                assertTrue(slot.loading)
+            }
+            release.countDown()
+            assertTrue("The same download must produce a sharp photo", sharpFrame.await(5, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            instrument.runOnMainSync { slot.close(); media.close() }
+            harness.close()
+        }
+    }
+
     // Показываем маленький и чёткий кадры одного фото, затем снова привязываем его. Поздний
     // маленький рисунок не перекрывает чёткий, а управление загрузкой остаётся скрытым.
     @Test

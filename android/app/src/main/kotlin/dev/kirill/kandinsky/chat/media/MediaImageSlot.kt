@@ -374,10 +374,9 @@ class MediaImageSlot(private val store: MediaStore, private val invalidate: () -
         get() = kind == MessageKind.PHOTO && hasSharpFrame
 
     private val hasTransferControl
-        // Определяет, нужен ли знак в ходе текущей загрузки. Готовое фото и отдельное ожидание
-        // результата показывают другие действия.
-        get() = loading && !hasUsablePhoto && !studioPhotoDelivery &&
-            (progress > 0 || (showLoadingControl && (kind == null || transferStarted)))
+        // Центр фото в ленте открывает просмотр даже во время загрузки.
+        get() = loading && showLoadingControl && !hasUsablePhoto && !studioPhotoDelivery &&
+            (progress > 0 || kind == null || transferStarted)
 
     // Возвращает границы и действие кнопки в координатах экрана. Если управление скрыто или кадр
     // уже годится, кнопки нет.
