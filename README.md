@@ -1,99 +1,43 @@
-# Кандинский для Андроида
+# Кандинский для Android
 
-Приложение показывает историю чатов, отправляет задания на создание фото и видео и открывает готовые результаты
+Приложение для создания фото и видео. История чатов доступна на обоих устройствах через сервер в Алматы.
 
-В ленте уже просмотренный ролик может продолжить воспроизведение с сохранённой позиции
+## Запуск
 
-## Как открыть
+Установи JDK 17 и Android Studio Panda 3 2025.3.3 Patch 1 или новее. В Android Studio открой SDK Manager → SDK Tools и добавь Android SDK Command-line Tools. При нестандартном расположении SDK укажи путь в `ANDROID_HOME`. На Линуксе эмулятору нужна аппаратная виртуализация.
 
-Для проверки подготовь JDK 17 и Android Studio Panda 3 2025.3.3 Patch 1 или новее. В Android Studio открой SDK Manager → SDK Tools и установи Android SDK Command-line Tools. На Маке команда найдёт SDK в стандартной папке Android Studio. Если SDK установлен в другом месте, укажи его через ANDROID_HOME.
-
-Из корня скачанного проекта запусти одну команду на Маке или в Линуксе.
+На Mac или Линуксе запусти команду из корня проекта.
 
 ```sh
 ./scripts/run-review.sh
 ```
 
-Команда подготовит платформу Android 37.0, инструменты сборки 36.1.0, Platform-Tools, Android Emulator и образ Android 17 с Google Play для архитектуры компьютера. Если SDK запросит согласие с лицензией, прочитай её и подтверди в терминале. Команда создаст отдельный Pixel 7, дождётся запуска и откроет приложение. Во время работы нового эмулятора оставь терминал открытым. Повторный запуск из этой копии использует тот же эмулятор. Для запуска Android Emulator в Линуксе нужна доступная аппаратная виртуализация.
+Команда скачает нужные компоненты SDK, создаст эмулятор Pixel 7 с Android 17, соберёт и откроет приложение. Подтверди лицензию SDK, если появится запрос. Пока эмулятор работает, оставь терминал открытым.
 
-Для настоящего телефона подойдёт Андроид 10 и новее. В этой ситуации включи отладку по USB и установи приложение через Android Studio.
+Для телефона с Android 10 или новее можно скачать готовую сборку. [Выпуски Android](https://github.com/KirillAbrams/Kandinsky-Android/releases)
 
-По умолчанию приложение подключается к рабочему серверу в Алматы.
-
-### Вход для проверяющего
-
-На экране входа введи почту и пароль. Эти данные подходят для обеих платформ.
+## Вход для проверяющего
 
 - **Почта** kandinsky-demo@umbrellax.io
 - **Пароль** KandinskyVolna27!
 
-В аккаунте есть «Плотная медиалента» и «Длинная история». Пролистай оба чата, открой фото и видео.
+Открой «Плотную медиаленту» и «Длинную историю». Пролистай каждый чат, открой фото и видео. История тестового аккаунта общая. Для проверки регистрации используй свою почту.
 
-Для проверки синхронизации создай отдельный чат и запусти генерацию на одном устройстве. На втором открой тот же чат. Там появятся ход генерации и готовый результат. Затем отправь новый запрос со второго устройства и посмотри результат на первом.
+## Как проверить генерацию
 
-Чаты этого аккаунта общие. Для проверки регистрации и личных материалов используй свою почту.
+1. Создай отдельный чат. Выбери Image Lite, опиши фото и отправь запрос. Открой результат, вернись в чат и нажми «Сохранить» под фото. Файл появится в папке Kandinsky внутри загрузок.
+2. Выбери Video Lite. Для короткой проверки поставь 384 × 384 и 1 с. Опиши видео, отправь запрос и проиграй готовый ролик.
+3. Нажми «Добавить фото или видео» и выбери «Оживить фото из галереи». Возьми сохранённый снимок из недавних файлов или загрузок, опиши движение и проиграй результат.
+4. На втором устройстве войди в тот же аккаунт и открой этот чат. Отправь запрос по очереди с каждого устройства и проверь, что на другом видны прогресс и готовый файл.
 
-Создай отдельный чат. В модели Image Lite напиши описание фото и отправь запрос. Открой готовое фото. Вернись в чат и нажми «Сохранить» под фото. Файл появится в папке Kandinsky внутри загрузок. Затем выбери Video Lite в нижней панели. Для короткого теста в параметрах выбери 384 × 384 и 1 с. Отправь описание видео и проиграй результат. Нажми «Добавить фото или видео», выбери «Оживить фото из галереи» и открой сохранённое фото из недавних файлов или папки загрузок. Отправь описание движения и проиграй второй ролик. Первый запуск модели на сервере может занять несколько минут.
-
-Адрес своего сервера можно передать свойством **kandinsky.bridgeOrigin** при сборке. Нужен защищённый адрес с действующим сертификатом.
+Первый запуск модели может занять несколько минут.
 
 ## Карта проекта
 
-| Папка или файл | Что внутри |
-| --- | --- |
-| [app/build.gradle.kts](android/app/build.gradle.kts) | Версии, настройки подписи, адрес сервера и проверки |
-| [AndroidManifest.xml](android/app/src/main/AndroidManifest.xml) | Экраны и разрешения приложения |
-| [res](android/app/src/main/res) | Значки, оформление и ресурсы |
-| [app](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/app) | Запуск приложения и подключение служб аккаунта |
-| [account](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/account) | Вход, регистрация и восстановление пароля |
-| [attachments](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/attachments) | Камера, выбор и загрузка исходников |
-| [chatlist](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/chatlist) | Поиск, закрепление и архив чатов |
-| [ConversationState.kt](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/conversation/ConversationState.kt) | Состояние разговора и доступные действия |
-| [network](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/network) | Команды серверу, события и восстановление связи |
-| [storage](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/storage) | База телефона, черновик и место чтения |
-| [rendering](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/rendering) | Страницы истории и отрисовка при прокрутке |
-| [media](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/media) | Загрузка и подготовка фото, проигрывание видео |
-| [VideoCoverDiskCache.kt](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/media/VideoCoverDiskCache.kt) | Сохранение кадров просмотренных роликов |
-| [results](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/results) | Галерея и полноэкранный просмотр |
-| [test](android/app/src/test) | Проверки, которые идут без телефона |
-| [androidTest](android/app/src/androidTest) и [fixtures](fixtures) | Проверки на устройстве и тестовые материалы |
+- Запуск приложения и экраны входа, регистрации и восстановления пароля. [app](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/app) и [account](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/account)
+- Список чатов, экран разговора и прокрутка истории. [chatlist](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/chatlist), [conversation](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/conversation) и [rendering](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/rendering)
+- Загрузка исходников, подготовка файлов и просмотр результатов. [attachments](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/attachments), [media](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/media) и [results](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/results)
+- Связь с сервером, база на телефоне и черновики. [network](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/network) и [storage](android/app/src/main/kotlin/dev/kirill/kandinsky/chat/storage)
+- Проверки логики и проверки на устройстве. [test](android/app/src/test) и [androidTest](android/app/src/androidTest)
 
-[Запуск на Маке и Линуксе](android/gradlew) и [запуск на Виндовс](android/gradlew.bat) передают команду [загрузчику сборки](android/gradle/wrapper/gradle-wrapper.jar). [Параметры загрузчика](android/gradle/wrapper/gradle-wrapper.properties) фиксируют один архив и его контрольную сумму, чтобы разработчик и проверяющий использовали одну версию.
-
-## Проверки и выпуск
-
-Из корня скачанного проекта выполни
-
-    cd android
-    ./gradlew :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease :app:bundleStore
-
-Для проверок на отдельном эмуляторе или телефоне выполни
-
-    ./gradlew :app:connectedDebugAndroidTest
-
-Сборка **APK** устанавливается напрямую, комплект **AAB** предназначен для магазина
-
-Параметры подписи перечислены в [настройках сборки](android/app/build.gradle.kts)
-
-## Материалы для проверок
-
-В [перечне файлов](fixtures/real-media/manifest.json) есть авторы, источники, условия использования и контрольные суммы
-
-[Малая копия файла](fixtures/real-media/cached-preview-source.json) описана отдельно
-
-- [Описание большого набора](fixtures/manifest.json) перечисляет каждый файл, его вид, размер и контрольную сумму. По нему проверка замечает подмену или потерю вложения.
-- [Исходная тестовая история](fixtures/seed-v1.json) задаёт десять тысяч сообщений, их порядок, подписи и ссылки на файлы.
-- [Снимки, ролики и звуковые файлы для проверок](fixtures/media) используются при местной проверке чтения истории. Каждый файл описан в перечне большого набора.
-- [Малые копии и форма звука](fixtures/media-previews-v1.json) заполняют местный справочник для показа перед открытием оригинала.
-- [Ожидаемые результаты операций с историей](fixtures/oracles/history-operations-v1.json) позволяют сверить порядок строк на обеих платформах с заранее рассчитанным ответом.
-- [Подборка для проверки места на диске](fixtures/real-media/cache-working-set.json) задаёт исходники для проверки уборки и предела хранения.
-- [Очень маленькие копии для проверок](fixtures/real-media/tiny-preview-probe.json) дают исходные данные для сравнения раскодирования и повторного показа.
-- [Образцы для проверки текста](fixtures/real-media/text-raster-samples.json) помогают сопоставить границы текста и его изображение при отрисовке ленты.
-- [Перечень движущихся картинок](fixtures/catalogue-media/catalogue.json) описывает три файла рядом. Они позволяют проверить, как окно просмотра работает с таким вложением.
-
-Сборки для установки и прошлые версии доступны на [странице выпусков Андроида](https://github.com/KirillAbrams/Kandinsky-Android/releases).
-
-## Связанные части проекта
-
-- [Сервер Кандинского](https://github.com/KirillAbrams/Kandinsky-Backend)
-- [Приложение для айфона](https://github.com/KirillAbrams/Kandinsky-iOS)
+[Сервер Кандинского](https://github.com/KirillAbrams/Kandinsky-Backend) · [Приложение для iOS](https://github.com/KirillAbrams/Kandinsky-iOS)
