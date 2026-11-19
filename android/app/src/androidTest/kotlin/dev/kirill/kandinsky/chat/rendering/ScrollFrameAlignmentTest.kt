@@ -4,6 +4,7 @@
 package dev.kirill.kandinsky.chat.rendering
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.SystemClock
 import android.view.*
 import android.widget.OverScroller
@@ -22,10 +23,14 @@ class ScrollFrameAlignmentTest {
     // Двигаем экран внутри восьми готовых строк и следим за их чтением и слоями. Окно начнёт
     // новое чтение только после изменения геометрии.
     @Test
+    @Suppress("DEPRECATION")
     fun movingWithinPreparedRowsKeepsTheirLayoutUntilGeometryChanges() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.runOnMainSync {
-            val chat = ChatScrollHost(instrumentation.targetContext)
+            val target = instrumentation.targetContext
+            val original = Configuration(target.resources.configuration).apply { fontScale = 1.0f }
+            val context = target.createConfigurationContext(original)
+            val chat = ChatScrollHost(context)
             try {
                 val width = View.MeasureSpec.makeMeasureSpec(390, View.MeasureSpec.EXACTLY)
                 val height = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
@@ -79,8 +84,24 @@ class ScrollFrameAlignmentTest {
                 chat.index.updateHeight(1, 116.0, anchor, 600.0)
                 chat.renderVisibleRows()
                 assertTrue("Changed row positions need a new prepared window", reads > 0)
+
+                chat.pendingAnchor = null
+                chat.offset = 128.0
+                val place = chat.readingAnchor()
+                assertNotNull(place.messageID)
+                assertFalse(place.followsBottom)
+                val previousFont = chat.layoutFontSize
+                val previousLayout = chat.layoutKey(messages.getValue(2))
+                assertNotNull(chat.cache.value(previousLayout))
+                val largeText = Configuration(original).apply { fontScale = 1.8f }
+                context.resources.updateConfiguration(largeText, null)
+                chat.dispatchConfigurationChanged(largeText)
+                assertTrue(chat.layoutFontSize > previousFont)
+                assertEquals(place, chat.readingAnchor())
+                assertNull(chat.cache.value(previousLayout))
             } finally {
                 chat.close()
+                context.resources.updateConfiguration(original, null)
             }
         }
     }

@@ -36,6 +36,7 @@ class PhotoCaptureController(
     private var reader: ImageReader? = null
     private var surface: Surface? = null
     private var cameraClosed = true
+    private var deviceFailed = false
     private var sessionClosed = true
     private var opening = false
     private var creating = false
@@ -242,6 +243,11 @@ class PhotoCaptureController(
                             android.util.Log.d("KandinskyCamera", "device onClosed")
                             cameraClosed = true
                             camera = null
+                            if (deviceFailed) {
+                                creating = false
+                                sessionClosed = true
+                                session = null
+                            }
                             checkClosed()
                         }
                     },
@@ -254,14 +260,15 @@ class PhotoCaptureController(
         }
     }
 
-    // Завершает ожидание открытия и сохраняет устройство для освобождения. При уже идущем
-    // закрытии не отправляет вторую ошибку.
+    // После потери камеры сеанс может не сообщить о закрытии. Закрываем само устройство и ждём
+    // его подтверждения, прежде чем вернуть право на съёмку.
     private fun cameraFailed(device: CameraDevice, reason: MediaError) {
         opening = false
         camera = device
         cameraClosed = false
-        if (closing) device.close()
-        else main.post { finish(Result.failure(MediaException(reason))) }
+        deviceFailed = true
+        device.close()
+        if (!closing) main.post { finish(Result.failure(MediaException(reason))) }
     }
 
     // Просит систему настроить показ и отдельный выход снимка, отмечая ожидание ответа. Это
@@ -279,7 +286,7 @@ class PhotoCaptureController(
                     override fun onConfigured(s: CameraCaptureSession) {
                         creating = false
                         session = s
-                        if (closing) {
+                        if (closing || deviceFailed) {
                             s.close()
                             return
                         }
@@ -304,7 +311,7 @@ class PhotoCaptureController(
                     override fun onConfigureFailed(s: CameraCaptureSession) {
                         creating = false
                         session = s
-                        if (closing) s.close()
+                        if (closing || deviceFailed) s.close()
                         else
                             main.post {
                                 finish(Result.failure(MediaException(MediaError.UNAVAILABLE)))
@@ -380,9 +387,11 @@ class PhotoCaptureController(
         result = value
         request?.cancel()
         worker.post {
-            runCatching { session?.stopRepeating() }
-            runCatching { session?.abortCaptures() }
-            if (session != null) session?.close() else if (!creating) camera?.close()
+            if (!deviceFailed) {
+                runCatching { session?.stopRepeating() }
+                runCatching { session?.abortCaptures() }
+                if (session != null) session?.close() else if (!creating) camera?.close()
+            }
             checkClosed()
         }
     }

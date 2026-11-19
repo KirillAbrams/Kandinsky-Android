@@ -104,7 +104,8 @@ internal fun NetworkStore.applyEventBatch(db: SQLiteDatabase, json: JSONObject):
                                 arrayOf(message.getLong("id").toString()),
                             )
                             .use { it.moveToFirst() }
-                    merge(db, message)?.let { ids.add(it) }
+                    val mergedID = merge(db, message) ?: continue
+                    ids.add(mergedID)
                     val summarySeq =
                         db.rawQuery(
                                 "SELECT value FROM net_state WHERE key=?",

@@ -82,14 +82,18 @@ internal class ChatAttachmentCoordinator(
         lastSourceAttempt = source.id
         checkingSource = source.id
         network.hasStudioUpload(source.id) { saved ->
-            if (checkingSource == source.id) checkingSource = null
+            val finishedCheck = checkingSource == source.id
+            if (finishedCheck) checkingSource = null
             if (
                 saved.getOrNull() == false &&
                     isActive() &&
                     !isBusy &&
                     state.draft.attachmentDrafts.firstOrNull()?.id == source.id
-            )
+            ) {
                 upload(source)
+            } else if (finishedCheck) {
+                refresh()
+            }
         }
     }
 
@@ -326,7 +330,9 @@ internal class ChatAttachmentCoordinator(
                     count = options.count,
                     seed = options.seed,
                 )
-        state.editDraft(state.draft.copy(attachmentDrafts = listOfNotNull(source)))
+        state.editDraft(
+            state.draft.copy(attachmentDrafts = listOfNotNull(source), generationOptions = next)
+        )
         selectOptions(next)
         if (previous.isNotEmpty()) state.flush { media.discardUnpublishedImports(previous) }
     }

@@ -13,6 +13,8 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.support.*
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -85,17 +87,50 @@ class ReflowAnchorTest {
             parent.requestLayout()
         }
         waitFor { host.metrics.recordings > recorded && host.metrics.liveFragments > 0 }
-        i.runOnMainSync {
-            val after = host.readingAnchor()
-            assertEquals(before.messageID, after.messageID)
-            assertEquals(
-                "Logical UTF16 survives actual new layout",
-                before.textUTF16Offset,
-                after.textUTF16Offset,
-            )
-            host.close()
-            activity.finish()
+        val menu = CountDownLatch(1)
+        var menuMessage: Long? = null
+        var shortTaps = 0
+        var pressedAt = 0L
+        var x = 0f
+        var y = 0f
+        try {
+            i.runOnMainSync {
+                val after = host.readingAnchor()
+                assertEquals(before.messageID, after.messageID)
+                assertEquals(
+                    "Logical UTF16 survives actual new layout",
+                    before.textUTF16Offset,
+                    after.textUTF16Offset,
+                )
+                x = host.width / 2f
+                y = host.height / 2f
+                assertEquals(before.messageID, host.hit(x, y)?.first?.id)
+                host.onMessageLongPress = { row, _ ->
+                    menuMessage = row.id
+                    menu.countDown()
+                }
+                host.onMessageTap = { _, _ -> shortTaps++ }
+                pressedAt = SystemClock.uptimeMillis()
+                val down = MotionEvent.obtain(pressedAt, pressedAt, MotionEvent.ACTION_DOWN, x, y, 0)
+                host.onTouchEvent(down)
+                down.recycle()
+            }
+            assertTrue("Holding touches the same message after reflow", menu.await(4, TimeUnit.SECONDS))
+            i.runOnMainSync {
+                val up = MotionEvent.obtain(
+                    pressedAt, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0,
+                )
+                host.onTouchEvent(up)
+                up.recycle()
+                assertEquals(before.messageID, menuMessage)
+                assertEquals(0, shortTaps)
+            }
+        } finally {
+            i.runOnMainSync {
+                host.close()
+                activity.finish()
+            }
+            h.close()
         }
-        h.close()
     }
 }

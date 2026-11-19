@@ -94,4 +94,40 @@ class StudioDirectoryTest {
         check(done.await(30, TimeUnit.SECONDS)) { "Ожидание записи каталога истекло" }
         return checkNotNull(result).getOrThrow()
     }
+
+    @Test fun refreshingAChatKeepsTheNewestSequenceAndLocalHistoryBoundary() {
+        val root = File(
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
+            "directory-boundary-${UUID.randomUUID()}",
+        )
+        val harness = RepositoryHarness.open(root)
+        try {
+            val cache = NetworkStore(harness.repo, 1)
+            await<Unit> { callback ->
+                harness.store.submit({ db ->
+                    NetworkSchema.install(db)
+                    val first = chat(2, 1000, false).put("lastSeq", 20)
+                    cache.mergeChats(db, JSONObject().put("chats", JSONArray().put(first)))
+                    db.execSQL("UPDATE net_chats SET hasOlder=0,peerUserID=7 WHERE chatID=2")
+
+                    val late = chat(2, 2000, false).put("lastSeq", 10).put("title", "Новое имя")
+                    cache.mergeChats(db, JSONObject().put("chats", JSONArray().put(late)))
+                    db.rawQuery(
+                        "SELECT lastSeq,hasOlder,peerUserID,title FROM net_chats WHERE chatID=2",
+                        null,
+                    ).use { row ->
+                        assertTrue(row.moveToFirst())
+                        assertEquals(20L, row.getLong(0))
+                        assertEquals(0, row.getInt(1))
+                        assertEquals(7L, row.getLong(2))
+                        assertEquals("Новое имя", row.getString(3))
+                        assertFalse(row.moveToNext())
+                    }
+                }, callback)
+            }
+        } finally {
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
 }

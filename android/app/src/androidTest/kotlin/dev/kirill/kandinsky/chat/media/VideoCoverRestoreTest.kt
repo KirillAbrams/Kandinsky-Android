@@ -33,6 +33,122 @@ import org.junit.Test
 class VideoCoverRestoreTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test
+    fun cachedCoverReusesTheFrameAndFailedRenderingReleasesItsMemory() {
+        val fixture = fixture()
+        try {
+            val budget = ImageByteBudget()
+            val cache = VideoPlaybackCache(budget)
+            val key = fixture.key
+            val restored = CompletableFuture<Result<PreparedImage>>()
+            val large = checkNotNull(fixture.image.copy(Bitmap.Config.ARGB_8888, false))
+            val source = checkNotNull(fixture.image.copy(Bitmap.Config.ARGB_8888, false))
+            try {
+                instrumentation.runOnMainSync {
+                    cache.rememberFrame(key, cache.generation, 64, 64) { _, _ -> null }
+                    assertNull(cache.frame(key))
+                    assertEquals(0, budget.bytes)
+                    cache.rememberFrame(key, cache.generation, 1, 1) { _, _ -> large }
+                    assertTrue(large.isRecycled)
+                    assertNull(cache.frame(key))
+                    assertEquals(0, budget.bytes)
+
+                    cache.rememberFrame(key, cache.generation, 64, 64) { _, _ -> source }
+                    cache.restoreCover(key) { result -> restored.complete(result) }
+                }
+                restored.get(5, TimeUnit.SECONDS).getOrThrow().use { image ->
+                    assertSame(source, image.bitmap)
+                    assertEquals(fixture.image.getPixel(31, 31), image.bitmap?.getPixel(31, 31))
+                }
+                instrumentation.runOnMainSync { cache.clearFrames() }
+                awaitReleased(budget)
+            } finally {
+                instrumentation.runOnMainSync {
+                    cache.close()
+                    if (!large.isRecycled) large.recycle()
+                    if (!source.isRecycled) source.recycle()
+                }
+            }
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun galleryEvictsTheOldestSavedCoverWhenItReachesItsLimit() {
+        val fixture = fixture()
+        val disk = VideoCoverDiskCache(fixture.root)
+        try {
+            val jpeg = java.io.ByteArrayOutputStream().use { stream ->
+                assertTrue(fixture.image.compress(Bitmap.CompressFormat.JPEG, 75, stream))
+                stream.toByteArray()
+            }
+            val epoch = disk.epoch()
+            val oldPath = "remote/oldest.mp4"
+            disk.storeGalleryFile(jpeg, oldPath, epoch)
+            val first = checkNotNull(disk.galleryFile(oldPath))
+            assertTrue(first.setLastModified(1000))
+            for (index in 1..256) {
+                disk.storeGalleryFile(jpeg, "remote/album-$index.mp4", epoch)
+            }
+            assertNull(disk.galleryFile(oldPath))
+            val newest = checkNotNull(disk.galleryFile("remote/album-256.mp4"))
+            assertArrayEquals(jpeg, newest.readBytes())
+            assertEquals(256, newest.parentFile?.listFiles()?.count { it.name.endsWith("-gallery.jpg") })
+        } finally {
+            disk.close()
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun damagedFrameHeaderAndLowMemoryCannotKeepAnInvalidCover() {
+        val fixture = fixture()
+        val disk = VideoCoverDiskCache(fixture.root)
+        val budget = ImageByteBudget()
+        val cache = VideoPlaybackCache(budget, fixture.root)
+        try {
+            val file = File(fixture.root, "media/video-covers").listFiles().orEmpty()
+                .single { it.extension == "frame" }
+            val original = file.readBytes()
+            file.writeBytes(original.copyOf(16))
+            assertNull(disk.readPixels(fixture.key, budget))
+            assertEquals(0, budget.bytes)
+
+            val damagedHeader = original.copyOf()
+            damagedHeader[20] = 2
+            file.writeBytes(damagedHeader)
+            assertNull(disk.readPixels(fixture.key, budget))
+            assertEquals(0, budget.bytes)
+
+            file.writeBytes(original)
+            budget.limit = fixture.image.allocationByteCount * 2
+            val rejected = CompletableFuture<Result<PreparedImage>>()
+            instrumentation.runOnMainSync {
+                cache.restoreCover(fixture.key) { rejected.complete(it) }
+            }
+            val result = rejected.get(5, TimeUnit.SECONDS)
+            result.getOrNull()?.close()
+            val error = result.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.UNAVAILABLE, error?.reason)
+            awaitReleased(budget)
+
+            budget.limit = fixture.image.allocationByteCount * 6
+            val restored = CompletableFuture<Result<PreparedImage>>()
+            instrumentation.runOnMainSync {
+                cache.restoreCover(fixture.key) { restored.complete(it) }
+            }
+            restored.get(5, TimeUnit.SECONDS).getOrThrow().use {
+                assertArrayEquals(pixelColors(fixture.image), pixelColors(checkNotNull(it.bitmap)))
+            }
+        } finally {
+            instrumentation.runOnMainSync { cache.close() }
+            disk.close()
+            fixture.close()
+        }
+        awaitReleased(budget)
+    }
+
     // Удаляем исходный файл после просмотра и открываем то же фото. Чёткая копия возвращается с
     // диска без сети, а полная очистка удаляет и её.
     @Test
@@ -150,6 +266,46 @@ class VideoCoverRestoreTest {
         }
     }
 
+    @Test
+    fun aRefreshWithoutMemoryDoesNotEvictTheVisibleVideoCover() {
+        val budget = ImageByteBudget()
+        val cache = VideoPlaybackCache(budget)
+        val attachment = Attachment(
+            "limited", "remote/limited.mp4", "video/mp4", 1, 64, 64, 1, 1000, "limited",
+        )
+        val key = VideoPlaybackKey(82002, attachment)
+        instrumentation.runOnMainSync {
+            val texture = SurfaceTexture(false).apply { setDefaultBufferSize(64, 64) }
+            val surface = Surface(texture)
+            try {
+                val canvas = surface.lockCanvas(null)
+                canvas.drawColor(Color.BLUE)
+                surface.unlockCanvasAndPost(canvas)
+                cache.rememberFrame(key, cache.generation, 64, 64) { width, height ->
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                        eraseColor(Color.GREEN)
+                    }
+                }
+                assertTrue(budget.bytes > 0)
+                val reserved = checkNotNull(budget.reserve(budget.limit - budget.bytes - 1024))
+                reserved.use {
+                    val before = budget.bytes
+                    assertFalse(cache.refreshCoverFromSurface(key, cache.generation, 64, 64, surface) {
+                        fail("Без свободной памяти нельзя запустить копирование")
+                    })
+                    val current = checkNotNull(cache.cover(key)) { "Чёткий кадр должен остаться в памяти" }
+                    current.use { assertEquals(Color.GREEN, it.bitmap?.getPixel(31, 31)) }
+                    assertEquals(before, budget.bytes)
+                }
+            } finally {
+                cache.close()
+                surface.release()
+                texture.release()
+            }
+            assertEquals(0, budget.bytes)
+        }
+    }
+
     // Задерживаем снимок поверхности, затем сохраняем более свежий кадр или чистим запас. Старый
     // снимок не должен переписать новый или снова занять память после сброса.
     @Test
@@ -191,6 +347,17 @@ class VideoCoverRestoreTest {
             assertFalse(superseded.get(5, TimeUnit.SECONDS))
             instrumentation.runOnMainSync {
                 checkNotNull(cache.frame(key)).use { assertEquals(Color.RED, it.bitmap?.getPixel(31, 31)) }
+            }
+
+            val refreshed = CompletableFuture<Boolean>()
+            instrumentation.runOnMainSync {
+                assertTrue(cache.refreshCoverFromSurface(key, cache.generation, 64, 64, surface) {
+                    refreshed.complete(it)
+                })
+            }
+            assertTrue(refreshed.get(5, TimeUnit.SECONDS))
+            instrumentation.runOnMainSync {
+                checkNotNull(cache.frame(key)).use { assertEquals(Color.BLUE, it.bitmap?.getPixel(31, 31)) }
             }
 
             val reset = CompletableFuture<Boolean>()

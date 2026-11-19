@@ -22,18 +22,14 @@ class NetworkDiskCacheTest {
 
     // Подготавливаем подключение, находим нужный чат и читаем до 128 его последних строк. Ответ
     // нужен, чтобы выбрать реальный файл для сетевого сценария.
-    private fun history(api: NetworkAPI, profile: NetworkProfile): org.json.JSONArray {
+    private fun history(api: NetworkAPI): org.json.JSONArray {
         api.initialize()
-        val chat =
-            if (profile.username == null) 4L
-            else
-                api.json("/v1/chats").getJSONArray("chats").let { rows ->
-                    (0 until rows.length())
-                        .map { rows.getJSONObject(it) }
-                        .first { it.getString("title") == "Медиа с сервера" }
-                        .getLong("id")
-                }
-        return api.json("/v1/chats/$chat/history?limit=128").getJSONArray("messages")
+        val catalog = api.json("/v1/chats").getJSONArray("chats")
+        val chats = (0 until catalog.length()).map { catalog.getJSONObject(it) }
+        val dense = chats.firstOrNull { it.getString("title") == "Плотная медиалента" }
+            ?: chats.firstOrNull { it.getString("title") == "Медиа с сервера" }
+        val chat = checkNotNull(dense) { "В проверочном аккаунте нужна история с фото и видео" }
+        return api.json("/v1/chats/${chat.getLong("id")}/history?limit=128").getJSONArray("messages")
     }
 
     // Ставим файлу старое время и читаем его из местного хранилища. Байты должны совпасть, время
@@ -58,8 +54,51 @@ class NetworkDiskCacheTest {
         }
     }
 
-    // Одновременно запрашиваем оригинал в двух потоках и сверяем один сохранённый файл и одно
-    // скачивание. После очистки памяти файл должен снова открыться с диска.
+    @Test
+    fun aPreviouslyDownloadedVideoGetsItsExtensionAndPlaysWithoutAnotherRequest() {
+        val root = File(context.cacheDir, "legacy-video-cache-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val calls = AtomicInteger()
+        val api = NetworkAPI(null) { calls.incrementAndGet() }
+        try {
+            val blob = "b".repeat(32)
+            val legacy = File(root, "media/remote/$blob")
+            assertTrue(legacy.parentFile!!.mkdirs())
+            val bytes = TestFixtures.assets.open("media/video-01.mp4").use { it.readBytes() }
+            legacy.writeBytes(bytes)
+            val attachment = Attachment(
+                id = "saved-video", relativePath = "remote/$blob", mime = "video/mp4",
+                byteSize = bytes.size.toLong(), rawWidth = 256, rawHeight = 256,
+                orientation = 1, durationMs = 3000, thumbnailKey = blob,
+            )
+            val media = NetworkMedia(harness.store, api)
+            val typed = File(legacy.path + ".mp4").canonicalFile
+            media.playback(attachment, MediaCancellation()).use { source ->
+                assertEquals(typed, source.file)
+                assertFalse(legacy.exists())
+                assertArrayEquals(bytes, typed.readBytes())
+                val video = android.media.MediaMetadataRetriever()
+                try {
+                    video.setDataSource(typed.path)
+                    assertEquals("256", video.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH))
+                } finally {
+                    video.release()
+                }
+            }
+            media.playback(attachment, MediaCancellation()).use {
+                assertEquals(typed, it.file)
+            }
+            assertEquals(0, calls.get())
+        } finally {
+            api.close()
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    // Большое фото без миниатюры ждёт открытия. Два запроса оригинала делят одну загрузку, а после
+    // освобождения памяти тот же файл читается с диска.
     @Test
     fun concurrentRemoteOpensReuseFileAfterRamClear() {
         val profile = NetworkCredentials(context).load()
@@ -68,12 +107,12 @@ class NetworkDiskCacheTest {
         val lookup = NetworkAPI(p)
         val wire =
             try {
-                val rows = history(lookup, p)
+                val rows = history(lookup)
                 (0 until rows.length())
                     .map { rows.getJSONObject(it) }
-                    .first { it.getString("kind") == "photo" }
-                    .getJSONArray("attachments")
-                    .getJSONObject(0)
+                    .filter { it.getString("kind") == "photo" }
+                    .map { it.getJSONArray("attachments").getJSONObject(0) }
+                    .first { it.getLong("byteSize") > 256 * 1024 }
             } finally {
                 lookup.close()
             }
@@ -111,6 +150,11 @@ class NetworkDiskCacheTest {
             )
         val pool = Executors.newFixedThreadPool(2)
         try {
+            val missingPreview = assertThrows(MediaException::class.java) {
+                remote.resolve(a, true, MediaCancellation())
+            }
+            assertEquals(MediaError.UNAVAILABLE, missingPreview.reason)
+            assertEquals(0, count.get())
             val first =
                 pool.submit<java.io.File> { remote.resolve(a, false, MediaCancellation()).first }
             val second =
@@ -206,7 +250,7 @@ class NetworkDiskCacheTest {
         val api = NetworkAPI(profile)
         val anonymous = NetworkAPI(null)
         try {
-            val rows = history(api, profile)
+            val rows = history(api)
             val wire =
                 (0 until rows.length())
                     .map { rows.getJSONObject(it) }

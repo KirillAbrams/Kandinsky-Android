@@ -10,7 +10,11 @@ import dev.kirill.kandinsky.chat.domain.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
 
-class TextLayoutWorker {
+class TextLayoutWorker internal constructor(
+    private val makeLayout: (Message, TextLayoutKey) -> PreparedText,
+) {
+    constructor() : this(::PreparedText)
+
     private val main = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
     private val pending = LinkedBlockingDeque<Runnable>(32)
@@ -36,7 +40,7 @@ class TextLayoutWorker {
         // Готовим строку, если задача и очередь ещё живы, а результат передаём в поток экрана.
         // Повторно проверяем отмену перед выдачей, чтобы не удержать готовый рисунок зря.
         override fun run() {
-            val resource = if (cancelled.get() || closed.get()) null else PreparedText(message, key)
+            val resource = if (cancelled.get() || closed.get()) null else makeLayout(message, key)
             main.post {
                 if (cancelled.get() || closed.get()) {
                     resource?.close()

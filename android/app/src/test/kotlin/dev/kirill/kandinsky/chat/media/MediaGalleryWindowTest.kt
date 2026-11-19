@@ -57,6 +57,23 @@ class MediaGalleryWindowTest {
         assertEquals("Описание 10", window.selected?.caption)
     }
 
+    @Test
+    fun anAudioAttachmentDoesNotShiftTheFollowingVideoSelection() {
+        val album = row(10, 3)
+        val (photo, audio, video) = album.attachments
+        val mixed = album.copy(attachments = listOf(
+            photo,
+            audio.copy(relativePath = "network/voice.m4a", mime = "audio/mp4"),
+            video.copy(relativePath = "network/clip.mp4", mime = "video/mp4"),
+        ))
+        val window = MediaGalleryWindow(mixed, attachmentIndex = 2)
+        assertEquals(listOf("10/0", "10/2"), window.entries.map { it.id })
+        assertEquals("10/2", window.selected?.id)
+        assertTrue(window.selected?.isVideo == true)
+        assertFalse(window.select("10/1"))
+        assertEquals(video.id, window.selected?.attachment?.id)
+    }
+
     // Листает вперёд и назад по длинному списку и сверяет каждый шаг с независимым рядом. Размер
     // окна и набор соседей не должны расти.
     @Test

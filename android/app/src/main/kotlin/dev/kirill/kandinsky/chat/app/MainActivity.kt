@@ -28,6 +28,7 @@ import dev.kirill.kandinsky.chat.rendering.KandinskyInsetHost
 import dev.kirill.kandinsky.chat.storage.*
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CancellationException
 
 class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
     private lateinit var coordinator: AppCoordinator
@@ -348,18 +349,39 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
                 val record = restoredStudioDraft ?: StudioDraftRecord(UUID.randomUUID(), Draft())
                 restoredStudioDraft = null
                 val identity = record.identity
+                var draftPrepared = false
+                fun prepareDraft(draft: Draft, completion: (Result<Unit>) -> Unit) {
+                    if (isDestroyed || generation != ticket) {
+                        completion(Result.failure(CancellationException()))
+                        return
+                    }
+                    sync.beginStudioDraft(StudioDraftRecord(identity, draft)) { result ->
+                        if (isDestroyed || generation != ticket) {
+                            completion(Result.failure(CancellationException()))
+                            return@beginStudioDraft
+                        }
+                        completion(result.map { previous ->
+                            draftPrepared = true
+                            if (previous != null && previous.identity != identity) {
+                                runtime?.media?.discardUnpublishedImports(previous.draft.attachmentDrafts)
+                            }
+                            Unit
+                        })
+                    }
+                }
                 model.persistStudioDraft = { chatID, draft, completion ->
-                    if (chatID == null) sync.saveStudioDraft(draft, identity, completion)
-                    else sync.finishStudioDraft(identity, completion)
+                    when {
+                        chatID != null -> sync.finishStudioDraft(identity, completion)
+                        draftPrepared -> sync.saveStudioDraft(draft, identity, completion)
+                        else -> prepareDraft(draft, completion)
+                    }
                 }
                 chat.prepareSourceDraft = { completion ->
                     if (model.chatID != null) completion(Result.success(Unit))
                     else
                         sync.createStudioThread(identity) { created ->
                             if (isDestroyed || generation != ticket)
-                                completion(
-                                    Result.failure(java.util.concurrent.CancellationException())
-                                )
+                                completion(Result.failure(CancellationException()))
                             else
                                 created.fold(
                                     { id ->
@@ -379,18 +401,10 @@ class MainActivity : ComponentActivity(), AttachmentPicker, ForegroundHost {
                 }
                 chatView = chat
                 surface = chat
-                sync.beginStudioDraft(record) { started ->
-                    if (isDestroyed || generation != ticket) return@beginStudioDraft
-                    started.fold(
-                        { previous ->
-                            if (previous != null && previous.identity != record.identity)
-                                runtime
-                                    ?.media
-                                    ?.discardUnpublishedImports(previous.draft.attachmentDrafts)
-                            chat.openStudioDraft(record.draft)
-                        },
-                        { chat.showError(it) },
-                    )
+                prepareDraft(record.draft) { started ->
+                    if (isDestroyed || generation != ticket) return@prepareDraft
+                    chat.openStudioDraft(record.draft)
+                    started.onFailure(chat::showError)
                     container.post { reveal() }
                 }
             } else {

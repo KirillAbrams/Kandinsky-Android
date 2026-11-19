@@ -45,6 +45,12 @@ class ActiveDisplayPolicyTest {
             var expected = 0
             i.runOnMainSync {
                 scroll = host(activity.window.decorView)!!
+                // Проверяем инерцию отдельно от тихих роликов. Видимый ролик удерживает запрос
+                // частоты даже после того, как прокрутка уже остановилась.
+                scroll.setMovingMediaVisible(false)
+                assertTrue(scroll.scroller.isFinished)
+                assertEquals(0, scroll.scene.metrics.activeFrameClocks)
+                scroll.updateDisplayHint()
                 previous = activity.window.attributes.preferredDisplayModeId
                 val display = activity.window.decorView.display
                 val current = display.mode
@@ -80,14 +86,19 @@ class ActiveDisplayPolicyTest {
                 activeSeen,
             )
             var restored = false
+            var observed = ""
             val idle = SystemClock.uptimeMillis() + 8000
             while (!restored && SystemClock.uptimeMillis() < idle) {
                 i.runOnMainSync {
                     restored = activity.window.attributes.preferredDisplayModeId == previous
+                    observed = "finished=${scroll.scroller.isFinished}, dragging=${scroll.dragging}, " +
+                        "clocks=${scroll.scene.metrics.activeFrameClocks}, " +
+                        "visible=${scroll.scene.mediaVisible}, " +
+                        "windowMode=${activity.window.attributes.preferredDisplayModeId}, idleMode=$previous"
                 }
                 SystemClock.sleep(20)
             }
-            assertTrue("Idle screen restores the preceding window mode hint", restored)
+            assertTrue("Idle screen restores the preceding window mode hint. $observed", restored)
         } finally {
             i.runOnMainSync { activity.finish() }
         }

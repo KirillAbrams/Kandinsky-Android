@@ -67,7 +67,7 @@ internal class SyncIncomingEvents(private val sync: NetworkSync) {
                         { (changes, directoryChanged) ->
                             sync.emit(changes)
                             if (directoryChanged || fetchedUnknownChats)
-                                sync.onStudioRecentChanged?.invoke()
+                                sync.main.post { sync.onStudioRecentChanged?.invoke() }
                             sync.attachments.drainRemovedStudioMedia()
                             eventQueue.removeFirst()
                             applyingEvents = false

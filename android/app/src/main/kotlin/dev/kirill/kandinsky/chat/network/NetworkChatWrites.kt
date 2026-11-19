@@ -102,13 +102,12 @@ internal fun NetworkStore.mergeChatRows(
         require(unread <= Long.MAX_VALUE - later)
         db.execSQL("UPDATE chats SET unreadCount=? WHERE id=?", arrayOf(unread + later, id))
         db.execSQL(
-            "INSERT INTO net_chats(chatID,lastSeq,hasOlder,title) " +
-                "VALUES(?,?,1,?) " +
-                "ON CONFLICT(chatID) " +
-                "DO UPDATE " +
-                "SET lastSeq=MAX(lastSeq,excluded.lastSeq)," +
-                "title=excluded.title",
+            "INSERT OR IGNORE INTO net_chats(chatID,lastSeq,hasOlder,title) VALUES(?,?,1,?)",
             arrayOf(id, seq, title),
+        )
+        db.execSQL(
+            "UPDATE net_chats SET lastSeq=MAX(lastSeq,?),title=? WHERE chatID=?",
+            arrayOf(seq, title, id),
         )
         val prior =
             db.rawQuery("SELECT value FROM net_state WHERE key=?", arrayOf("summarySeq:$id"))

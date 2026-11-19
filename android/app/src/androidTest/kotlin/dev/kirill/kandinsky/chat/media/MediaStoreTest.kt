@@ -5,16 +5,25 @@ package dev.kirill.kandinsky.chat.media
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.kernel.*
+import dev.kirill.kandinsky.chat.network.NetworkMedia
+import dev.kirill.kandinsky.chat.network.NetworkSchema
+import dev.kirill.kandinsky.chat.network.StudioDraftStorage
 import dev.kirill.kandinsky.chat.rendering.*
 import dev.kirill.kandinsky.chat.storage.ChatRepository
+import dev.kirill.kandinsky.chat.storage.ChatStorageCodec
 import dev.kirill.kandinsky.chat.support.*
 import dev.kirill.kandinsky.chat.support.TestFixtures
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +33,404 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaStoreTest {
+    @Test
+    fun stagedVideosKeepTheirRotationAndTheirOriginalBytes() {
+        val root = File(context.cacheDir, "rotated-source-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        val original = File(root, "fixture.mp4")
+        try {
+            TestFixtures.assets.open("media/video-01.mp4").use { input ->
+                original.outputStream().use { output -> input.copyTo(output) }
+            }
+            for ((rotation, orientation) in listOf(90 to 6, 180 to 3, 270 to 8)) {
+                val rotated = File(root, "fixture-$rotation.mp4")
+                val extractor = android.media.MediaExtractor()
+                val muxer = android.media.MediaMuxer(
+                    rotated.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
+                )
+                try {
+                    extractor.setDataSource(original.absolutePath)
+                    val track = (0 until extractor.trackCount).first {
+                        extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)
+                            ?.startsWith("video/") == true
+                    }
+                    val format = extractor.getTrackFormat(track)
+                    extractor.selectTrack(track)
+                    val output = muxer.addTrack(format)
+                    muxer.setOrientationHint(rotation)
+                    muxer.start()
+                    val buffer = ByteBuffer.allocate(1024 * 1024)
+                    val info = android.media.MediaCodec.BufferInfo()
+                    do {
+                        buffer.clear()
+                        val length = extractor.readSampleData(buffer, 0)
+                        if (length < 0) break
+                        info.set(0, length, extractor.sampleTime, extractor.sampleFlags)
+                        muxer.writeSampleData(output, buffer, info)
+                    } while (extractor.advance())
+                    muxer.stop()
+                } finally {
+                    muxer.release()
+                    extractor.release()
+                }
+                val imported = awaitResult<AttachmentDraft> { reply ->
+                    main { media.stageSelection({ rotated.inputStream() }, "video/mp4", reply) }
+                    Cancellation {}
+                }
+                assertEquals(orientation, imported.orientation)
+                assertEquals(256, imported.rawWidth)
+                assertEquals(256, imported.rawHeight)
+                assertTrue((imported.durationMs ?: 0) > 0)
+                assertArrayEquals(rotated.readBytes(), media.fileURL(imported.relativePath).readBytes())
+            }
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun recoveryKeepsOriginalsReferencedByTheNewChatAndUnconfirmedRequests() {
+        val root = File(context.cacheDir, "pending-media-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        main { media.pendingReferences = NetworkMedia::pendingReferences }
+        try {
+            val files = List(5) { stage(media) }
+            fun send(index: Int) = SendCommand(
+                UUID.randomUUID().toString(), 2, MessageKind.PHOTO,
+                attachments = listOf(files[index]),
+            )
+
+            val draft = StudioDraftRecord(
+                UUID.randomUUID(),
+                Draft(
+                    attachmentDrafts = listOf(files[0]), pendingSend = send(1),
+                    pendingMediaBatch = listOf(send(2)),
+                ),
+            )
+            val queued = send(3)
+            val payload = ChatStorageCodec.commandString(queued)
+            val expected = files.take(4).map { it.relativePath }.toSet()
+            awaitResult<Unit> { callback ->
+                harness.store.submit({ db ->
+                    NetworkSchema.install(db)
+                    StudioDraftStorage.write(db, draft)
+                    db.execSQL(
+                        "INSERT INTO net_outbox(id,action,payload,payloadBytes) VALUES(?,'send',?,?)",
+                        arrayOf<Any>(queued.operationID, payload, payload.toByteArray().size),
+                    )
+                    assertEquals(expected, NetworkMedia.pendingReferences(db))
+                }, callback)
+            }
+            recover(media)
+            for (file in files.take(4)) {
+                assertTrue(media.fileURL(file.relativePath).isFile)
+            }
+            assertFalse(media.fileURL(files.last().relativePath).exists())
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun recoveryKeepsAnOriginalFromAnOlderUnsentChatDraft() {
+        val root = File(context.cacheDir, "legacy-pending-media-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        try {
+            val kept = stage(media)
+            val abandoned = stage(media)
+            val oldDraft = Draft(pendingSend = SendCommand(
+                UUID.randomUUID().toString(), 2, MessageKind.PHOTO,
+                attachments = listOf(kept),
+            ))
+            val original = media.fileURL(kept.relativePath)
+            val bytes = original.readBytes()
+            awaitResult<Unit> { callback -> harness.repo.saveDraft(2, oldDraft, callback) }
+
+            recover(media)
+            assertArrayEquals(bytes, original.readBytes())
+            assertFalse(media.fileURL(abandoned.relativePath).exists())
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun discardingRefusesToFollowAReplacedOriginalOutsideItsMediaRoot() {
+        val root = File(context.cacheDir, "discard-link-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        try {
+            val unchanged = stage(media)
+            val replaced = stage(media)
+            val target = media.fileURL(replaced.relativePath)
+            val outside = File(root, "unrelated.jpg")
+            assertTrue(target.renameTo(outside))
+            val bytes = outside.readBytes()
+            android.system.Os.symlink(outside.path, target.path)
+
+            val failure = runCatching {
+                awaitResult<Unit> { callback ->
+                    main { media.discardUnpublishedImports(listOf(unchanged, replaced), callback) }
+                    Cancellation {}
+                }
+            }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.CORRUPT, failure?.reason)
+            assertArrayEquals(bytes, outside.readBytes())
+            assertTrue(media.fileURL(unchanged.relativePath).isFile)
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun localPlaybackKeepsItsFileAndCancellationClosesALateStream() {
+        val root = File(context.cacheDir, "local-and-cancelled-playback-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        val running = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val closed = AtomicInteger()
+        var request: Cancellation? = null
+        try {
+            val draft = awaitResult<AttachmentDraft> { callback ->
+                main {
+                    media.stageSelection({ TestFixtures.assets.open("media/video-01.mp4") }, "video/mp4", callback)
+                }
+                Cancellation {}
+            }
+            val original = media.fileURL(draft.relativePath)
+            val video = attachment(draft)
+            main { media.remotePlayback = { _, _ -> error("Местный запуск не обращается к сети") } }
+
+            awaitResult<MediaPlaybackSource> { callback ->
+                main { media.playbackSource(video, localOnly = true, callback) }
+                Cancellation {}
+            }.use { source -> assertEquals(original, source.file) }
+            val missing = runCatching {
+                awaitResult<MediaPlaybackSource> { callback ->
+                    main { media.playbackSource(video.copy(relativePath = "objects/missing.mp4"), true, callback) }
+                    Cancellation {}
+                }
+            }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.UNAVAILABLE, missing?.reason)
+
+            main {
+                media.remotePlayback = { source, token ->
+                    assertEquals(video.id, source.id)
+                    token.onCancel { cancelled.countDown() }
+                    running.countDown()
+                    check(release.await(8, TimeUnit.SECONDS))
+                    MediaPlaybackSource(file = original, onClose = { closed.incrementAndGet() })
+                }
+            }
+            val completed = CountDownLatch(1)
+            val completion = AtomicReference<Result<MediaPlaybackSource>>()
+            main {
+                request = media.playbackSource(video) {
+                    completion.set(it)
+                    completed.countDown()
+                }
+            }
+            assertTrue(running.await(5, TimeUnit.SECONDS))
+            main { request?.cancel() }
+            assertTrue(cancelled.await(3, TimeUnit.SECONDS))
+            release.countDown()
+            assertTrue(completed.await(5, TimeUnit.SECONDS))
+            val error = completion.get().exceptionOrNull() as? MediaException
+            assertEquals(MediaError.CANCELLED, error?.reason)
+            assertEquals(1, closed.get())
+            assertTrue(original.isFile)
+        } finally {
+            release.countDown()
+            main {
+                request?.cancel()
+                media.close()
+            }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cancellingALocalVideoLookupReleasesItsFileAndPreventsPlayback() {
+        val root = File(context.cacheDir, "cancel-local-video-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        val entered = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val result = AtomicReference<Result<MediaPlaybackSource>>()
+        var opening: Cancellation? = null
+        try {
+            val bytes = TestFixtures.assets.open(
+                "real-media/backend-990da02cd31e46cfb8fd630c293f3489.mp4"
+            ).use { it.readBytes() }
+            val draft = awaitResult<AttachmentDraft> { callback ->
+                main { media.stageSelection({ bytes.inputStream() }, "video/mp4", callback) }
+                Cancellation {}
+            }
+            val video = attachment(draft)
+            val original = media.fileURL(draft.relativePath)
+            main {
+                media.remotePlayback = { _, _ -> error("Местному просмотру не нужна сеть") }
+                media.remoteCached = { requested, preview, token ->
+                    assertEquals(video.id, requested.id)
+                    assertFalse(preview)
+                    token.onCancel { released.countDown() }
+                    entered.countDown()
+                    check(resume.await(5, TimeUnit.SECONDS))
+                    original to video.mime
+                }
+                opening = media.playbackSource(video, localOnly = true) {
+                    result.set(it)
+                    completed.countDown()
+                }
+            }
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            main { opening?.cancel() }
+            assertTrue(released.await(3, TimeUnit.SECONDS))
+            resume.countDown()
+            assertTrue(completed.await(3, TimeUnit.SECONDS))
+            val outcome = requireNotNull(result.get())
+            outcome.getOrNull()?.close()
+            assertEquals(MediaError.CANCELLED, (outcome.exceptionOrNull() as? MediaException)?.reason)
+            main { media.remoteCached = null }
+            awaitResult<MediaPlaybackSource> { callback ->
+                main { media.playbackSource(video, localOnly = true, callback) }
+                Cancellation {}
+            }.use { source -> assertEquals(original, source.file) }
+            assertArrayEquals(bytes, original.readBytes())
+        } finally {
+            resume.countDown()
+            main {
+                opening?.cancel()
+                media.close()
+            }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cancellingBeforeDeliveryRemovesTheImportedFileAndKeepsPublishedMedia() {
+        val root = File(context.cacheDir, "cancel-import-before-delivery-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        try {
+            val fixture = "real-media/backend-824d66cce0d64409ad4888a13792c7d4.jpg"
+            val saved = stage(media) { TestFixtures.assets.open(fixture) }
+            val original = media.fileURL(saved.relativePath)
+            val bytes = original.readBytes()
+            val published = original.parentFile!!
+            val response = CompletableFuture<Result<AttachmentDraft>>()
+            var pendingFile: File? = null
+            main {
+                val request = media.stage({ TestFixtures.assets.open(fixture) }, "image/jpeg") {
+                    response.complete(it)
+                }
+                // Даём рабочему потоку записать файл, но откладываем доставку его результата.
+                val deadline = SystemClock.uptimeMillis() + 3_000
+                while (pendingFile == null && SystemClock.uptimeMillis() < deadline) {
+                    pendingFile = published.listFiles()?.firstOrNull { it != original && it.isFile }
+                    if (pendingFile == null) SystemClock.sleep(5)
+                }
+                request.cancel()
+            }
+            val cancelled = response.get(5, TimeUnit.SECONDS)
+            assertEquals(MediaError.CANCELLED, (cancelled.exceptionOrNull() as? MediaException)?.reason)
+            assertFalse("Отмена должна убрать записанную, но ещё не выданную копию",
+                requireNotNull(pendingFile).exists())
+            assertEquals(listOf(original.name), published.list().orEmpty().toList())
+            assertArrayEquals(bytes, original.readBytes())
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun closedStoreRejectsNewFileWorkWithoutReadingTheOriginalAgain() {
+        val root = File(context.cacheDir, "closed-media-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        try {
+            val original = stage(media)
+            val attachment = attachment(original)
+            val savedBytes = media.fileURL(original.relativePath).readBytes()
+            main { media.close() }
+            val stagingFailure = runCatching {
+                stage(media) { error("Хранилище закрыто и не должно открывать новый файл") }
+            }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.CANCELLED, stagingFailure?.reason)
+            val recoveryFailure = runCatching { recover(media) }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.UNAVAILABLE, recoveryFailure?.reason)
+            val thumbnailFailure = runCatching {
+                awaitResult<PreparedImage> { callback ->
+                    main {
+                        media.thumbnail(attachment, ThumbnailKey(128), 7) { ticket, result ->
+                            assertEquals(7, ticket)
+                            callback(result)
+                        }
+                    }
+                    Cancellation {}
+                }
+            }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.CANCELLED, thumbnailFailure?.reason)
+            assertTrue(savedBytes.contentEquals(media.fileURL(original.relativePath).readBytes()))
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun discardingAnInvalidSelectionLeavesBothRealFilesInPlace() {
+        val root = File(context.cacheDir, "discard-media-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        try {
+            val keep = stage(media)
+            val other = stage(media)
+            val keepFile = media.fileURL(keep.relativePath)
+            val otherFile = media.fileURL(other.relativePath)
+            val inconsistent = other.copy(relativePath = keep.relativePath)
+            val failure = runCatching {
+                awaitResult<Unit> { callback ->
+                    main { media.discardUnpublishedImports(listOf(other, inconsistent), callback) }
+                    Cancellation {}
+                }
+            }.exceptionOrNull() as? MediaException
+            assertEquals(MediaError.CORRUPT, failure?.reason)
+            assertTrue(keepFile.isFile)
+            assertTrue(otherFile.isFile)
+            awaitResult<Unit> { callback ->
+                main { media.discardUnpublishedImport(other, callback) }
+                Cancellation {}
+            }
+            assertTrue(keepFile.isFile)
+            assertFalse(otherFile.exists())
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
     // Берём одиннадцать старых маленьких кадров и измеряем перепады яркости до и после
     // подготовки. Ступеньки должны сгладиться, а размеры и общая яркость остаться близкими.
     @Test
@@ -452,6 +859,63 @@ class MediaStoreTest {
             }
         } finally { main { media.close() }; h.close() }
     }
+
+    @Test
+    fun cancellingCachedImagesBeforeDeliveryKeepsTheFramesAvailableToTheNextRow() {
+        val root = File(context.cacheDir, "cancel-warm-media-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store, studioOriginals = true)
+        try {
+            val draft = stage(media)
+            val asset = attachment(draft).copy(tinyPreview = checkNotNull(draft.tinyPreview))
+            val size = ThumbnailKey(256)
+
+            fun load(cancel: Boolean, tiny: Boolean, image: Attachment = asset): Result<PreparedImage> =
+                awaitResult { receive ->
+                    main {
+                        val deliver: (Result<PreparedImage>) -> Unit = { receive(Result.success(it)) }
+                        val request =
+                            if (tiny) media.tinyPreview(image, deliver)
+                            else media.thumbnail(image, size, 18, localOnly = true) { ticket, frame ->
+                                assertEquals(18, ticket)
+                                deliver(frame)
+                            }
+                        if (cancel) request.cancel()
+                    }
+                    Cancellation {}
+                }
+
+            for (tiny in listOf(false, true)) {
+                val first = load(cancel = false, tiny = tiny).getOrThrow()
+                val expected = checkNotNull(first.bitmap)
+                main { first.close() }
+                val cancelled = load(cancel = true, tiny = tiny)
+                cancelled.getOrNull()?.let { unexpected -> main { unexpected.close() } }
+                assertEquals(MediaError.CANCELLED, (cancelled.exceptionOrNull() as? MediaException)?.reason)
+                val returned = load(cancel = false, tiny = tiny).getOrThrow()
+                main {
+                    try { assertSame(expected, returned.bitmap) }
+                    finally { returned.close() }
+                }
+            }
+            val cachedBytes = media.bytesUsed
+            val damaged = asset.copy(tinyPreview = "/9j/AA==")
+            val damage = load(cancel = false, tiny = true, image = damaged)
+            damage.getOrNull()?.let { unexpected -> main { unexpected.close() } }
+            assertTrue("Оборванная миниатюра не должна становиться кадром", damage.isFailure)
+            main {
+                assertEquals(cachedBytes, media.bytesUsed)
+                assertNull(media.cachedTinyPreview(damaged))
+                media.trimMemory()
+                assertEquals(0, media.bytesUsed)
+            }
+        } finally {
+            main { media.close() }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
     // Готовим кадр заранее и удерживаем следующее чтение. При первом показе уже должен быть тот
     // же маленький рисунок без ожидания новой очереди.
     @Test
@@ -1609,6 +2073,48 @@ class MediaStoreTest {
     // Удерживаем место воспроизведения при запросе камеры. Выдаём его только после подтверждения
     // остановки. Поздний ответ закрытому владельцу возвращает одну отмену.
     @Test
+    fun cancellingCameraAfterReservationReturnsTheSlotToAnotherScreen() {
+        val first = MediaAdmission()
+        val second = MediaAdmission()
+        val abandoned = CompletableFuture<Result<CaptureLease>>()
+        val competing = CompletableFuture<Result<CaptureLease>>()
+        val next = CompletableFuture<Result<CaptureLease>>()
+        val reservedBeforeCancellation = AtomicInteger()
+        try {
+            main {
+                val requested = first.acquire(CaptureKind.PHOTO) { abandoned.complete(it) }
+                // Подтверждение остановки уже в очереди. Закрываем экран до ответа о выдаче камеры.
+                Handler(Looper.getMainLooper()).post {
+                    reservedBeforeCancellation.set(first.captureActiveCount)
+                    val queuedRejection = second.acquire(CaptureKind.PHOTO) { competing.complete(it) }
+                    queuedRejection.cancel()
+                    requested.cancel()
+                }
+            }
+            val abandonedError = abandoned.get(5, TimeUnit.SECONDS).exceptionOrNull()
+            val competingError = competing.get(5, TimeUnit.SECONDS).exceptionOrNull()
+            assertEquals(1, reservedBeforeCancellation.get())
+            assertEquals(MediaError.CANCELLED, (abandonedError as? MediaException)?.reason)
+            assertEquals(MediaError.CANCELLED, (competingError as? MediaException)?.reason)
+            main {
+                assertEquals(0, first.captureActiveCount)
+                second.acquire(CaptureKind.PHOTO) { next.complete(it) }
+            }
+            val lease = next.get(5, TimeUnit.SECONDS).getOrThrow()
+            main {
+                assertEquals(1, second.captureActiveCount)
+                lease.release()
+                assertEquals(0, second.captureActiveCount)
+            }
+        } finally {
+            main {
+                first.close()
+                second.close()
+            }
+        }
+    }
+
+    @Test
     fun captureAdmissionWaitsForProvenReleaseAndRejectsLateGrant() {
         val admission = MediaAdmission()
         val stopped = AtomicReference<() -> Unit>()
@@ -1938,6 +2444,35 @@ class MediaStoreTest {
         assertTrue(objects.delete())
         main { media.close() }
         h.close()
+    }
+
+    @Test
+    fun wrongMediaTypeCannotPublishAFileWithoutTheRequiredTrack() {
+        val h = RepositoryHarness.open(File(context.cacheDir, "invalid-tracks-" + UUID.randomUUID()))
+        val media = MediaStore(h.store)
+        val video = "bounds/video-over-one-minute.mp4"
+        val audio = "media/voice-00.m4a"
+        fun stageAs(asset: String, mime: String): AttachmentDraft = awaitResult { done ->
+            main { media.stage({ TestFixtures.assets.open(asset) }, mime, done) }
+            Cancellation {}
+        }
+        try {
+            val original = stageAs(video, "video/mp4")
+            val file = media.fileURL(original.relativePath)
+            val expected = TestFixtures.assets.open(video).use { it.readBytes() }
+
+            for ((asset, mime) in listOf(audio to "video/mp4", video to "audio/mp4")) {
+                val error = assertThrows(MediaException::class.java) { stageAs(asset, mime) }
+                assertEquals(MediaError.CORRUPT, error.reason)
+            }
+
+            assertEquals(listOf(file.name), file.parentFile?.list()?.toList())
+            assertArrayEquals(expected, file.readBytes())
+        } finally {
+            main { media.close() }
+            h.close()
+            h.root.deleteRecursively()
+        }
     }
 
     // Готовим несколько настоящих видов вложений, сохраняем сообщения и читаем их первые кадры.

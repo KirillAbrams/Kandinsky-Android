@@ -6,14 +6,12 @@ package dev.kirill.kandinsky.chat.media
 import android.graphics.*
 import androidx.exifinterface.media.ExifInterface
 import android.media.MediaMetadataRetriever
-import android.media.ThumbnailUtils
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import android.util.Size
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.storage.*
 import java.io.*
@@ -408,7 +406,7 @@ class MediaStore(
                             store.root, attachment.relativePath, resolved.first, resolved.second,
                         ) else resolved.first
                         if (fetch.isCancelled) throw MediaException(MediaError.CANCELLED)
-                        val image = decode(normal, if (video) "image/jpeg" else resolved.second, size)
+                        val image = decodeImage(normal, size)
                         try {
                             if (gallery != null && galleryEpoch != null) {
                                 if (gallery.epoch() != galleryEpoch || fetch.isCancelled)
@@ -1077,27 +1075,24 @@ class MediaStore(
             }
         }
 
-        // Готовит рисунок или первый кадр в пределах нужной стороны, отклоняя незаконченный
-        // разбор. Если выход больше обещанного, освобождает его и возвращает ошибку.
-        private fun decode(file: File, mime: String, maxPixel: Int): Bitmap {
+        // Читает фото или подготовленный кадр в пределах нужной стороны. Если готовое
+        // изображение больше допустимого, освобождает его и возвращает ошибку.
+        private fun decodeImage(file: File, maxPixel: Int): Bitmap {
             val result =
-                if (mime.startsWith("video/"))
-                    ThumbnailUtils.createVideoThumbnail(file, Size(maxPixel, maxPixel), null)
-                else
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
-                        val scale =
-                            minOf(
-                                1.0,
-                                maxPixel.toDouble() / maxOf(info.size.width, info.size.height),
-                            )
-                        decoder.setTargetSize(
-                            maxOf(1, kotlin.math.floor(info.size.width * scale).toInt()),
-                            maxOf(1, kotlin.math.floor(info.size.height * scale).toInt()),
+                ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
+                    val scale =
+                        minOf(
+                            1.0,
+                            maxPixel.toDouble() / maxOf(info.size.width, info.size.height),
                         )
-                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                        decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
-                        decoder.setOnPartialImageListener { false }
-                    }
+                    decoder.setTargetSize(
+                        maxOf(1, kotlin.math.floor(info.size.width * scale).toInt()),
+                        maxOf(1, kotlin.math.floor(info.size.height * scale).toInt()),
+                    )
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
+                    decoder.setOnPartialImageListener { false }
+                }
             if (maxOf(result.width, result.height) > maxPixel) {
                 result.recycle()
                 throw MediaException(MediaError.CORRUPT)

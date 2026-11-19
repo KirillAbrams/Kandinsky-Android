@@ -13,10 +13,109 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.support.*
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 
 class RetainedSceneTest {
+    @Test
+    fun aVisibleLayoutReplacesDistantWorkWhenTheQueueIsFull() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val running = CountDownLatch(2)
+        val releaseFirst = CountDownLatch(1)
+        val releaseRest = CountDownLatch(1)
+        val next = LinkedBlockingQueue<Long>()
+        val completions = LinkedBlockingQueue<Pair<Int, Boolean>>()
+        val worker = TextLayoutWorker { row, key ->
+            try {
+                if (row.id <= 2) {
+                    running.countDown()
+                    val gate = if (row.id == 1L) releaseFirst else releaseRest
+                    check(gate.await(8, TimeUnit.SECONDS))
+                } else {
+                    next.add(row.id)
+                    check(releaseRest.await(8, TimeUnit.SECONDS))
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            PreparedText(row, key)
+        }
+        fun key(id: Int) = TextLayoutKey(id.toLong(), 1, 240, 17, 1)
+        fun enqueue(id: Int): Cancellation {
+            val row = message("Строка ${id}").copy(id = id.toLong(), order = OrderKey(id.toLong(), id.toLong()))
+            return worker.prepare(row, key(id), id) { ticket, layout ->
+                layout?.close()
+                completions.add(ticket to (layout != null))
+            }
+        }
+        try {
+            instrumentation.runOnMainSync { (1..2).forEach { enqueue(it) } }
+            assertTrue(running.await(5, TimeUnit.SECONDS))
+            instrumentation.runOnMainSync {
+                val cancelled = enqueue(3)
+                (4..35).forEach { enqueue(it) }
+                worker.prioritizeVisible(setOf(key(36)))
+                enqueue(36)
+                cancelled.cancel()
+            }
+            val refused = List(3) { checkNotNull(completions.poll(5, TimeUnit.SECONDS)) }.toMap()
+            assertEquals(mapOf(3 to false, 34 to false, 35 to false), refused)
+            releaseFirst.countDown()
+            assertEquals(36L, next.poll(5, TimeUnit.SECONDS))
+            instrumentation.runOnMainSync { worker.close() }
+            val finished = List(33) { checkNotNull(completions.poll(5, TimeUnit.SECONDS)) }.toMap()
+            assertEquals((1..36).toSet() - refused.keys, finished.keys)
+            assertEquals(setOf(1), finished.filterValues { it }.keys)
+        } finally {
+            instrumentation.runOnMainSync { worker.close() }
+            releaseFirst.countDown()
+            releaseRest.countDown()
+        }
+    }
+
+    @Test
+    fun layoutCacheEvictsTheLeastRecentlyUsedRowAndHonorsAReducedMemoryLimit() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            fun layout(revision: Int) = PreparedText(
+                message("Строка истории").copy(revision = revision),
+                TextLayoutKey(1, revision, 240, 17, 1),
+            )
+            val first = layout(1)
+            val second = layout(2)
+            val third = layout(3)
+            val cache = FragmentLayoutCache().apply { limit = first.byteCost + second.byteCost }
+            try {
+                cache.insert(first)
+                cache.insert(second)
+                assertSame(first, cache.value(first.key))
+                cache.insert(third)
+                assertNull(cache.value(second.key))
+                assertSame(first, cache.value(first.key))
+                assertSame(third, cache.value(third.key))
+                assertEquals(first.byteCost + third.byteCost, cache.bytes)
+                assertEquals(0, second.closeCount)
+
+                cache.limit = third.byteCost
+                cache.trim()
+                assertNull(cache.value(first.key))
+                assertSame(third, cache.value(third.key))
+                assertEquals(third.byteCost, cache.bytes)
+                cache.limit = 0
+                cache.trim()
+                cache.insert(first)
+                assertNull(cache.value(first.key))
+                assertNull(cache.value(third.key))
+                assertEquals(0, cache.bytes)
+            } finally {
+                cache.clear()
+                listOf(first, second, third).forEach { it.close() }
+            }
+        }
+    }
+
     // Заранее готовим рисунки запроса и ответа, затем открываем историю с неточными оценками
     // высоты. Уже на первом кадре четыре результата должны разместиться ниже точной границы
     // запроса.

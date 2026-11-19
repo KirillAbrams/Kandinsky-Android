@@ -174,7 +174,11 @@ private fun ChatScrollHost.openMediaGallery(row: Message, attachmentIndex: Int =
         }
     viewer.onDeleteResult = onStudioResultDelete
     mediaGallery = viewer
-    if (studio) setMovingMediaVisible(false) else setMediaVisible(false)
+    if (studio) {
+        setMovingMediaVisible(false)
+    } else {
+        media.withNavigationCache { setMediaVisible(false) }
+    }
     coordinator.setInlineVisible(false)
     if (row.kind != MessageKind.VIDEO) coordinator.stop()
     viewer.show()

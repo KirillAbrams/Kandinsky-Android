@@ -3,19 +3,118 @@
 
 package dev.kirill.kandinsky.chat.media
 
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.support.*
 import dev.kirill.kandinsky.chat.support.TestFixtures
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackLifetimeTest {
+    @Test
+    fun corruptVideoCannotSeekAndReleasesItsNativePlayerExactlyOnce() {
+        val source = File.createTempFile("bad-video-", ".mp4", context.cacheDir)
+        source.writeText("Повреждённый ролик")
+        val handler = HandlerThread("Kandinsky playback failure test").apply { start() }
+        val allocated = AtomicInteger()
+        val failure = CompletableFuture<Result<Long>>()
+        val session = PlayerSession(
+            Handler(handler.looper), Handler(Looper.getMainLooper()),
+            tally = { allocated.addAndGet(it) },
+            changed = { _, _, _ -> fail("Файл с ошибкой не должен воспроизводиться") },
+            ready = { failure.complete(it) },
+        )
+        try {
+            session.open(source)
+            assertTrue(failure.get(5, TimeUnit.SECONDS).isFailure)
+            assertEquals(1, allocated.get())
+            val sought = CompletableFuture<Boolean>()
+            session.seek(1200) { sought.complete(it) }
+            assertFalse(sought.get(5, TimeUnit.SECONDS))
+
+            val released = CountDownLatch(2)
+            session.release { released.countDown() }
+            session.release { released.countDown() }
+            assertTrue(released.await(5, TimeUnit.SECONDS))
+            assertEquals(0, allocated.get())
+        } finally {
+            val stopped = CountDownLatch(1)
+            session.release { stopped.countDown() }
+            stopped.await(5, TimeUnit.SECONDS)
+            handler.quitSafely()
+            handler.join(2000)
+            source.delete()
+        }
+    }
+
+    @Test
+    fun invalidVideoReleasesTheNativePlayerBeforeTheNextResult() {
+        val root = File(context.cacheDir, "invalid-playback-" + UUID.randomUUID())
+        val harness = RepositoryHarness.open(root)
+        val media = MediaStore(harness.store)
+        val admission = MediaAdmission()
+        lateinit var playback: MediaCoordinator
+        main { playback = MediaCoordinator(admission, media) }
+        try {
+            val file = awaitResult<AttachmentDraft> { callback ->
+                main { media.stage({ TestFixtures.assets.open("media/video-00.mp4") }, "video/mp4", callback) }
+                Cancellation {}
+            }
+            val valid = Attachment(file.id, file.relativePath, file.mime, file.byteSize, file.rawWidth,
+                file.rawHeight, file.orientation, file.durationMs, file.thumbnailKey)
+            val badPath = "objects/incomplete.mp4"
+            val bytes = byteArrayOf(0, 0, 0, 32)
+            media.fileURL(badPath).writeBytes(bytes)
+            val invalid = valid.copy(id = "incomplete", relativePath = badPath, byteSize = bytes.size.toLong())
+            val rejected = CountDownLatch(1)
+            main {
+                playback.onChange = {
+                    if (playback.lastError != null && playback.activePlayerCount == 0) rejected.countDown()
+                }
+                playback.play(PlaybackTarget(invalid, 1, kind = MessageKind.VIDEO), localOnly = true)
+            }
+            assertTrue("Повреждённый ролик должен освободить системный проигрыватель", rejected.await(8, TimeUnit.SECONDS))
+            val ready = CountDownLatch(1)
+            main {
+                assertNull(playback.currentMessageID)
+                playback.onChange = {
+                    if (playback.isReady && playback.currentMessageID == 2L) ready.countDown()
+                }
+                playback.play(PlaybackTarget(valid, 2, kind = MessageKind.VIDEO), localOnly = true)
+            }
+            assertTrue("Следующий ролик должен открыться", ready.await(8, TimeUnit.SECONDS))
+            val chats = awaitResult<List<ChatSummary>> { harness.repo.chats("", it) }
+            val retired = CountDownLatch(1)
+            main {
+                assertNull(playback.lastError)
+                assertTrue(playback.durationMs > 0)
+                playback.onChange = {
+                    if (playback.currentMessageID == null && playback.activePlayerCount == 0) retired.countDown()
+                }
+                playback.apply(MessageDelta(removedIDs = listOf(2), chat = chats.single()))
+            }
+            assertTrue("Удаление строки должно закрыть ролик", retired.await(8, TimeUnit.SECONDS))
+        } finally {
+            main {
+                playback.close()
+                media.close()
+                admission.close()
+            }
+            harness.close()
+            root.deleteRecursively()
+        }
+    }
+
     // Сверяем состав поверхности. У неё должны остаться только выход видео и изображение, а
     // касания не блокируются лишней кнопкой.
     @Test

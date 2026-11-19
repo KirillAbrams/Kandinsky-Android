@@ -46,8 +46,8 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode =
-            providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(17).get()
-        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.15").get()
+            providers.gradleProperty("kandinsky.versionCode").map(String::toInt).orElse(20).get()
+        versionName = providers.gradleProperty("kandinsky.versionName").orElse("0.1.16").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Добавляет большой набор только в проверку на устройстве. Выпускное приложение не несёт эти файлы.

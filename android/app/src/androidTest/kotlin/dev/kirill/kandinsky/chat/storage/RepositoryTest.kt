@@ -9,6 +9,9 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.support.*
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,7 +42,7 @@ class RepositoryTest {
                             "INSERT INTO messages(id,chatId,sortKey,kind,text,caption," +
                                 "savedAt) " +
                                 "VALUES(?,2,42,?,'','caption',42)",
-                            arrayOf(id, kinds[id] ?: "text"),
+                            arrayOf<Any>(id, kinds[id] ?: "text"),
                         )
                         if (id in listOf(2, 5, 7, 10, 12))
                             for (name in
@@ -48,7 +51,7 @@ class RepositoryTest {
                                     "INSERT INTO attachments(id,messageId,relativePath,mime," +
                                         "byteSize,width,height) " +
                                         "VALUES(?,?,?,'image/jpeg',1,120,80)",
-                                    arrayOf(name, id, "network/$name.jpg"),
+                                    arrayOf<Any>(name, id, "network/$name.jpg"),
                                 )
                             }
                     }
@@ -123,6 +126,94 @@ class RepositoryTest {
         h.close()
     }
 
+    @Test
+    fun openingADamagedDatabaseReportsTheErrorAndPreservesItsBytes() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "database-corruption-" + UUID.randomUUID())
+        try {
+            val saved = RepositoryHarness.open(root)
+            try {
+                awaitResult<MessageDelta> { callback ->
+                    saved.repo.send(SendCommand("preserve-history", 2, text = "Сохранённое сообщение"), callback)
+                }
+            } finally {
+                saved.close()
+            }
+            val database = File(root, "chat.sqlite3")
+            val preserved = database.readBytes()
+            val damaged = preserved.copyOf().apply { fill(0x3f, 0, 16) }
+            database.writeBytes(damaged)
+
+            val result = runCatching {
+                awaitResult<SQLiteStore> { callback -> SQLiteStore.open(root, callback = callback) }
+            }
+            result.getOrNull()?.let { opened -> awaitResult<Unit> { callback -> opened.close(callback) } }
+            assertTrue("Повреждённый файл должен остаться на месте", database.isFile)
+            assertArrayEquals(damaged, database.readBytes())
+            assertEquals(RepoError.CORRUPT, (result.exceptionOrNull() as? RepoException)?.reason)
+
+            database.writeBytes(preserved)
+            val recovered = RepositoryHarness.open(root)
+            try {
+                assertEquals(1, recovered.messageCount(2))
+                assertEquals("ok", recovered.integrity())
+            } finally {
+                recovered.close()
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aFullDatabaseQueueReportsOverflowAndNeverRunsTheCancelledRead() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "database-queue-" + UUID.randomUUID())
+        val h = RepositoryHarness.open(root)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val overflow = CountDownLatch(4)
+        val results = LinkedBlockingQueue<Result<Int>>()
+        try {
+            h.store.submit({
+                entered.countDown()
+                check(release.await(8, TimeUnit.SECONDS))
+                1
+            }) { result -> results.add(result) }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            val cancelled = h.store.submit({
+                error("Отменённое чтение не должно дойти до базы")
+            }) { result: Result<Int> -> results.add(result) }
+            cancelled.cancel()
+            repeat(67) {
+                h.store.submit({ db ->
+                    db.rawQuery("SELECT 1", null).use {
+                        check(it.moveToFirst())
+                        it.getInt(0)
+                    }
+                }) { result ->
+                    if ((result.exceptionOrNull() as? RepoException)?.reason == RepoError.IO) {
+                        overflow.countDown()
+                    }
+                    results.add(result)
+                }
+            }
+            assertTrue(overflow.await(3, TimeUnit.SECONDS))
+            release.countDown()
+            val completed = List(69) { checkNotNull(results.poll(5, TimeUnit.SECONDS)) }
+            assertEquals(64, completed.count { it.getOrNull() == 1 })
+            val errors = completed.mapNotNull { (it.exceptionOrNull() as? RepoException)?.reason }
+            assertEquals(4, errors.count { it == RepoError.IO })
+            assertEquals(1, errors.count { it == RepoError.CANCELLED })
+            assertEquals(0, h.messageCount(2))
+            assertEquals("ok", h.integrity())
+        } finally {
+            release.countDown()
+            h.close()
+            root.deleteRecursively()
+        }
+    }
+
     // Проверяет откат при нехватке места и сбое перед записью, затем отправляет другое содержимое
     // со старым номером. История, подпись чата и черновик должны остаться прежними.
     @Test
@@ -188,12 +279,13 @@ class RepositoryTest {
         assertEquals(listOf(id), awaitResult<List<Long>> { h.repo.search(2L, "%_'", null, it) })
         val last =
             awaitResult<MessageDelta> {
-                    h.repo.send(SendCommand("second", 2L, text = "Последнее"), it)
+                    h.repo.send(SendCommand("second", 2L, text = "Последнее %_'"), it)
                 }
                 .inserted
-                .first()
-                .id
-        awaitResult<MessageDelta> { h.repo.delete(last, it) }
+                .single()
+        assertEquals(listOf(last.id, id), awaitResult<List<Long>> { h.repo.search(2L, "%_'", null, it) })
+        assertEquals(listOf(id), awaitResult<List<Long>> { h.repo.search(2L, "%_'", last.order, it) })
+        awaitResult<MessageDelta> { h.repo.delete(last.id, it) }
         assertEquals(
             listOf(id),
             awaitResult<HistoryPage> { h.repo.history(PageRequest(2L), it) }.rows.map { it.id },
@@ -260,14 +352,27 @@ class RepositoryTest {
     @Test
     fun invalidInputAndClosedStore() {
         val h = harness()
+        awaitResult<Unit> { callback ->
+            h.store.submit({ db -> db.execSQL("INSERT INTO chats(id,title) VALUES(3,'Соседний чат')") }, callback)
+        }
+        val neighbour = awaitResult<MessageDelta> {
+            h.repo.send(SendCommand("other-chat", 3L, text = "Сообщение в другом чате"), it)
+        }.inserted.single()
         for (command in
             listOf(
                 SendCommand("blank", 2L, text = " \n "),
+                SendCommand("cross-chat", 2L, text = "Ответ", replyToID = neighbour.id),
                 SendCommand(
                     "escape",
                     2L,
                     kind = MessageKind.PHOTO,
                     attachments = listOf(AttachmentDraft("bad", "../other.jpg", "image/jpeg", 1L)),
+                ),
+                SendCommand(
+                    "missing-file",
+                    2L,
+                    kind = MessageKind.PHOTO,
+                    attachments = listOf(AttachmentDraft("missing", "objects/missing.jpg", "image/jpeg", 1L)),
                 ),
             )) {
             try {
@@ -278,6 +383,14 @@ class RepositoryTest {
             }
         }
         assertEquals(0, h.messageCount(2L))
+        val otherHistory = awaitResult<HistoryPage> { h.repo.history(PageRequest(3L), it) }
+        assertEquals(listOf(neighbour.id), otherHistory.rows.map { it.id })
+        try {
+            awaitResult<List<Long>> { h.repo.search(4L, "Сообщение", null, it) }
+            fail("Отсутствующий чат не должен принимать поиск")
+        } catch (e: RepoException) {
+            assertEquals(RepoError.NOT_FOUND, e.reason)
+        }
         h.close()
         try {
             awaitResult<List<ChatSummary>> { h.repo.chats("", it) }

@@ -1,4 +1,4 @@
-// Показывает ход передачи и кнопку отмены или повтора. Перерисовка и вращение зависят от
+// Показывает ход передачи и кнопку отмены. Перерисовка и вращение зависят от
 // видимости, чтобы скрытая кнопка не гоняла кадры.
 
 package dev.kirill.kandinsky.chat.media
@@ -8,39 +8,17 @@ import android.graphics.*
 import android.view.View
 
 class MediaProgressControl(context: Context) : View(context) {
-    var fillColor = 0x6B000000
-        // Меняет цвет круглого фона и просит перерисовку только при отличии. Повтор той же темы
-        // не требует нового кадра.
-        set(value) {
-            if (field != value) {
-                field = value
-                invalidate()
-            }
-        }
-
-    var foregroundColor = Color.WHITE
-        // Меняет цвет дуги и знака действия. Без запроса перерисовки видимая кнопка сохранила бы
-        // старый цвет.
-        set(value) {
-            if (field != value) {
-                field = value
-                invalidate()
-            }
-        }
-
     private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     private val rect = android.graphics.RectF()
     private var progress: Double? = null
     private var phase = 0f
-    private var retry = false
 
-    // Присваивает кнопке имя отмены или повтора для средств чтения экрана. Оно соответствует
-    // текущему действию.
+    // Фиксирует имя кнопки отмены для средств чтения экрана.
     override fun onInitializeAccessibilityNodeInfo(
         info: android.view.accessibility.AccessibilityNodeInfo
     ) {
         super.onInitializeAccessibilityNodeInfo(info)
-        info.viewIdResourceName = if (retry) "media.retry" else "media.cancel"
+        info.viewIdResourceName = "media.cancel"
     }
 
     // Создаёт скрытый доступный для нажатия элемент с начальной подписью отмены. Кнопка появится
@@ -51,11 +29,8 @@ class MediaProgressControl(context: Context) : View(context) {
         contentDescription = "Отменить загрузку"
     }
 
-    // Запоминает ход и режим, меняет подпись и видимость. Если кнопку видно, просит показать
-    // новое значение.
-    fun update(value: Double?, visible: Boolean, retry: Boolean = false) {
-        this.retry = retry
-        contentDescription = if (retry) "Повторить загрузку" else "Отменить загрузку"
+    // Запоминает ход и видимость. Если кнопку видно, просит показать новое значение.
+    fun update(value: Double?, visible: Boolean) {
         progress = value
         visibility = if (visible) VISIBLE else GONE
         if (visible) invalidate()
@@ -66,9 +41,9 @@ class MediaProgressControl(context: Context) : View(context) {
     override fun onDraw(c: android.graphics.Canvas) {
         val d = width / 48f
         paint.style = android.graphics.Paint.Style.FILL
-        paint.color = fillColor
+        paint.color = 0x6B000000
         c.drawCircle(width / 2f, height / 2f, width / 2f, paint)
-        paint.color = foregroundColor
+        paint.color = Color.WHITE
         paint.style = android.graphics.Paint.Style.STROKE
         paint.strokeWidth = 2.5f * d
         paint.strokeCap = android.graphics.Paint.Cap.ROUND
@@ -80,16 +55,9 @@ class MediaProgressControl(context: Context) : View(context) {
             false,
             paint,
         )
-        if (retry) {
-            rect.set(16 * d, 16 * d, 32 * d, 32 * d)
-            c.drawArc(rect, -90f, 290f, false, paint)
-            c.drawLine(21 * d, 12 * d, 27 * d, 16 * d, paint)
-            c.drawLine(27 * d, 16 * d, 21 * d, 19 * d, paint)
-        } else {
-            c.drawLine(18 * d, 18 * d, 30 * d, 30 * d, paint)
-            c.drawLine(30 * d, 18 * d, 18 * d, 30 * d, paint)
-        }
-        if (progress == null && isShown && !retry) {
+        c.drawLine(18 * d, 18 * d, 30 * d, 30 * d, paint)
+        c.drawLine(30 * d, 18 * d, 18 * d, 30 * d, paint)
+        if (progress == null && isShown) {
             phase = (android.os.SystemClock.uptimeMillis() % 1000) * 0.36f
             postInvalidateDelayed(42)
         }

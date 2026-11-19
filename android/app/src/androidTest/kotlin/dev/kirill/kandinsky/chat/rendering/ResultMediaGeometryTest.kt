@@ -9,6 +9,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ResultMediaGeometryTest {
+    @Test
+    fun invalidServerAspectKeepsTheGenerationCardWithinTheScreen() {
+        val landscape = StudioGeneration(StudioGeneration.Stage.RUNNING, "video", "16:9", null, null)
+        assertEquals(16f / 9, landscape.ratio, .001f)
+        for (invalid in listOf("1:0", "-3:-2", "100:1", "NaN:1", "1:20")) {
+            assertEquals("Некорректный формат $invalid заменяется квадратом",
+                1f, landscape.copy(aspect = invalid).ratio, .001f)
+        }
+    }
+
+    @Test
+    fun photoDownloadShadeDisappearsWhenTheFinalPixelsAreReady() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = StudioProgressView(instrumentation.targetContext)
+            val frame = RectF(0f, 0f, 180f, 116f)
+            val bitmap = Bitmap.createBitmap(180, 116, Bitmap.Config.ARGB_8888)
+            try {
+                view.bind(80, frame, 1f, deliveringPhoto = true)
+                view.draw(Canvas(bitmap))
+                assertEquals(KandinskyPalette.studioSurface, bitmap.getPixel(18, 18))
+
+                bitmap.eraseColor(Color.TRANSPARENT)
+                view.bind(80, frame, 1f, deliveringPhoto = false)
+                view.draw(Canvas(bitmap))
+                assertEquals(Color.TRANSPARENT, bitmap.getPixel(18, 18))
+                assertEquals(
+                    "Отменено",
+                    StudioGenerationCard.progressLabel(StudioGeneration.Stage.CANCELLED, null),
+                )
+                assertEquals(
+                    "Готово",
+                    StudioGenerationCard.progressLabel(StudioGeneration.Stage.SUCCEEDED, null),
+                )
+            } finally {
+                bitmap.recycle()
+            }
+        }
+    }
+
     // Подставляем рабочее задание с процентом и несколько видов ошибок. Проверяем, что
     // разрешённый повтор появляется, запрещённый скрывается, а отмена видна отдельно.
     @Test
@@ -288,6 +328,20 @@ class ResultMediaGeometryTest {
                         interrupted.generationCard!!.cells.map { it.frame },
                     )
                     assertEquals(initial.height, interrupted.height, 0.01f)
+                    val retry = interrupted.generationCard!!.retryCells.single()
+                    val image = Bitmap.createBitmap(
+                        interrupted.width.toInt(), interrupted.height.toInt(), Bitmap.Config.ARGB_8888,
+                    )
+                    try {
+                        interrupted.draw(0, Canvas(image))
+                        val retryBackground = image.getPixel(
+                            (retry.frame.centerX() - 30).toInt(),
+                            (retry.frame.centerY() + 13).toInt(),
+                        )
+                        assertEquals(Color.rgb(218, 236, 226), retryBackground)
+                    } finally {
+                        image.recycle()
+                    }
                 } finally {
                     interrupted.close()
                 }
@@ -357,7 +411,19 @@ class ResultMediaGeometryTest {
     // видны случайный маленький шрифт и лишний фон сообщения.
     @Test
     fun incomingEmojiTextUsesNativeLargeGlyphsWithoutAnOrdinaryBubble() {
-        for (value in listOf("😀", "👨‍👩‍👧‍👦", "🇷🇺", "1️⃣", "❤️")) {
+        val examples = mapOf(
+            "😀" to 45f,
+            "👨‍👩‍👧‍👦" to 45f,
+            "🇷🇺" to 45f,
+            "1️⃣" to 45f,
+            "❤️" to 45f,
+            "😀\n😀 😀" to 38f,
+            "😀😀😀😀" to 31f,
+            "😀😀😀😀😀" to 27f,
+            "😀 1" to 17f,
+            "😀 Привет" to 17f,
+        )
+        for ((value, expectedSize) in examples) {
             val row =
                 Message(
                     1,
@@ -384,13 +450,15 @@ class ResultMediaGeometryTest {
                         .get(p) as android.text.TextPaint
                 assertEquals(
                     "Android native emoji reference envelope: $value",
-                    45f,
+                    expectedSize,
                     paint.textSize,
                     .1f,
                 )
-                assertTrue(p.height >= 55)
-                p.draw(0, Canvas(bitmap))
-                assertEquals(0, Color.alpha(bitmap.getPixel(4, 4)))
+                if (expectedSize > 17f) {
+                    assertTrue(p.height >= expectedSize + 10)
+                    p.draw(0, Canvas(bitmap))
+                    assertEquals(0, Color.alpha(bitmap.getPixel(4, 4)))
+                }
             } finally {
                 bitmap.recycle()
                 p.close()

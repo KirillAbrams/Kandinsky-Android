@@ -142,6 +142,12 @@ class StudioGenerationSheetTest {
             assertEquals(limit, negative.text.toString())
             negative.text.delete(1999, negative.text.length)
             assertEquals("a".repeat(1999), negative.text.toString())
+            val prefix = "а".repeat(1998)
+            val firstIndicator = "🇷"
+            val flag = prefix + firstIndicator + "🇺"
+            negative.setText(flag)
+            negative.text.insert(prefix.length + firstIndicator.length, "аб")
+            assertEquals(flag, negative.text.toString())
             negative.setText("  дым  ")
             seed.setText("2147483648")
             click(window.text("Готово"))

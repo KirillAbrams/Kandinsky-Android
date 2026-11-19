@@ -180,13 +180,10 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
         surface: Surface,
         onFinished: (Boolean) -> Unit,
     ): Boolean {
-        if (activeCopies >= 4 || !surface.isValid || !hasCover(key)) return false
-        val reservation = reserveFrame(generation, width, height) ?: return false
-        // Пока копирование идёт, последняя чёткая обложка должна быть доступна.
-        if (!hasCover(key)) {
-            reservation.charge.close()
-            return false
-        }
+        if (activeCopies >= 4 || !surface.isValid) return false
+        // Удерживаем прежний кадр, пока ищем место для нового.
+        val previous = cover(key) ?: return false
+        val reservation = previous.use { reserveFrame(generation, width, height) } ?: return false
         val bitmap = createBitmap(reservation.width, reservation.height)
         val marker = Any()
         pendingCopies[key] = marker
@@ -215,10 +212,6 @@ internal class VideoPlaybackCache(private val budget: ImageByteBudget, root: jav
             return false
         }
     }
-
-    // Проверяет наличие кадра и сразу закрывает пробное удержание. Проверка не должна мешать
-    // вытеснению.
-    private fun hasCover(key: VideoPlaybackKey): Boolean = frame(key)?.use { true } ?: false
 
     // Проверяет состояние и размеры, уменьшает крупный кадр и резервирует байты до копирования.
     // Сохраняет номер отзыва, чтобы поздний кадр не вернулся после удаления.

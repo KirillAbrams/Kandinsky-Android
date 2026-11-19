@@ -38,19 +38,26 @@ internal class SyncOutbox(private val sync: NetworkSync) {
             }
 
             if (commands.first().first == "delete") {
-                val delete = JSONObject(commands.first().second)
+                val payload = commands.first().second
+                val (targetClientId, chatId) = runCatching {
+                    val delete = JSONObject(payload)
+                    delete.getString("targetClientId") to delete.getLong("chatId")
+                }.getOrElse {
+                    sync.reconnectAfterFailure(connectionID)
+                    return@database
+                }
                 sync.database({ db ->
                     db.rawQuery(
                             "SELECT serverID FROM net_messages WHERE clientID=? AND senderID=?",
                             arrayOf(
-                                delete.getString("targetClientId"),
+                                targetClientId,
                                 sync.profile.userID.toString(),
                             ),
                         )
                         .use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else null } to
                         db.rawQuery(
                                 "SELECT id FROM net_outbox WHERE action='delete' AND payload=?",
-                                arrayOf(commands.first().second),
+                                arrayOf(payload),
                             )
                             .use {
                                 check(it.moveToFirst())
@@ -68,7 +75,7 @@ internal class SyncOutbox(private val sync: NetworkSync) {
                                     JSONObject()
                                         .put("type", "delete")
                                         .put("requestId", id)
-                                        .put("chatId", delete.getLong("chatId"))
+                                        .put("chatId", chatId)
                                         .put("messageId", server)
                                 )
                             }
@@ -78,7 +85,12 @@ internal class SyncOutbox(private val sync: NetworkSync) {
                 }
                 return@database
             }
-            val values = commands.map { ChatStorageCodec.readCommand(it.second) }
+            val values = runCatching {
+                commands.map { ChatStorageCodec.readCommand(it.second) }
+            }.getOrElse {
+                sync.reconnectAfterFailure(connectionID)
+                return@database
+            }
             payloads.prepare(values) { prepared ->
                 if (connectionID != sync.connectionEpoch) return@prepare
                 prepared.fold(

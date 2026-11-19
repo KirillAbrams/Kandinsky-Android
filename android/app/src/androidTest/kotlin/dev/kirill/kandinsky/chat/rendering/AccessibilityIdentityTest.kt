@@ -77,10 +77,10 @@ class AccessibilityIdentityTest {
         }
     }
 
-    // Подключаем службу управления экраном и обновляем список объектов. Система должна получить
-    // событие об изменении дерева, чтобы перечитать его состав.
+    // Следим за длинным нажатием и фокусом. После удаления строки система освобождает её фокус
+    // и получает уведомление об изменившемся дереве.
     @Test
-    fun structuralChangesPublishNativeSubtreeInvalidation() {
+    fun structuralChangesClearRemovedFocusAndPublishSubtreeInvalidation() {
         // Проверка системных событий требует явно подключённой службы управления экраном
         i.uiAutomation
         val deadline = android.os.SystemClock.uptimeMillis() + 5000
@@ -103,6 +103,7 @@ class AccessibilityIdentityTest {
                     .isEnabled
             )
             var type = 0
+            val events = mutableListOf<Int>()
             val parent =
                 object : FrameLayout(i.targetContext) {
                     // Сохраняем вид события у родителя и подтверждаем его приём. Это позволяет
@@ -112,14 +113,52 @@ class AccessibilityIdentityTest {
                         event: AccessibilityEvent,
                     ): Boolean {
                         type = event.contentChangeTypes
+                        events.add(event.eventType)
                         return true
                     }
                 }
             val host = View(i.targetContext)
             parent.addView(host)
-            val provider = NativeAccessibility(host, "test.history", { emptyList() })
+            var longPresses = 0
+            val menuAction = 0x01000035
+            var menuCalls = 0
+            var rows = listOf(NativeAction(
+                1000, "message.first", "Подпись к сообщению", RectF(0f, 0f, 100f, 40f),
+                longClick = { longPresses++ },
+                customActions = listOf(NativeExtraAction(menuAction, "Действия") { menuCalls++ }),
+            ))
+            val provider = NativeAccessibility(host, "test.history", { rows })
+            val id = 1000
+            assertNull(provider.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY))
+            assertTrue(provider.performAction(id, AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null))
+            val focused = checkNotNull(provider.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY))
+            assertTrue(focused.isAccessibilityFocused)
+            assertEquals("message.first", focused.viewIdResourceName)
+            assertTrue(focused.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS })
+            assertTrue(provider.performAction(id, AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
+            assertTrue(provider.performAction(id, menuAction, null))
+            assertFalse(provider.performAction(id, menuAction + 1, null))
+            assertEquals(1, longPresses)
+            assertEquals(1, menuCalls)
+            assertTrue(provider.performAction(id, AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS, null))
+            assertNull(provider.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY))
+
+            assertTrue(provider.performAction(id, AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null))
+            rows = emptyList()
             provider.notifyChanged()
+            assertNull(provider.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY))
+            assertFalse(provider.performAction(id, AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
             assertEquals(AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE, type)
+            assertEquals(
+                listOf(
+                    AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED,
+                    AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                    AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED,
+                    AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                ),
+                events,
+            )
         }
     }
 }

@@ -8,16 +8,21 @@ import dev.kirill.kandinsky.chat.domain.*
 import dev.kirill.kandinsky.chat.media.*
 import dev.kirill.kandinsky.chat.support.*
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -26,6 +31,122 @@ class NetworkCachedMediaTest {
     // Выполняем действие с состоянием экрана на основном потоке. Так проверка использует те же
     // правила доступа к объектам, что приложение.
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync(action)
+
+    @Test
+    fun onlyACompleteDownloadWithMatchingDigestCanReplaceTheTemporaryFile() {
+        val directory = File(instrumentation.targetContext.cacheDir, "verified-download-" + UUID.randomUUID())
+        val data = ByteArray(140_000) { 0x42 }
+        val digest = MessageDigest.getInstance("SHA-256").digest(data)
+            .joinToString("") { "%02x".format(it) }
+        val calls = AtomicInteger()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            assertEquals("/v1/media/$digest", request.url.encodedPath)
+            val body = when (val number = calls.incrementAndGet()) {
+                1 -> ByteArray(data.size) { 0x24 }.toResponseBody()
+                2, 4 -> data.toResponseBody()
+                3 -> object : ResponseBody() {
+                    private val bytes = Buffer().write(data, 0, data.size - 1)
+                    override fun contentLength() = data.size.toLong()
+                    override fun contentType() = null
+                    override fun source() = bytes
+                }
+                else -> throw AssertionError("Лишняя загрузка $number")
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("Проверочный ответ").body(body).build()
+        }.build()
+        val api = NetworkAPI(null, client).also { it.initialize() }
+        val original = File(directory, "original")
+        val incomplete = File(directory, "incomplete")
+        val oversized = File(directory, "oversized")
+        val limit = data.size.toLong()
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                api.download(digest, original, limit, MediaCancellation())
+            }
+            assertFalse(original.exists())
+            assertFalse(File(directory, "original.part").exists())
+            api.download(digest, original, limit, MediaCancellation())
+            assertArrayEquals(data, original.readBytes())
+            api.download(digest, original, limit, MediaCancellation())
+            assertEquals(2, calls.get())
+
+            val partial = assertThrows(IOException::class.java) {
+                api.download(digest, incomplete, limit, MediaCancellation())
+            }
+            assertEquals("Incomplete media", partial.message)
+            assertFalse(incomplete.exists())
+            assertFalse(File(directory, "incomplete.part").exists())
+
+            val large = assertThrows(IOException::class.java) {
+                api.download(digest, oversized, limit - 1, MediaCancellation())
+            }
+            assertEquals("Media exceeds budget", large.message)
+            assertFalse(oversized.exists())
+            assertFalse(File(directory, "oversized.part").exists())
+            assertArrayEquals(data, original.readBytes())
+            assertEquals(4, calls.get())
+        } finally {
+            api.close()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun structuredAndPartialResponsesEnforceTheirByteLimitsAndAllowTheNextRead() {
+        val blob = "3".repeat(32)
+        val path = "/v1/media/$blob"
+        val catalog = "/v1/kandinsky/models"
+        val prefix = "{\"value\":\""
+        val suffix = "\"}"
+        val maximum = 2 * 1024 * 1024
+        val samples = byteArrayOf(10, 20, 30, 40)
+        val calls = AtomicInteger()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .message("Проверочный ответ")
+            when (val number = calls.incrementAndGet()) {
+                1, 2 -> {
+                    assertEquals(catalog, request.url.encodedPath)
+                    val length = maximum + if (number == 1) 1 else 0
+                    val json = prefix + "x".repeat(length - prefix.length - suffix.length) + suffix
+                    response.code(200).body(json.toResponseBody("application/json".toMediaType()))
+                }
+                3, 4 -> {
+                    assertEquals(path, request.url.encodedPath)
+                    assertEquals("bytes=0-3", request.header("Range"))
+                    val bytes = if (number == 3) samples.copyOf(3) else samples
+                    response.code(206).header("Content-Range", "bytes 0-3/8").body(
+                        object : ResponseBody() {
+                            private val content = Buffer().write(bytes)
+                            override fun contentLength() = -1L
+                            override fun contentType() = null
+                            override fun source() = content
+                        },
+                    )
+                }
+                else -> error("Лишний запрос $number")
+            }
+            response.build()
+        }.build()
+        val api = NetworkAPI(null, client).also { it.initialize() }
+        try {
+            val large = assertThrows(IOException::class.java) { api.json(catalog) }
+            assertEquals("Response exceeds budget", large.message)
+            assertEquals(maximum - prefix.length - suffix.length, api.json(catalog).getString("value").length)
+
+            val incomplete = assertThrows(IOException::class.java) {
+                api.range(blob, 0, 3, 8, MediaCancellation())
+            }
+            assertEquals("Incomplete range", incomplete.message)
+            assertArrayEquals(samples, api.range(blob, 0, 3, 8, MediaCancellation()))
+            assertEquals(4, calls.get())
+        } finally {
+            api.close()
+        }
+    }
 
     private class Fixture(allowDownloads: Boolean = false, onRequest: () -> Unit = {}) : AutoCloseable {
         val h = RepositoryHarness.open(File(
@@ -68,7 +189,7 @@ class NetworkCachedMediaTest {
                     NetworkSchema.install(db)
                     db.execSQL(
                         "INSERT INTO net_media VALUES(?,?,?,?,?)",
-                        arrayOf(attachment.id, attachment.thumbnailKey, preview,
+                        arrayOf<Any?>(attachment.id, attachment.thumbnailKey, preview,
                             attachment.mime, attachment.byteSize),
                     )
                     Unit
@@ -110,6 +231,27 @@ class NetworkCachedMediaTest {
             assertEquals("image/jpeg", resolved.second)
             assertArrayEquals(previewBytes, resolved.first.readBytes())
             previewToken.cancel()
+
+            val broken = f.photo("d".repeat(32))
+            f.map(broken, "old-preview-id")
+            val refused = assertThrows(MediaException::class.java) {
+                f.remote.cached(broken, true, MediaCancellation())
+            }
+            assertEquals(MediaError.CORRUPT, refused.reason)
+            awaitResult<Unit> { done ->
+                f.h.store.submit({ db ->
+                    db.execSQL(
+                        "UPDATE net_media SET previewBlobID=? WHERE attachmentID=?",
+                        arrayOf(preview, broken.id),
+                    )
+                }, done)
+            }
+            val repaired = MediaCancellation()
+            try {
+                assertEquals(previewFile, f.remote.cached(broken, true, repaired)?.first)
+            } finally {
+                repaired.cancel()
+            }
             assertEquals(0, f.requests.get())
         }
     }
@@ -167,6 +309,67 @@ class NetworkCachedMediaTest {
         }
     }
 
+    @Test
+    fun cancelledLookupsDoNotReadOrDownloadMediaAfterSQLiteResponds() {
+        Fixture(allowDownloads = true).use { fixture ->
+            val attachment = fixture.photo("7".repeat(32))
+            val previewKey = "8".repeat(32)
+            fixture.map(attachment, previewKey)
+            val preview = fixture.cached("previews/$previewKey")
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val originalToken = MediaCancellation()
+            val previewToken = MediaCancellation()
+            val originalRead = FutureTask {
+                runCatching { fixture.remote.resolve(attachment, false, originalToken) }
+            }
+            val previewRead = FutureTask {
+                runCatching { fixture.remote.cached(attachment, true, previewToken) }
+            }
+            val originalWorker = Thread(originalRead, "KandinskyTestOriginalLookup")
+            val previewWorker = Thread(previewRead, "KandinskyTestPreviewLookup")
+            try {
+                fixture.h.store.submit({
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                }) {}
+                assertTrue(entered.await(3, TimeUnit.SECONDS))
+                originalWorker.start()
+                previewWorker.start()
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (System.nanoTime() < deadline &&
+                    (originalWorker.state != Thread.State.TIMED_WAITING ||
+                        previewWorker.state != Thread.State.TIMED_WAITING)
+                ) {
+                    Thread.sleep(5)
+                }
+                assertEquals(Thread.State.TIMED_WAITING, originalWorker.state)
+                assertEquals(Thread.State.TIMED_WAITING, previewWorker.state)
+                originalToken.cancel()
+                previewToken.cancel()
+                release.countDown()
+                val originalError = originalRead.get(3, TimeUnit.SECONDS).exceptionOrNull()
+                val previewError = previewRead.get(3, TimeUnit.SECONDS).exceptionOrNull()
+                assertEquals(MediaError.CANCELLED, (originalError as? MediaException)?.reason)
+                assertEquals(MediaError.CANCELLED, (previewError as? MediaException)?.reason)
+                assertEquals(0, fixture.requests.get())
+                assertArrayEquals(fixture.bytes, preview.readBytes())
+                val retry = MediaCancellation()
+                try {
+                    val downloaded = fixture.remote.resolve(attachment, false, retry).first
+                    assertArrayEquals(fixture.bytes, downloaded.readBytes())
+                    assertEquals(1, fixture.requests.get())
+                } finally {
+                    retry.cancel()
+                }
+            } finally {
+                release.countDown()
+                originalWorker.join(3000)
+                previewWorker.join(3000)
+            }
+        }
+    }
+
     // Удерживаем первый файл чтением и заставляем хранилище освободить место. Файл остаётся до
     // отмены чтения и становится доступен для удаления после неё.
     @Test
@@ -207,6 +410,37 @@ class NetworkCachedMediaTest {
             val invalid = runCatching { f.remote.cached(escaped, false, MediaCancellation()) }.exceptionOrNull()
             assertEquals(MediaError.CORRUPT, (invalid as? MediaException)?.reason)
             assertEquals(0, f.requests.get())
+        }
+    }
+
+    @Test
+    fun removalRefusesABlockedOriginalAndCanCleanItsPreviewAfterTheOriginalDirectoryIsGone() {
+        Fixture().use { fixture ->
+            val photo = fixture.photo("6".repeat(32))
+            val preview = "7".repeat(32)
+            val removal = checkNotNull(StudioMediaRemoval.parse(photo.thumbnailKey, preview))
+            val originalFolder = File(fixture.h.root.canonicalFile, "media/remote")
+            val blocked = File(originalFolder, photo.thumbnailKey + ".jpg")
+            assertTrue(blocked.mkdirs())
+            val obstruction = File(blocked, "pending").apply { writeText("Занято") }
+            val target = fixture.cached("previews/$preview.jpg")
+            val unrelated = fixture.cached("previews/another-preview.jpg")
+
+            assertThrows(IllegalStateException::class.java) { fixture.remote.removeCached(removal) }
+            assertTrue(obstruction.exists())
+            assertTrue(target.isFile)
+            val expected = assertThrows(MediaException::class.java) {
+                fixture.remote.resolve(photo, false, MediaCancellation())
+            }
+            assertEquals(MediaError.CANCELLED, expected.reason)
+            assertTrue(obstruction.delete())
+            assertTrue(blocked.delete())
+            assertTrue(originalFolder.delete())
+
+            fixture.remote.removeCached(removal)
+            assertFalse(target.exists())
+            assertArrayEquals(fixture.bytes, unrelated.readBytes())
+            assertEquals(0, fixture.requests.get())
         }
     }
 }

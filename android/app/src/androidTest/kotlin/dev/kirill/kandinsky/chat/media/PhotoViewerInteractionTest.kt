@@ -6,6 +6,8 @@ package dev.kirill.kandinsky.chat.media
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inspector.WindowInspector
@@ -58,6 +60,9 @@ class PhotoViewerInteractionTest {
         val h = RepositoryHarness.open(File(context.cacheDir, "gallery-large-" + UUID.randomUUID()))
         lateinit var media: MediaStore
         val pages = mutableListOf<PhotoViewerController>()
+        // Читаем ширину текущего кадра и сразу возвращаем своё удержание.
+        fun width(index: Int): Int =
+            pages[index].retainedPreview()?.use { it.bitmap?.width ?: 0 } ?: 0
         // Ждём заданного состояния страницы в потоке экрана. Ограниченное ожидание даёт фоновому
         // чтению закончиться и показывает этап при ошибке.
         fun state(label: String, predicate: () -> Boolean) {
@@ -68,7 +73,11 @@ class PhotoViewerInteractionTest {
                 if (ok) return
                 SystemClock.sleep(10)
             }
-            fail(label)
+            var detail = ""
+            i.runOnMainSync {
+                detail = "Ширина кадров ${pages.indices.map(::width)}, занято ${media.bytesUsed} байт"
+            }
+            fail("$label. $detail")
         }
         i.runOnMainSync { media = MediaStore(h.store) }
         try {
@@ -138,16 +147,6 @@ class PhotoViewerInteractionTest {
                         },
                         android.widget.FrameLayout.LayoutParams(-1, -1),
                     )
-                }
-            }
-            // Берём ширину рисунка конкретной страницы и закрываем полученную копию. Размер
-            // подтверждает, где оригинал, а где облегчённый сосед.
-            fun width(index: Int): Int {
-                val image = pages[index].retainedPreview()
-                return try {
-                    image?.bitmap?.width ?: 0
-                } finally {
-                    image?.close()
                 }
             }
             state("All neighbours have actual preview pixels") {
@@ -864,7 +863,21 @@ class PhotoViewerInteractionTest {
                     location[1],
                 )
             }
-            val bitmap = checkNotNull(i.uiAutomation.takeScreenshot())
+            // Окно уже есть в дереве, но снимок ещё может содержать кадр предыдущего окна.
+            // Ждём фон внизу, чтобы отдельно проверить верхнюю область выреза на том же кадре.
+            fun captureGalleryFrame(): Bitmap {
+                val deadline = SystemClock.uptimeMillis() + 5000
+                while (SystemClock.uptimeMillis() < deadline) {
+                    val frame = checkNotNull(i.uiAutomation.takeScreenshot())
+                    if (frame.getPixel(frame.width / 5, frame.height * 11 / 12) == Color.BLACK) {
+                        return frame
+                    }
+                    frame.recycle()
+                    SystemClock.sleep(16)
+                }
+                throw AssertionError("The gallery background did not appear on the display")
+            }
+            val bitmap = captureGalleryFrame()
             try {
                 assertEquals(
                     "The chat cannot show through the top of the gallery",
@@ -1101,6 +1114,24 @@ class PhotoViewerInteractionTest {
                     "Refreshing an album must leave its selected video running",
                     player.isPlaying,
                 )
+                viewer!!.resumeAutoplay()
+                assertEquals(1, player.activePlayerCount)
+                assertEquals(second.id, player.currentTarget?.attachment?.id)
+                player.stop()
+                assertNull(player.currentMessageID)
+            }
+            waitFor("В фоне прежний сеанс освобождает проигрыватель") {
+                player.activePlayerCount == 0 && !player.isPlaying
+            }
+            i.runOnMainSync { viewer!!.resumeAutoplay() }
+            waitFor("После возврата виден кадр того же результата") {
+                player.currentTarget?.attachment?.id == second.id &&
+                    player.isPlaying && surface.hasVideoFrame
+            }
+            i.runOnMainSync {
+                viewer!!.resumeAutoplay()
+                assertEquals(1, player.activePlayerCount)
+                assertEquals(1, player.peakNativePlayers)
                 viewer!!.close()
             }
             assertTrue(returned.await(3, java.util.concurrent.TimeUnit.SECONDS))
@@ -1215,6 +1246,15 @@ class PhotoViewerInteractionTest {
                 }
                 Cancellation {}
             }
+            val initiallyPlaying = java.util.concurrent.CountDownLatch(1)
+            i.runOnMainSync {
+                player.observeChanges {
+                    if (player.isReady && player.positionMs >= 250) initiallyPlaying.countDown()
+                }
+                player.play(PlaybackTarget(row.attachments.single(), row.id, row.kind), inline = true)
+            }
+            assertTrue(initiallyPlaying.await(8, java.util.concurrent.TimeUnit.SECONDS))
+            val key = VideoPlaybackKey(row.id, row.attachments.single())
             i.runOnMainSync { host.onMessageTap?.invoke(row, android.graphics.RectF()) }
             assertTrue(
                 "A video tap must open the actual full-screen viewer",
@@ -1232,10 +1272,27 @@ class PhotoViewerInteractionTest {
                 player.pause()
                 player.seek(1200) { done ->
                     assertTrue(done)
+                    player.pause()
                     sought.countDown()
                 }
             }
             assertTrue(sought.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = SystemClock.uptimeMillis() + 3000
+            var saved = 0L
+            var paused = 0L
+            do {
+                i.runOnMainSync {
+                    saved = media.videoPlayback.position(key)
+                    paused = player.positionMs
+                }
+                if (paused in 1000L..1450L && kotlin.math.abs(saved - paused) <= 30L) break
+                SystemClock.sleep(20)
+            } while (SystemClock.uptimeMillis() < deadline)
+            assertTrue("После перемотки проигрыватель остался рядом с выбранным местом", paused in 1000L..1450L)
+            assertEquals(
+                "Место просмотра после перехода из ленты должно сохраниться",
+                paused.toDouble(), saved.toDouble(), 30.0,
+            )
             device.findObject(By.desc("Вернуть в чат")).click()
             val end = SystemClock.uptimeMillis() + 3000
             var returned = false
@@ -1247,7 +1304,7 @@ class PhotoViewerInteractionTest {
             i.runOnMainSync {
                 assertEquals(1, player.activePlayerCount)
                 assertEquals(1, player.peakNativePlayers)
-                assertEquals(1200.0, player.positionMs.toDouble(), 120.0)
+                assertEquals(paused.toDouble(), player.positionMs.toDouble(), 120.0)
                 assertFalse(player.isPlaying)
             }
         } finally {
@@ -1482,6 +1539,55 @@ class PhotoViewerInteractionTest {
             )
             first.recycle()
             assertTrue("Original aspect-fit image must be visible", initial > width / 3)
+            val downTime = SystemClock.uptimeMillis()
+            val fingers = Array(2) { index ->
+                MotionEvent.PointerProperties().apply {
+                    id = index
+                    toolType = MotionEvent.TOOL_TYPE_FINGER
+                }
+            }
+            fun touch(action: Int, count: Int, spread: Float) {
+                val positions = Array(count) { index ->
+                    MotionEvent.PointerCoords().apply {
+                        x = cx + (if (index == 0) -spread else spread)
+                        y = cy.toFloat()
+                        pressure = 1f
+                        size = 1f
+                    }
+                }
+                val event = MotionEvent.obtain(
+                    downTime, SystemClock.uptimeMillis(), action, count, fingers, positions,
+                    0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0,
+                )
+                try {
+                    assertTrue(i.uiAutomation.injectInputEvent(event, true))
+                } finally {
+                    event.recycle()
+                }
+            }
+            // Первый палец остаётся на экране, пока второй не закончит жест.
+            val secondFinger = 1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT
+            touch(MotionEvent.ACTION_DOWN, 1, width * .12f)
+            touch(MotionEvent.ACTION_POINTER_DOWN or secondFinger, 2, width * .12f)
+            for (step in 1..12) {
+                touch(MotionEvent.ACTION_MOVE, 2, width * (.12f + step * .027f))
+            }
+            touch(MotionEvent.ACTION_POINTER_UP or secondFinger, 2, width * .444f)
+            touch(MotionEvent.ACTION_UP, 1, width * .444f)
+            i.waitForIdleSync()
+            val pinched = capture()
+            val pinchedHeight = coloredHeight(pinched, cx)
+            pinched.recycle()
+            assertTrue("Разведение пальцев должно увеличить видимое фото", pinchedHeight > initial * 1.2)
+            device.click(cx, cy)
+            SystemClock.sleep(60)
+            device.click(cx, cy)
+            SystemClock.sleep(400)
+            val restored = capture()
+            val restoredHeight = coloredHeight(restored, cx)
+            restored.recycle()
+            assertEquals("Двойное нажатие возвращает общий вид", initial.toDouble(), restoredHeight.toDouble(), 3.0)
+
             device.click(cx, cy)
             SystemClock.sleep(60)
             device.click(cx, cy)

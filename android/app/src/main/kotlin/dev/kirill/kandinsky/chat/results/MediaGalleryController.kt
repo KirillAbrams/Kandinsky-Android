@@ -241,6 +241,7 @@ class MediaGalleryController(
         }
         observer = playback.observeChanges { playerChanged() }
         reconcile()
+        if (closing) return
         next.window?.prepareOpaqueMedia()
         next.setContentView(root)
         next.show()
@@ -293,7 +294,11 @@ class MediaGalleryController(
         val wanted = model.neighbours
         val byID = wanted.associateBy { it.id }
         for ((key, page) in pages.toMap()) if (byID[key]?.hasSameMedia(page.entry) != true) {
-            if (page.photo.downloadPausedByUser) cancelled.add(key)
+            if (page.photo.downloadPausedByUser) {
+                cancelled.add(key)
+            } else {
+                cancelled.remove(key)
+            }
             if (surface.parent === page.view) retireVideo()
             page.photo.close()
             pager.removeView(page.view)

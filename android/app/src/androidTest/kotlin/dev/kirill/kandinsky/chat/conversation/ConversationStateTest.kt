@@ -5,17 +5,66 @@ package dev.kirill.kandinsky.chat.conversation
 
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.kirill.kandinsky.chat.domain.*
+import dev.kirill.kandinsky.chat.media.MediaStore
+import dev.kirill.kandinsky.chat.network.NetworkAPI
+import dev.kirill.kandinsky.chat.network.NetworkProfile
+import dev.kirill.kandinsky.chat.network.NetworkSchema
+import dev.kirill.kandinsky.chat.network.NetworkSync
 import dev.kirill.kandinsky.chat.support.*
 import dev.kirill.kandinsky.chat.support.TestFixtures
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 import org.junit.Assert.*
 import org.junit.Test
 
 class ConversationStateTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
+
+    @Test
+    fun anOldStudioDraftCannotReplaceOrClearTheNewOneAfterReopening() {
+        val directory = File(instrumentation.targetContext.cacheDir, "studio-draft-${UUID.randomUUID()}")
+        val first = StudioDraftRecord(UUID.randomUUID(), Draft(text = "Первый запрос", revision = 2))
+        val second = StudioDraftRecord(
+            UUID.randomUUID(),
+            Draft(text = "Новый запрос", revision = 9, generationOptions = KandinskyOptions(model = "video")),
+        )
+        fun withStore(check: (NetworkSync) -> Unit) {
+            val harness = RepositoryHarness.open(directory)
+            val profile = NetworkProfile(9, "test", "Черновик", "a".repeat(64), Long.MAX_VALUE)
+            val transport = OkHttpClient.Builder().addInterceptor {
+                throw AssertionError("Работа с черновиком не должна отправлять сетевой запрос")
+            }.build()
+            val sync = NetworkSync(profile, harness.store, harness.repo, NetworkAPI(profile, transport))
+            try {
+                awaitResult<Unit> { harness.store.submit(NetworkSchema::install, it) }
+                check(sync)
+            } finally {
+                sync.close()
+                harness.close()
+            }
+        }
+        try {
+            withStore { sync ->
+                assertNull(awaitResult<StudioDraftRecord?> { sync.beginStudioDraft(first, it) })
+                assertEquals(first, awaitResult<StudioDraftRecord?> { sync.beginStudioDraft(second, it) })
+                awaitResult<Unit> { sync.saveStudioDraft(Draft(text = "Запоздалая правка"), first.identity, it) }
+                awaitResult<Unit> { sync.finishStudioDraft(first.identity, it) }
+            }
+            withStore { sync ->
+                assertEquals(second, awaitResult(sync::savedStudioDraft))
+                val revised = second.draft.copy(text = "Уточнённый запрос", revision = 10)
+                awaitResult<Unit> { sync.saveStudioDraft(revised, second.identity, it) }
+                assertEquals(second.copy(draft = revised), awaitResult(sync::savedStudioDraft))
+                awaitResult<Unit> { sync.finishStudioDraft(second.identity, it) }
+                assertNull(awaitResult(sync::savedStudioDraft))
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
 
     // Пишет настройки и текст в черновик и заново открывает файл. Сверяет все поля и версию,
     // чтобы неполная запись не прошла проверку.
@@ -94,6 +143,124 @@ class ConversationStateTest {
         } finally {
             main { state.close() }
             h.close()
+        }
+    }
+
+    @Test
+    fun failedReadingPositionWriteKeepsTheOldAnchorAndAllowsTheNextScroll() {
+        val root = File(instrumentation.targetContext.cacheDir, "anchor-retry-" + UUID.randomUUID())
+        val h = RepositoryHarness.open(root)
+        val state = ConversationState(h.repo)
+        val saved = ReadingAnchor(messageID = 1, fraction = 0.1, followsBottom = false)
+        val refused = ReadingAnchor(messageID = 2, fraction = 0.5, followsBottom = false)
+        val next = ReadingAnchor(messageID = 3, fraction = 0.6, followsBottom = false)
+        val failure = CountDownLatch(1)
+        try {
+            awaitResult<Unit> { h.repo.savePosition(2, saved, it) }
+            open(state)
+            awaitResult<Unit> { done ->
+                h.store.submit({ db ->
+                    db.execSQL(
+                        "CREATE TRIGGER block_position BEFORE INSERT ON reading_positions " +
+                            "BEGIN SELECT RAISE(ABORT,'test refuses the position'); END",
+                    )
+                }, done)
+            }
+            main {
+                state.onChange = { if (state.lastError != null) failure.countDown() }
+                state.anchor = refused
+            }
+            assertTrue(failure.await(5, TimeUnit.SECONDS))
+            assertEquals(saved, awaitResult<ReadingAnchor?> { h.repo.position(2, it) })
+            awaitResult<Unit> { done ->
+                h.store.submit({ db -> db.execSQL("DROP TRIGGER block_position") }, done)
+            }
+
+            main { state.anchor = next }
+            val limit = android.os.SystemClock.uptimeMillis() + 5000
+            var stored: ReadingAnchor?
+            do {
+                stored = awaitResult { h.repo.position(2, it) }
+                if (stored == next) break
+                android.os.SystemClock.sleep(25)
+            } while (android.os.SystemClock.uptimeMillis() < limit)
+            assertEquals(next, stored)
+            assertEquals("", awaitResult<Draft> { h.repo.draft(2, it) }.text)
+        } finally {
+            main { state.close() }
+            h.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun sendBeforeTheChatOpensAndAnEmptyDraftDoNotWriteAnOperation() {
+        val root = File(instrumentation.targetContext.cacheDir, "empty-send-" + UUID.randomUUID())
+        val h = RepositoryHarness.open(root)
+        val state = ConversationState(h.repo)
+        try {
+            val before = h.rawScalar("SELECT count(*) FROM messages WHERE chatId=2")
+            main {
+                state.send { reply ->
+                    assertEquals(RepoError.CANCELLED, (reply.exceptionOrNull() as? RepoException)?.reason)
+                }
+            }
+            open(state)
+            awaitResult<Unit> { done ->
+                main { state.send(done) }
+                Cancellation {}
+            }
+            assertEquals(before, h.rawScalar("SELECT count(*) FROM messages WHERE chatId=2"))
+            assertEquals("", awaitResult<Draft> { h.repo.draft(2, it) }.text)
+        } finally {
+            main { state.close() }
+            h.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun existingAttachmentTypesKeepTheirOwnKindWhenSentFromTheDraft() {
+        val root = File(instrumentation.targetContext.cacheDir, "existing-attachments-" + UUID.randomUUID())
+        val h = RepositoryHarness.open(root)
+        val media = MediaStore(h.store)
+        val state = ConversationState(h.repo)
+        val clip = "real-media/backend-990da02cd31e46cfb8fd630c293f3489.mp4"
+        val inputs = listOf(
+            Triple("real-media/backend-824d66cce0d64409ad4888a13792c7d4.jpg", "image/jpeg", MessageKind.PHOTO),
+            Triple("catalogue-media/gif-waterfall-0.gif", "image/gif", MessageKind.GIF),
+            Triple("media/welcome.png", "image/png", MessageKind.STICKER),
+            Triple("media/voice-00.m4a", "audio/mp4", MessageKind.VOICE),
+            Triple(clip, "video/mp4", MessageKind.ROUND),
+            Triple(clip, "video/mp4", MessageKind.VIDEO),
+        )
+        try {
+            open(state)
+            for ((asset, mime, kind) in inputs) {
+                var attachment = awaitResult<AttachmentDraft> { reply ->
+                    main { media.stage({ TestFixtures.assets.open(asset) }, mime, reply) }
+                    Cancellation {}
+                }
+                if (kind == MessageKind.STICKER) attachment = attachment.copy(thumbnailKey = "sticker")
+                if (kind == MessageKind.ROUND) attachment = attachment.copy(thumbnailKey = "round")
+                val caption = "Файл " + kind.name
+                awaitResult<Unit> { reply ->
+                    main {
+                        state.editDraft(Draft(text = caption, attachmentDrafts = listOf(attachment)))
+                        state.send(reply)
+                    }
+                    Cancellation {}
+                }
+            }
+            val sent = awaitResult<HistoryPage> { h.repo.history(PageRequest(2), it) }.rows
+            assertEquals(inputs.map { it.third }, sent.map { it.kind })
+            assertEquals(inputs.map { "Файл " + it.third.name }, sent.map { it.caption })
+            assertTrue(sent.all { it.text.isEmpty() && it.attachments.size == 1 })
+            assertTrue(awaitResult<Draft> { h.repo.draft(2, it) }.attachmentDrafts.isEmpty())
+        } finally {
+            main { state.close(); media.close() }
+            h.close()
+            root.deleteRecursively()
         }
     }
 
@@ -195,7 +362,7 @@ class ConversationStateTest {
                     "selection-legacy-" + UUID.randomUUID(),
                 )
             )
-        val media = dev.kirill.kandinsky.chat.media.MediaStore(h.store)
+        val media = MediaStore(h.store)
         val original = TestFixtures.assets.open("media/photo-000.jpg").use { it.readBytes() }
         val commands =
             (0 until 3).map { index ->
@@ -362,7 +529,7 @@ class ConversationStateTest {
             RepositoryHarness.open(
                 File(instrumentation.targetContext.cacheDir, "media-batch-" + UUID.randomUUID())
             )
-        val media = dev.kirill.kandinsky.chat.media.MediaStore(h.store)
+        val media = MediaStore(h.store)
         val commands =
             (0 until 3).map { index ->
                 val asset =
@@ -467,6 +634,70 @@ class ConversationStateTest {
             state.close()
         }
         h.close()
+    }
+
+    @Test
+    fun batchRetriesTheSameAcceptedFileWhenSavingItsRemainderFails() {
+        val root = File(instrumentation.targetContext.cacheDir, "batch-remainder-" + UUID.randomUUID())
+        val h = RepositoryHarness.open(root)
+        val media = MediaStore(h.store)
+        val state = ConversationState(h.repo)
+        try {
+            val commands = List(2) {
+                val file = awaitResult<AttachmentDraft> { callback ->
+                    main { media.stage({ TestFixtures.assets.open("media/photo-000.jpg") }, "image/jpeg", callback) }
+                    Cancellation {}
+                }
+                SendCommand(UUID.randomUUID().toString(), 2, MessageKind.PHOTO, attachments = listOf(file))
+            }
+            val firstID = commands.first().operationID
+            awaitResult<Unit> { h.repo.saveDraft(2, Draft(text = "Отдельный черновик"), it) }
+            open(state)
+            awaitResult<Unit> { callback ->
+                h.store.submit({ db ->
+                    db.execSQL("""
+                        CREATE TRIGGER refuse_shortened_batch BEFORE UPDATE OF attachmentDraft ON drafts
+                        WHEN NEW.attachmentDraft NOT LIKE '%$firstID%'
+                        BEGIN SELECT RAISE(ABORT,'batch remainder refused'); END
+                    """.trimIndent())
+                }, callback)
+            }
+
+            fun enqueue(batch: List<SendCommand>): Throwable? = runCatching {
+                awaitResult<Unit> { callback ->
+                    main { state.sendMediaBatch(batch, callback) }
+                    Cancellation {}
+                }
+            }.exceptionOrNull()
+            val sequence = commands.map { it.operationID }
+            assertEquals(RepoError.INVALID_INPUT, (enqueue(commands) as? RepoException)?.reason)
+            assertEquals(sequence, state.draft.pendingMediaBatch?.map { it.operationID })
+            val saved = awaitResult<Draft> { h.repo.draft(2, it) }
+            assertEquals(sequence, saved.pendingMediaBatch?.map { it.operationID })
+            assertEquals(1, h.messageCount(2))
+
+            assertEquals(RepoError.INVALID_INPUT, (enqueue(commands.takeLast(1)) as? RepoException)?.reason)
+            assertEquals(sequence, state.draft.pendingMediaBatch?.map { it.operationID })
+            awaitResult<Unit> { callback ->
+                h.store.submit({ db -> db.execSQL("DROP TRIGGER refuse_shortened_batch") }, callback)
+            }
+            send(state)
+            assertNull(state.lastError)
+            assertNull(state.draft.pendingMediaBatch)
+            assertEquals("Отдельный черновик", state.draft.text)
+            val rows = awaitResult<List<String>> { callback ->
+                h.store.submit({ db ->
+                    db.rawQuery("SELECT token FROM operations ORDER BY messageId", null).use { cursor ->
+                        buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+                    }
+                }, callback)
+            }
+            assertEquals(sequence, rows)
+        } finally {
+            main { media.close(); state.close() }
+            h.close()
+            root.deleteRecursively()
+        }
     }
 
     // Проверяет восстановление номера команды после потери ответа и очистку ввода после повтора.

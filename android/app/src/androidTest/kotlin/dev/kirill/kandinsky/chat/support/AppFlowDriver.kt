@@ -7,6 +7,7 @@ import android.content.Intent
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -36,12 +37,30 @@ class AppFlowDriver {
             "Элемент не появился: $selector"
         }
 
-    // Открываем меню и строку с заданным названием, затем ждём форму. Пока форма не появилась,
-    // следующее действие могло бы попасть в список.
+    // Список может заменить строку между поиском и нажатием. После такой замены ищем её снова.
+    fun click(selector: BySelector) {
+        repeat(3) { attempt ->
+            try {
+                find(selector).click()
+                return
+            } catch (error: StaleObjectException) {
+                if (attempt == 2) throw error
+            }
+        }
+    }
+
+    // Ищем нужный чат среди видимых строк или через поиск. Следующее действие ждёт поля ввода.
     fun openChat(title: String) {
         assumeNotNull(NetworkCredentials(context).load())
-        find(By.desc("История запросов")).click()
-        find(By.text(title)).click()
+        val search = By.res("chats.search.field")
+        if (!device.hasObject(search)) click(By.desc("История запросов"))
+        val chat = By.text(title).hasAncestor(By.res("chats.rows"))
+        val visible = device.wait(Until.findObject(chat), 1500)
+        if (visible == null || visible.visibleBounds.isEmpty) {
+            find(search).text = title
+        }
+        click(chat)
+        check(device.wait(Until.gone(search), 15000)) { "Список чатов не закрылся после выбора" }
         find(By.res("composer.input"))
     }
 

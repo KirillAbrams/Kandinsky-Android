@@ -46,9 +46,13 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
                             if (!root.exists() && !root.mkdirs()) throw RepoException(RepoError.IO)
                             val db =
                                 SQLiteDatabase.openOrCreateDatabase(
-                                    File(root, "chat.sqlite3"),
+                                    File(root, "chat.sqlite3").path,
                                     null,
-                                )
+                                ) { damaged ->
+                                    // Сохраняем файл и журнал для восстановления. Системный
+                                    // обработчик по умолчанию удаляет повреждённую историю.
+                                    if (damaged.isOpen) damaged.close()
+                                }
                             try {
                                 db.setForeignKeyConstraintsEnabled(true)
                                 db.enableWriteAheadLogging()
@@ -57,7 +61,7 @@ class SQLiteStore private constructor(val root: File, val faults: RepositoryFaul
                                 store.database = db
                                 store
                             } catch (t: Throwable) {
-                                db.close()
+                                if (db.isOpen) db.close()
                                 throw t
                             }
                         }

@@ -8,6 +8,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import dev.kirill.kandinsky.chat.domain.HistoryPage
 import dev.kirill.kandinsky.chat.domain.MessageDelivery
 import dev.kirill.kandinsky.chat.domain.MessageDelta
+import dev.kirill.kandinsky.chat.domain.MessageKind
 import dev.kirill.kandinsky.chat.domain.PageRequest
 import dev.kirill.kandinsky.chat.domain.SendCommand
 import dev.kirill.kandinsky.chat.storage.SQLiteChatRepository
@@ -353,6 +354,75 @@ class NetworkPersistenceTest {
         assertEquals(listOf(secondID), outbox)
     }
 
+    @Test
+    fun voiceReplyKeepsItsLocalTargetWhenTheServerReplacesTheWaveform() =
+        withNetworkStore { harness, cache ->
+            val prompt = serverMessage(910, 1, sender = 2).put("text", "Исходное сообщение")
+            val voice = serverMessage(911, 2, sender = 2)
+                .put("kind", "voice").put("text", "").put("replyToId", 910)
+            val attachment = JSONObject()
+                .put("blobId", "b".repeat(64)).put("mime", "audio/mp4")
+                .put("byteSize", 1024).put("rawWidth", 0).put("rawHeight", 0)
+                .put("orientation", 1).put("durationMs", 800)
+            val samples = listOf(0, 128, 255)
+            attachment.put("waveform", JSONArray(samples))
+            voice.put("attachments", JSONArray().put(attachment))
+            val initialPage = JSONObject()
+                .put("messages", JSONArray().put(prompt).put(voice)).put("hasOlder", false)
+            val first = await<List<MessageDelta>> { done ->
+                harness.store.submit({ db -> cache.history(db, 2, initialPage) }, done)
+            }.single().updated
+            val target = first.single { it.text == "Исходное сообщение" }
+            val recording = first.single { it.kind == MessageKind.VOICE }
+            assertEquals(target.id, recording.replyToID)
+            assertEquals(samples, recording.attachments.single().waveform)
+
+            attachment.put("waveform", JSONArray(listOf(0, 256)))
+            voice.put("revision", 2)
+            val late = JSONObject().put("messages", JSONArray().put(voice)).put("hasOlder", false)
+            val second = await<List<MessageDelta>> { done ->
+                harness.store.submit({ db -> cache.history(db, 2, late) }, done)
+            }.single().updated.single()
+            assertEquals(recording.id, second.id)
+            assertEquals(target.id, second.replyToID)
+            assertEquals(800L, second.attachments.single().durationMs)
+            assertNull(second.attachments.single().waveform)
+        }
+
+    @Test
+    fun lateEventForADeletedMessageDoesNotCreateAnUnreadBadge() =
+        withNetworkStore { harness, cache ->
+            fun event(seq: Long, kind: String) =
+                JSONObject().put("seq", seq).put("kind", kind).put("chatId", 2)
+            val late = serverMessage(910, 100, sender = 2).put("text", "Позднее сообщение")
+            val fresh = serverMessage(911, 101, sender = 2).put("text", "Новое сообщение")
+            val batch = JSONObject().put("cursor", 3).put(
+                "events",
+                JSONArray()
+                    .put(event(1, "deleted").put("messageId", 910))
+                    .put(event(2, "message").put("message", late))
+                    .put(event(3, "message").put("message", fresh)),
+            )
+            val (messages, unread) = await<Pair<List<String>, Int>> { done ->
+                harness.store.submit({ db ->
+                    fun unreadCount() =
+                        db.rawQuery("SELECT unreadCount FROM chats WHERE id=2", null).use { rows ->
+                            check(rows.moveToFirst())
+                            rows.getInt(0)
+                        }
+                    val before = unreadCount()
+                    cache.events(db, batch)
+                    cache.events(db, batch)
+                    val texts = db.rawQuery("SELECT text FROM messages WHERE chatId=2", null).use { rows ->
+                        buildList { while (rows.moveToNext()) add(rows.getString(0)) }
+                    }
+                    texts to (unreadCount() - before)
+                }, done)
+            }
+            assertEquals(listOf("Новое сообщение"), messages)
+            assertEquals("Only the visible message may increase unread", 1, unread)
+        }
+
     // Открывает временную базу, ставит сетевые таблицы и готовит чат для теста. В конце закрывает
     // соединение и убирает папку, чтобы состояние не мешало соседним сценариям.
     private fun withNetworkStore(
@@ -521,6 +591,19 @@ class NetworkPersistenceTest {
                         assertEquals(1L, scalar("SELECT unreadCount FROM chats WHERE id=4000"))
                         assertEquals(0L, scalar("SELECT hasOlder FROM net_chats WHERE chatID=4000"))
                         assertFalse(cache.hasUnknownChats(db, events))
+
+                        cache.state(db, "ownRead:4000", "1")
+                        cache.mergeChats(db, chats)
+                        assertEquals(0L, scalar("SELECT unreadCount FROM chats WHERE id=4000"))
+                        assertEquals(1L, scalar("SELECT count(*) FROM messages WHERE chatId=4000"))
+
+                        cache.state(db, "ownRead:4000", "-1")
+                        val invalidSnapshot = JSONObject(chats.toString())
+                        invalidSnapshot.getJSONArray("chats").getJSONObject(0).put("pinned", true)
+                        assertThrows(IllegalArgumentException::class.java) {
+                            cache.mergeChats(db, invalidSnapshot)
+                        }
+                        assertEquals(0L, scalar("SELECT pinned FROM chats WHERE id=4000"))
                     },
                     callback,
                 )
