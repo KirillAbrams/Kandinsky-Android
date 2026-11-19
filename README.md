@@ -91,32 +91,6 @@
 - [Образцы для проверки текста](fixtures/real-media/text-raster-samples.json) помогают сопоставить границы текста и его изображение при отрисовке ленты.
 - [Перечень движущихся картинок](fixtures/catalogue-media/catalogue.json) описывает три файла рядом. Они позволяют проверить, как окно просмотра работает с таким вложением.
 
-## Значки приложения
-
-Имя файла связывает значок с кнопкой или оформлением. [Разрешение на использование значков](android/app/src/main/res/raw/heroicons_license.txt) входит в приложение.
-
-| Назначение | Файл или папка |
-| --- | --- |
-| Значок установленного приложения | [Значок](android/app/src/main/res/mipmap-anydpi/kandinsky_launcher.xml) |
-| Снять фото | [Камера](android/app/src/main/res/drawable-nodpi/kandinsky_attachment_camera.png) |
-| Выбрать снимок для запроса | [Снимок](android/app/src/main/res/drawable-nodpi/kandinsky_attachment_photo.png) |
-| Начать новый чат | [Добавить](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_add.png) |
-| Открыть архив | [Архив](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_archive.png) |
-| Вернуться из архива | [Назад](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_back.png) |
-| Выйти из аккаунта | [Выход](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_logout.png) |
-| Открыть действия чата или аккаунта | [Действия](android/app/src/main/res/drawable/kandinsky_drawer_more.xml) |
-| Найти чат по названию | [Поиск](android/app/src/main/res/drawable-nodpi/kandinsky_drawer_search.png) |
-| Узор за сообщениями в чате | [Знак](android/app/src/main/res/drawable-nodpi/kandinsky_evolution.png) |
-| Развернуть просмотр | [Развернуть](android/app/src/main/res/drawable-nodpi/kandinsky_result_expand.png) |
-| Повторить генерацию | [Повтор](android/app/src/main/res/drawable-nodpi/kandinsky_generation_refresh.png) |
-| Отметить выбранную модель | [Отметка](android/app/src/main/res/drawable-nodpi/kandinsky_model_check.png) |
-| Обозначить модель видео | [Видео](android/app/src/main/res/drawable-nodpi/kandinsky_model_video.png) |
-| Открыть недавний ролик | [Ролик](android/app/src/main/res/drawable-nodpi/kandinsky_recent_video.png) |
-| Сохранить результат | [Сохранить](android/app/src/main/res/drawable-nodpi/kandinsky_result_save.png) |
-| Передать результат другому приложению | [Поделиться](android/app/src/main/res/drawable-nodpi/kandinsky_result_share.png) |
-| Вернуться из полного просмотра загруженного видео | [Закрыть просмотр](android/app/src/main/res/drawable-nodpi/kandinsky_upload_close.png) |
-| Отметить закреплённый чат | [Скрепка](android/app/src/main/res/drawable/heroicons_paper_clip.xml) |
-
 Сборки для установки и прошлые версии доступны на [странице выпусков Андроида](https://github.com/KirillAbrams/Kandinsky-Android/releases).
 
 ## Связанные части проекта
